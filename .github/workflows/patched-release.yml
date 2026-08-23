@@ -172,7 +172,8 @@ jobs:
               '(.draft == false) and (.prerelease == false) and
                ([.assets[].name] | index($archive) != null) and
                ([.assets[].name] | index("checksums.txt") != null) and
-               ([.assets[].name] | index("build-info.json") != null)' \
+               ([.assets[].name] | index("build-info.json") != null) and
+               ([.assets[].name] | index("attestation.jsonl") != null)' \
               <<<"$release_json" >/dev/null; then
               already_released=true
             fi
@@ -293,6 +294,7 @@ jobs:
               asset_name: $asset_name,
               asset_sha256: $asset_sha256,
               asset_size: $asset_size,
+              attestation_asset_name: "attestation.jsonl",
               build_date: $build_date,
               go_version: $go_version,
               glibc_baseline: "2.17"
@@ -302,18 +304,8 @@ jobs:
             sha256sum "$archive_name" build-info.json > checksums.txt
           )
 
-      - name: Upload verified workflow artifact
-        if: steps.metadata.outputs.already_released != 'true'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: patched-linux-amd64-${{ steps.metadata.outputs.source_sha }}
-          path: |
-            dist/${{ steps.metadata.outputs.archive_name }}
-            dist/build-info.json
-            dist/checksums.txt
-          if-no-files-found: error
-
       - name: Attest release provenance
+        id: provenance
         if: steps.metadata.outputs.already_released != 'true'
         uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
         with:
@@ -321,6 +313,18 @@ jobs:
             ${{ github.workspace }}/dist/${{ steps.metadata.outputs.archive_name }}
             ${{ github.workspace }}/dist/build-info.json
             ${{ github.workspace }}/dist/checksums.txt
+
+      - name: Stage release provenance bundle
+        if: steps.metadata.outputs.already_released != 'true'
+        env:
+          BUNDLE_PATH: ${{ steps.provenance.outputs.bundle-path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$BUNDLE_PATH"
+          jq -e '.mediaType == "application/vnd.dev.sigstore.bundle.v0.3+json"' \
+            "$BUNDLE_PATH" >/dev/null
+          install -m 0600 "$BUNDLE_PATH" dist/attestation.jsonl
 
       - name: Verify release provenance
         if: steps.metadata.outputs.already_released != 'true'
@@ -339,8 +343,10 @@ jobs:
             verified=false
             for attempt in 1 2 3; do
               if gh attestation verify "$subject" \
+                --bundle dist/attestation.jsonl \
                 --repo "$GITHUB_REPOSITORY" \
                 --signer-workflow "$signer_workflow" \
+                --signer-digest "$SOURCE_SHA" \
                 --source-digest "$SOURCE_SHA" \
                 --source-ref "$source_ref" \
                 --deny-self-hosted-runners \
@@ -355,6 +361,18 @@ jobs:
               exit 1
             fi
           done
+
+      - name: Upload verified workflow artifact
+        if: steps.metadata.outputs.already_released != 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: patched-linux-amd64-${{ steps.metadata.outputs.source_sha }}
+          path: |
+            dist/${{ steps.metadata.outputs.archive_name }}
+            dist/attestation.jsonl
+            dist/build-info.json
+            dist/checksums.txt
+          if-no-files-found: error
 
   publish-release:
     needs: build-linux-amd64
@@ -383,6 +401,7 @@ jobs:
         run: |
           set -euo pipefail
           test -f "dist/${ARCHIVE_NAME}"
+          test -f dist/attestation.jsonl
           test -f dist/build-info.json
           test -f dist/checksums.txt
           (
@@ -408,8 +427,20 @@ jobs:
                .asset_name == $asset_name and
                .asset_sha256 == $asset_sha256 and
                .asset_size == $asset_size and
+               .attestation_asset_name == "attestation.jsonl" and
                .glibc_baseline == "2.17"' \
               build-info.json >/dev/null
+            for subject in "$ARCHIVE_NAME" build-info.json checksums.txt; do
+              gh attestation verify "$subject" \
+                --bundle attestation.jsonl \
+                --repo "$GITHUB_REPOSITORY" \
+                --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/patched-release.yml" \
+                --signer-digest "$SOURCE_SHA" \
+                --source-digest "$SOURCE_SHA" \
+                --source-ref "refs/heads/${PATCH_BRANCH}" \
+                --deny-self-hosted-runners \
+                --format json >/dev/null
+            done
           )
 
       - name: Publish verified fork release
@@ -455,6 +486,7 @@ jobs:
 
           gh release upload "$RELEASE_TAG" \
             "dist/${ARCHIVE_NAME}" \
+            dist/attestation.jsonl \
             dist/build-info.json \
             dist/checksums.txt \
             --repo "$GITHUB_REPOSITORY" \

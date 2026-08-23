@@ -8,11 +8,14 @@ does not use CLIProxyAPI's built-in upstream release source.
 
 The latest release must use `vX.Y.Z-nekopara.N`, point to a lightweight commit
 tag, and contain exactly one expected Linux amd64 archive plus
-`checksums.txt` and `build-info.json`. The updater cross-checks the GitHub asset
+`checksums.txt`, `build-info.json`, and `attestation.jsonl`. The updater
+cross-checks the GitHub asset
 digests, both checksum entries, release tag commit, build metadata, archive
 members, ELF architecture, interpreter, maximum GLIBC version, and the version
 and commit reported by the candidate binary. The release workflow also creates
-GitHub/Sigstore build-provenance attestations for all three release assets.
+GitHub/Sigstore build-provenance attestations for the archive, build metadata,
+and checksums. The updater verifies that bundle offline against the exact source
+commit, patch-branch ref, signer workflow, and GitHub-hosted runner policy.
 
 Normal scheduled runs require an `installed.json` written by a successful
 manual bootstrap. This prevents an unattended timer from changing the trusted
@@ -39,7 +42,10 @@ model name, timing, and fixed error classifications.
 
 ## Installation order
 
-Install the two executables, three units, and CPA drop-in. Then run:
+First run `install-gh-attestation-verifier` as root. It installs a pinned GitHub
+CLI 2.97.0 binary only after validating the official archive SHA-256 and the
+expected extracted binary SHA-256. Then install the two updater executables,
+three units, and CPA drop-in. Run:
 
 ```text
 systemctl daemon-reload
