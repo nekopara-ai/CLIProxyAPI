@@ -148,13 +148,19 @@ jobs:
           release_tag="v${release_version}"
           archive_name="CLIProxyAPI_${release_version}_linux_amd64.tar.gz"
 
-          existing_tag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${release_tag}" --jq .object.sha 2>/dev/null || true)"
+          existing_tag_sha=""
+          if existing_tag_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${release_tag}" 2>/dev/null)"; then
+            existing_tag_sha="$(jq -r .object.sha <<<"$existing_tag_json")"
+          fi
           if [[ -n "$existing_tag_sha" && "$existing_tag_sha" != "$source_sha" ]]; then
             echo "::error file=.github/workflows/patched-release.yml::Tag ${release_tag} points to ${existing_tag_sha}, expected ${source_sha}"
             exit 1
           fi
 
-          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${release_tag}" 2>/dev/null || true)"
+          release_json=""
+          if release_candidate="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${release_tag}" 2>/dev/null)"; then
+            release_json="$release_candidate"
+          fi
           already_released=false
           if [[ -n "$release_json" && "$existing_tag_sha" == "$source_sha" ]]; then
             if jq -e \
@@ -308,7 +314,10 @@ jobs:
           set -euo pipefail
 
           ref_path="repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}"
-          existing_sha="$(gh api "$ref_path" --jq .object.sha 2>/dev/null || true)"
+          existing_sha=""
+          if existing_ref_json="$(gh api "$ref_path" 2>/dev/null)"; then
+            existing_sha="$(jq -r .object.sha <<<"$existing_ref_json")"
+          fi
           if [[ -n "$existing_sha" && "$existing_sha" != "$SOURCE_SHA" ]]; then
             echo "Tag ${RELEASE_TAG} points to ${existing_sha}, expected ${SOURCE_SHA}" >&2
             exit 1
