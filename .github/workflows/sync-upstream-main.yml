@@ -109,8 +109,14 @@ jobs:
           release_tag="v${release_version}"
           archive_name="CLIProxyAPI_${release_version}_linux_amd64.tar.gz"
 
-          tag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${release_tag}" --jq .object.sha 2>/dev/null || true)"
-          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${release_tag}" 2>/dev/null || true)"
+          tag_sha=""
+          if tag_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${release_tag}" 2>/dev/null)"; then
+            tag_sha="$(jq -r .object.sha <<<"$tag_json")"
+          fi
+          release_json=""
+          if release_candidate="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${release_tag}" 2>/dev/null)"; then
+            release_json="$release_candidate"
+          fi
           needs_release=true
           if [[ "$tag_sha" == "$source_sha" && -n "$release_json" ]]; then
             if jq -e \
