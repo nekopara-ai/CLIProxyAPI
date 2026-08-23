@@ -4,6 +4,18 @@ This directory contains the production updater for the DMIT CLIProxyAPI service.
 It deliberately trusts only stable releases from `nekopara-ai/CLIProxyAPI` and
 does not use CLIProxyAPI's built-in upstream release source.
 
+For an already bootstrapped host, the repository-root `cliproxyapi-installer`
+is the stable manual entrypoint. It invokes the locally installed verified
+updater instead of downloading or installing an upstream binary directly:
+
+```text
+curl -fsSL https://raw.githubusercontent.com/nekopara-ai/CLIProxyAPI/main/cliproxyapi-installer | sudo bash
+```
+
+The manual entrypoint refuses to bootstrap an unknown host. Initial deployment
+must still follow the installation order below so the verifier, recovery latch,
+systemd units, probe, and approved state are established first.
+
 ## Release contract
 
 The latest release must use `vX.Y.Z-nekopara.N`, point to a lightweight commit
