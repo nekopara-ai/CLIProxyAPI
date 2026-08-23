@@ -124,7 +124,8 @@ jobs:
               '(.draft == false) and (.prerelease == false) and
                ([.assets[].name] | index($archive) != null) and
                ([.assets[].name] | index("checksums.txt") != null) and
-               ([.assets[].name] | index("build-info.json") != null)' \
+               ([.assets[].name] | index("build-info.json") != null) and
+               ([.assets[].name] | index("attestation.jsonl") != null)' \
               <<<"$release_json" >/dev/null; then
               needs_release=false
             fi
