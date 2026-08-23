@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+umask 077
+
+readonly UPDATE_SERVICE="cliproxyapi-fork-update.service"
+readonly UPDATE_TIMER="cliproxyapi-fork-update.timer"
+readonly CPA_SERVICE="cliproxyapi.service"
+readonly UPDATER="/usr/local/sbin/cliproxyapi-fork-update"
+readonly STATE_FILE="/var/lib/cliproxyapi-fork-updater/installed.json"
+readonly LIVE_BINARY="/root/cliproxyapi/cli-proxy-api"
+
+die() {
+  printf 'ERROR: %s\n' "$*" >&2
+  exit 1
+}
+
+require_root() {
+  if [[ "${EUID}" -ne 0 ]]; then
+    die "run this installer as root (for a pipe, use: curl -fsSL URL | sudo bash)"
+  fi
+}
+
+require_installed_control_plane() {
+  command -v systemctl >/dev/null 2>&1 || die "systemctl is required"
+  command -v jq >/dev/null 2>&1 || die "jq is required"
+  [[ -x "$UPDATER" ]] || die "verified fork updater is not installed: ${UPDATER}"
+  [[ -x "$LIVE_BINARY" ]] || die "CLIProxyAPI binary is not installed: ${LIVE_BINARY}"
+  systemctl cat "$UPDATE_SERVICE" >/dev/null 2>&1 || die "update service is not installed: ${UPDATE_SERVICE}"
+}
+
+print_status() {
+  local identity installed_tag installed_commit pid restarts
+  identity="$(cd /root/cliproxyapi && timeout 5 "$LIVE_BINARY" -h 2>&1 | sed -n '1p' || true)"
+  installed_tag="unknown"
+  installed_commit="unknown"
+  if [[ -s "$STATE_FILE" ]]; then
+    installed_tag="$(jq -r '.tag // "unknown"' "$STATE_FILE")"
+    installed_commit="$(jq -r '.source_commit // "unknown"' "$STATE_FILE")"
+  fi
+  pid="$(systemctl show "$CPA_SERVICE" -p MainPID --value)"
+  restarts="$(systemctl show "$CPA_SERVICE" -p NRestarts --value)"
+
+  printf '%s\n' "$identity"
+  printf 'installed_tag=%s source_commit=%s\n' "$installed_tag" "$installed_commit"
+  printf 'service=%s pid=%s nrestarts=%s\n' "$(systemctl is-active "$CPA_SERVICE" || true)" "$pid" "$restarts"
+  systemctl list-timers "$UPDATE_TIMER" --all --no-legend 2>/dev/null || true
+}
+
+manual_upgrade() {
+  systemctl is-active --quiet "$CPA_SERVICE" || die "${CPA_SERVICE} is not active"
+  if ! systemctl start "$UPDATE_SERVICE"; then
+    journalctl -u "$UPDATE_SERVICE" -n 40 --no-pager >&2 || true
+    die "verified fork upgrade failed; inspect the updater journal"
+  fi
+  [[ "$(systemctl show "$UPDATE_SERVICE" -p Result --value)" == "success" ]] || die "update service did not finish successfully"
+  systemctl is-active --quiet "$CPA_SERVICE" || die "${CPA_SERVICE} is not active after the upgrade"
+  print_status
+}
+
+main() {
+  require_root
+  require_installed_control_plane
+  case "${1:-upgrade}" in
+    install|upgrade)
+      manual_upgrade
+      ;;
+    check)
+      "$UPDATER" --check
+      ;;
+    status)
+      print_status
+      ;;
+    *)
+      die "usage: cliproxyapi-installer [install|upgrade|check|status]"
+      ;;
+  esac
+}
+
+main "$@"
