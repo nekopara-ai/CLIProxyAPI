@@ -5,6 +5,7 @@ on:
     branches:
       - main
     paths:
+      - .github/workflows/patched-release.yml
       - .github/workflows/sync-upstream-main.yml
   schedule:
     - cron: "23 */6 * * *"
