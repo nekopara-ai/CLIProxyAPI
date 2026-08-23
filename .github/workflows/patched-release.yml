@@ -322,6 +322,40 @@ jobs:
             ${{ github.workspace }}/dist/build-info.json
             ${{ github.workspace }}/dist/checksums.txt
 
+      - name: Verify release provenance
+        if: steps.metadata.outputs.already_released != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.metadata.outputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          signer_workflow="${GITHUB_REPOSITORY}/.github/workflows/patched-release.yml"
+          source_ref="refs/heads/${PATCH_BRANCH}"
+          for subject in \
+            "dist/${{ steps.metadata.outputs.archive_name }}" \
+            dist/build-info.json \
+            dist/checksums.txt; do
+            verified=false
+            for attempt in 1 2 3; do
+              if gh attestation verify "$subject" \
+                --repo "$GITHUB_REPOSITORY" \
+                --signer-workflow "$signer_workflow" \
+                --source-digest "$SOURCE_SHA" \
+                --source-ref "$source_ref" \
+                --deny-self-hosted-runners \
+                --format json >/dev/null; then
+                verified=true
+                break
+              fi
+              sleep "$((attempt * 3))"
+            done
+            if [[ "$verified" != "true" ]]; then
+              echo "Cryptographic provenance verification failed for ${subject}" >&2
+              exit 1
+            fi
+          done
+
   publish-release:
     needs: build-linux-amd64
     if: needs.build-linux-amd64.outputs.already_released != 'true'
