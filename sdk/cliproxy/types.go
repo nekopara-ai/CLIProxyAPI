@@ -101,13 +101,14 @@ type WatcherWrapper struct {
 	start func(ctx context.Context) error
 	stop  func() error
 
-	setConfig             func(cfg *config.Config)
-	snapshotAuths         func() []*coreauth.Auth
-	setUpdateQueue        func(queue chan<- watcher.AuthUpdate)
-	dispatchRuntimeUpdate func(update watcher.AuthUpdate) bool
-	dispatchPersistedAuth func(update watcher.AuthUpdate) bool
-	setPluginAuthParser   func(parser PluginAuthParser)
-	reloadConfigIfChanged func()
+	setConfig                        func(cfg *config.Config)
+	setOAuthModelAliasReloadCallback func(callback func(*config.Config))
+	snapshotAuths                    func() []*coreauth.Auth
+	setUpdateQueue                   func(queue chan<- watcher.AuthUpdate)
+	dispatchRuntimeUpdate            func(update watcher.AuthUpdate) bool
+	dispatchPersistedAuth            func(update watcher.AuthUpdate) bool
+	setPluginAuthParser              func(parser PluginAuthParser)
+	reloadConfigIfChanged            func()
 }
 
 // Start proxies to the underlying watcher Start implementation.
@@ -132,6 +133,15 @@ func (w *WatcherWrapper) SetConfig(cfg *config.Config) {
 		return
 	}
 	w.setConfig(cfg)
+}
+
+// SetOAuthModelAliasReloadCallback installs the no-executor-replacement path
+// for changes that affect only OAuth model aliases.
+func (w *WatcherWrapper) SetOAuthModelAliasReloadCallback(callback func(*config.Config)) {
+	if w == nil || w.setOAuthModelAliasReloadCallback == nil {
+		return
+	}
+	w.setOAuthModelAliasReloadCallback(callback)
 }
 
 // ReloadConfigIfChanged asks the underlying watcher to reload config from disk.

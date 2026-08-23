@@ -44,24 +44,28 @@ type Watcher struct {
 	serverUpdatePend  bool
 	stopped           atomic.Bool
 	reloadCallback    func(*config.Config)
-	watcher           *fsnotify.Watcher
-	lastAuthHashes    map[string]string
-	lastAuthContents  map[string]*coreauth.Auth
-	fileAuthsByPath   map[string]map[string]*coreauth.Auth
-	lastRemoveTimes   map[string]time.Time
-	lastConfigHash    string
-	authQueue         chan<- AuthUpdate
-	currentAuths      map[string]*coreauth.Auth
-	runtimeAuths      map[string]*coreauth.Auth
-	dispatchMu        sync.Mutex
-	dispatchCond      *sync.Cond
-	pendingUpdates    map[string]AuthUpdate
-	pendingOrder      []string
-	dispatchCancel    context.CancelFunc
-	storePersister    storePersister
-	pluginAuthParser  synthesizer.PluginAuthParser
-	mirroredAuthDir   string
-	oldConfigYaml     []byte
+	// oauthModelAliasReloadCallback handles alias-only config changes without
+	// rebuilding the client/auth runtime. It is optional so callers that only
+	// provide the legacy callback retain the full reload behavior.
+	oauthModelAliasReloadCallback func(*config.Config)
+	watcher                       *fsnotify.Watcher
+	lastAuthHashes                map[string]string
+	lastAuthContents              map[string]*coreauth.Auth
+	fileAuthsByPath               map[string]map[string]*coreauth.Auth
+	lastRemoveTimes               map[string]time.Time
+	lastConfigHash                string
+	authQueue                     chan<- AuthUpdate
+	currentAuths                  map[string]*coreauth.Auth
+	runtimeAuths                  map[string]*coreauth.Auth
+	dispatchMu                    sync.Mutex
+	dispatchCond                  *sync.Cond
+	pendingUpdates                map[string]AuthUpdate
+	pendingOrder                  []string
+	dispatchCancel                context.CancelFunc
+	storePersister                storePersister
+	pluginAuthParser              synthesizer.PluginAuthParser
+	mirroredAuthDir               string
+	oldConfigYaml                 []byte
 }
 
 // AuthUpdateAction represents the type of change detected in auth sources.
@@ -139,6 +143,19 @@ func (w *Watcher) SetConfig(cfg *config.Config) {
 	defer w.clientsMutex.Unlock()
 	w.config = cfg
 	w.oldConfigYaml, _ = yaml.Marshal(cfg)
+}
+
+// SetOAuthModelAliasReloadCallback registers the narrow config reload callback
+// used when OAuthModelAlias is the only changed field. The callback is invoked
+// with a freshly loaded config snapshot; all other config changes continue to
+// use the regular full-reload callback.
+func (w *Watcher) SetOAuthModelAliasReloadCallback(callback func(*config.Config)) {
+	if w == nil {
+		return
+	}
+	w.clientsMutex.Lock()
+	w.oauthModelAliasReloadCallback = callback
+	w.clientsMutex.Unlock()
 }
 
 // SetPluginAuthParser updates the plugin auth parser used for file auth synthesis.

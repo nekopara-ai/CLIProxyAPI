@@ -104,13 +104,14 @@ func (w *Watcher) reloadConfig() bool {
 			newConfig.AuthDir = resolvedAuthDir
 		}
 	}
-
 	w.clientsMutex.Lock()
 	var oldConfig *config.Config
 	_ = yaml.Unmarshal(w.oldConfigYaml, &oldConfig)
 	w.oldConfigYaml, _ = yaml.Marshal(newConfig)
 	w.config = newConfig
+	aliasReloadCallback := w.oauthModelAliasReloadCallback
 	w.clientsMutex.Unlock()
+	aliasOnlyChange := isOAuthModelAliasOnlyChange(oldConfig, newConfig)
 
 	var affectedOAuthProviders []string
 	if oldConfig != nil {
@@ -138,7 +139,28 @@ func (w *Watcher) reloadConfig() bool {
 	retryConfigChanged := oldConfig != nil && (oldConfig.RequestRetry != newConfig.RequestRetry || oldConfig.MaxRetryInterval != newConfig.MaxRetryInterval || oldConfig.MaxRetryCredentials != newConfig.MaxRetryCredentials)
 	forceAuthRefresh := oldConfig != nil && (oldConfig.ForceModelPrefix != newConfig.ForceModelPrefix || !reflect.DeepEqual(oldConfig.OAuthModelAlias, newConfig.OAuthModelAlias) || retryConfigChanged)
 
+	if aliasOnlyChange && aliasReloadCallback != nil {
+		log.Infof("config successfully reloaded, applying OAuth model aliases without client reload")
+		aliasReloadCallback(newConfig)
+		return true
+	}
+
 	log.Infof("config successfully reloaded, triggering client reload")
 	w.reloadClients(authDirChanged, affectedOAuthProviders, forceAuthRefresh)
 	return true
+}
+
+// isOAuthModelAliasOnlyChange reports whether the immutable config snapshots
+// differ in OAuthModelAlias and no other field. The watcher reconstructs its
+// old snapshot from oldConfigYaml, so this check is not affected by management
+// handlers sharing or mutating the live service config pointer.
+func isOAuthModelAliasOnlyChange(oldConfig, newConfig *config.Config) bool {
+	if oldConfig == nil || newConfig == nil || reflect.DeepEqual(oldConfig.OAuthModelAlias, newConfig.OAuthModelAlias) {
+		return false
+	}
+	oldComparable := *oldConfig
+	newComparable := *newConfig
+	oldComparable.OAuthModelAlias = nil
+	newComparable.OAuthModelAlias = nil
+	return reflect.DeepEqual(oldComparable, newComparable)
 }

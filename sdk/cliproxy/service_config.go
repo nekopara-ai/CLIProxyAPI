@@ -2,6 +2,7 @@ package cliproxy
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"time"
 
@@ -17,6 +18,92 @@ func (s *Service) applyConfigUpdate(newCfg *config.Config) {
 
 func (s *Service) applyWatcherConfigUpdate(newCfg *config.Config) {
 	s.applyConfigUpdateWithAuthSynthesis(context.Background(), newCfg, false)
+}
+
+// applyWatcherOAuthModelAliasUpdate applies an alias-only watcher update while
+// retaining all existing provider executors and their active sessions. The
+// service repeats the immutable-snapshot classification as a defense-in-depth
+// check: a caller must never reach this path with an unchanged alias or with a
+// second config field changed by a concurrent management update.
+func (s *Service) applyWatcherOAuthModelAliasUpdate(newCfg *config.Config) {
+	changedChannels, aliasOnly := s.oauthModelAliasOnlyChangeChannels(newCfg)
+	if !aliasOnly {
+		s.applyWatcherConfigUpdate(newCfg)
+		return
+	}
+
+	commit := s.commitConfigUpdate(newCfg)
+	if commit.cfg == nil {
+		return
+	}
+	s.configRuntimeMu.Lock()
+	defer s.configRuntimeMu.Unlock()
+	if !s.configCommitCurrent(commit) {
+		return
+	}
+	ctx := context.Background()
+	if !s.applyManagerConfig(ctx, commit) || !s.updateServerClientsContext(ctx, commit.cfg) {
+		return
+	}
+	registrationCtx := coreauth.WithSkipPersist(ctx)
+	s.syncPluginRuntimeConfigForConfig(registrationCtx, commit.cfg)
+	s.refreshModelsForOAuthModelAlias(registrationCtx, changedChannels)
+}
+
+func (s *Service) oauthModelAliasOnlyChangeChannels(newCfg *config.Config) (map[string]struct{}, bool) {
+	if s == nil || newCfg == nil {
+		return nil, false
+	}
+	s.cfgMu.RLock()
+	oldCfg := s.cfg
+	s.cfgMu.RUnlock()
+	if oldCfg == nil || reflect.DeepEqual(oldCfg.OAuthModelAlias, newCfg.OAuthModelAlias) {
+		return nil, false
+	}
+	oldComparable := *oldCfg
+	newComparable := *newCfg
+	oldComparable.OAuthModelAlias = nil
+	newComparable.OAuthModelAlias = nil
+	if !reflect.DeepEqual(oldComparable, newComparable) {
+		return nil, false
+	}
+	channels := make(map[string]struct{})
+	for channel, oldAliases := range oldCfg.OAuthModelAlias {
+		if !reflect.DeepEqual(oldAliases, newCfg.OAuthModelAlias[channel]) {
+			channels[channel] = struct{}{}
+		}
+	}
+	for channel, newAliases := range newCfg.OAuthModelAlias {
+		if !reflect.DeepEqual(newAliases, oldCfg.OAuthModelAlias[channel]) {
+			channels[channel] = struct{}{}
+		}
+	}
+	return channels, true
+}
+
+// refreshModelsForOAuthModelAlias updates model listings and routing metadata
+// for only the affected OAuth alias channels, without calling
+// ensureExecutorsForAuth or RegisterExecutor. This is the critical
+// no-disconnect property of alias-only configuration updates.
+func (s *Service) refreshModelsForOAuthModelAlias(ctx context.Context, changedChannels map[string]struct{}) {
+	if s == nil || s.coreManager == nil || (ctx != nil && ctx.Err() != nil) {
+		return
+	}
+	for _, auth := range s.coreManager.List() {
+		if auth == nil || auth.ID == "" {
+			continue
+		}
+		channel := coreauth.OAuthModelAliasChannel(auth.Provider, auth.AuthKind())
+		if _, changed := changedChannels[channel]; !changed {
+			continue
+		}
+		s.registerModelsForAuthWithCache(ctx, auth, nil)
+		s.coreManager.ReconcileRegistryModelStates(ctx, auth.ID)
+		if ctx != nil && ctx.Err() != nil {
+			return
+		}
+		s.coreManager.RefreshSchedulerEntry(auth.ID)
+	}
 }
 
 type configCommit struct {

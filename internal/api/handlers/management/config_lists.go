@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -1186,7 +1187,10 @@ func (h *Handler) DeleteOAuthExcludedModels(c *gin.Context) {
 
 // oauth-model-alias: map[string][]OAuthModelAlias
 func (h *Handler) GetOAuthModelAlias(c *gin.Context) {
-	c.JSON(200, gin.H{"oauth-model-alias": sanitizedOAuthModelAlias(h.cfg.OAuthModelAlias)})
+	h.mu.Lock()
+	aliases := sanitizedOAuthModelAlias(h.cfg.OAuthModelAlias)
+	h.mu.Unlock()
+	c.JSON(200, gin.H{"oauth-model-alias": aliases})
 }
 
 func (h *Handler) PutOAuthModelAlias(c *gin.Context) {
@@ -1206,8 +1210,14 @@ func (h *Handler) PutOAuthModelAlias(c *gin.Context) {
 		}
 		entries = wrapper.Items
 	}
-	h.cfg.OAuthModelAlias = sanitizedOAuthModelAlias(entries)
-	h.persist(c)
+	normalized := sanitizedOAuthModelAlias(entries)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if reflect.DeepEqual(sanitizedOAuthModelAlias(h.cfg.OAuthModelAlias), normalized) {
+		c.JSON(200, gin.H{"status": "ok"})
+		return
+	}
+	h.persistOAuthModelAliasLocked(c, normalized)
 }
 
 func (h *Handler) PatchOAuthModelAlias(c *gin.Context) {
@@ -1234,27 +1244,47 @@ func (h *Handler) PatchOAuthModelAlias(c *gin.Context) {
 
 	normalizedMap := sanitizedOAuthModelAlias(map[string][]config.OAuthModelAlias{channel: body.Aliases})
 	normalized := normalizedMap[channel]
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	aliases := sanitizedOAuthModelAlias(h.cfg.OAuthModelAlias)
 	if len(normalized) == 0 {
-		if h.cfg.OAuthModelAlias == nil {
+		if aliases == nil {
 			c.JSON(404, gin.H{"error": "channel not found"})
 			return
 		}
-		if _, ok := h.cfg.OAuthModelAlias[channel]; !ok {
+		if _, ok := aliases[channel]; !ok {
 			c.JSON(404, gin.H{"error": "channel not found"})
 			return
 		}
-		delete(h.cfg.OAuthModelAlias, channel)
-		if len(h.cfg.OAuthModelAlias) == 0 {
-			h.cfg.OAuthModelAlias = nil
+		delete(aliases, channel)
+		if len(aliases) == 0 {
+			aliases = nil
 		}
-		h.persist(c)
+		h.persistOAuthModelAliasLocked(c, aliases)
 		return
 	}
-	if h.cfg.OAuthModelAlias == nil {
-		h.cfg.OAuthModelAlias = make(map[string][]config.OAuthModelAlias)
+	if aliases == nil {
+		aliases = make(map[string][]config.OAuthModelAlias)
 	}
-	h.cfg.OAuthModelAlias[channel] = normalized
-	h.persist(c)
+	if reflect.DeepEqual(aliases[channel], normalized) {
+		c.JSON(200, gin.H{"status": "ok"})
+		return
+	}
+	aliases[channel] = normalized
+	h.persistOAuthModelAliasLocked(c, aliases)
+}
+
+// persistOAuthModelAliasLocked replaces the handler config with an independent
+// candidate before saving so shared runtime config remains unchanged until reload.
+// Callers must hold h.mu.
+func (h *Handler) persistOAuthModelAliasLocked(c *gin.Context, aliases map[string][]config.OAuthModelAlias) {
+	previous := h.cfg
+	candidate := previous.CloneForRuntime()
+	candidate.OAuthModelAlias = aliases
+	h.cfg = candidate
+	if !h.persistLocked(c) {
+		h.cfg = previous
+	}
 }
 
 func (h *Handler) DeleteOAuthModelAlias(c *gin.Context) {
@@ -1266,19 +1296,22 @@ func (h *Handler) DeleteOAuthModelAlias(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "missing channel"})
 		return
 	}
-	if h.cfg.OAuthModelAlias == nil {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	aliases := sanitizedOAuthModelAlias(h.cfg.OAuthModelAlias)
+	if aliases == nil {
 		c.JSON(404, gin.H{"error": "channel not found"})
 		return
 	}
-	if _, ok := h.cfg.OAuthModelAlias[channel]; !ok {
+	if _, ok := aliases[channel]; !ok {
 		c.JSON(404, gin.H{"error": "channel not found"})
 		return
 	}
-	delete(h.cfg.OAuthModelAlias, channel)
-	if len(h.cfg.OAuthModelAlias) == 0 {
-		h.cfg.OAuthModelAlias = nil
+	delete(aliases, channel)
+	if len(aliases) == 0 {
+		aliases = nil
 	}
-	h.persist(c)
+	h.persistOAuthModelAliasLocked(c, aliases)
 }
 
 // oauth-request-scoped-errors: map[string][]RequestScopedErrorRule
