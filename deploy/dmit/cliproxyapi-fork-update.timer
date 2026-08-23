@@ -1,0 +1,13 @@
+[Unit]
+Description=Check the verified CLIProxyAPI fork release every six hours
+
+[Timer]
+OnCalendar=*-*-* 00,06,12,18:45:00 UTC
+RandomizedDelaySec=10min
+FixedRandomDelay=yes
+Persistent=yes
+AccuracySec=1min
+Unit=cliproxyapi-fork-update.service
+
+[Install]
+WantedBy=timers.target
