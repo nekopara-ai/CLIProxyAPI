@@ -314,9 +314,11 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		switch eventType {
 		case "response.output_item.done":
 			collectCodexOutputItemDone(payload, outputItemsByIndex, &outputItemsFallback)
-		case "response.completed":
+		case "response.completed", "response.incomplete":
 			payload = patchCodexCompletedOutput(payload, outputItemsByIndex, outputItemsFallback)
-			cacheCodexReasoningReplayFromCompleted(replayScope, payload)
+			if eventType == "response.completed" {
+				cacheCodexReasoningReplayFromCompleted(replayScope, payload)
+			}
 			if detail, ok := helps.ParseCodexUsage(payload); ok {
 				reporter.Publish(ctx, detail)
 			}

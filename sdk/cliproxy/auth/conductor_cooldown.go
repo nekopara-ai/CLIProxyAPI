@@ -1335,6 +1335,12 @@ func isConnectionLifecycleError(err error) bool {
 	if err == nil {
 		return false
 	}
+	// Explicit executor markers may carry an HTTP-like status while still
+	// representing a transport lifecycle failure rather than an upstream response.
+	lifecycleErr, ok := errors.AsType[cliproxyexecutor.ConnectionLifecycleError](err)
+	if ok && lifecycleErr != nil && lifecycleErr.IsConnectionLifecycle() {
+		return true
+	}
 	// Typed WebSocket close codes are an unambiguous connection lifecycle signal.
 	var closeErr *websocket.CloseError
 	if errors.As(err, &closeErr) && closeErr != nil {

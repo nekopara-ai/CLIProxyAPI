@@ -26,14 +26,39 @@ import (
 // providers that require a browser-like TLS and HTTP/2 transport. Each request
 // gets a dedicated connection that is closed with the response body.
 type utlsRoundTripper struct {
-	dialer proxy.Dialer
+	dialer              proxy.Dialer
+	dialTimeout         time.Duration
+	tlsHandshakeTimeout time.Duration
 }
+
+const (
+	utlsDialTimeout         = 30 * time.Second
+	utlsTLSHandshakeTimeout = 10 * time.Second
+)
 
 type closeConnectionBody struct {
 	io.ReadCloser
 	closeConnection func() error
 	once            sync.Once
 	err             error
+}
+
+type onceCloseConn struct {
+	net.Conn
+	once sync.Once
+	err  error
+}
+
+func (c *onceCloseConn) Close() error {
+	if c == nil {
+		return nil
+	}
+	c.once.Do(func() {
+		if c.Conn != nil {
+			c.err = c.Conn.Close()
+		}
+	})
+	return c.err
 }
 
 func (b *closeConnectionBody) Close() error {
@@ -64,30 +89,109 @@ func newUtlsRoundTripper(proxyURL string) *utlsRoundTripper {
 			dialer = proxyDialer
 		}
 	}
-	return &utlsRoundTripper{dialer: dialer}
+	return &utlsRoundTripper{
+		dialer:              dialer,
+		dialTimeout:         utlsDialTimeout,
+		tlsHandshakeTimeout: utlsTLSHandshakeTimeout,
+	}
 }
 
-func (t *utlsRoundTripper) createConnection(ctx context.Context, host, addr string) (*http2.ClientConn, error) {
+func withUtlsStageTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
+func utlsStageContextError(ctx context.Context) error {
+	if errContext := ctx.Err(); errContext != nil {
+		return errContext
+	}
+	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+		return context.DeadlineExceeded
+	}
+	return nil
+}
+
+func closeUtlsConnection(conn net.Conn, stage string, stageErr error) error {
+	if conn == nil {
+		return fmt.Errorf("utls: %s: %w", stage, stageErr)
+	}
+	if errClose := conn.Close(); errClose != nil {
+		return fmt.Errorf("utls: %s: %w; close connection: %v", stage, stageErr, errClose)
+	}
+	return fmt.Errorf("utls: %s: %w", stage, stageErr)
+}
+
+func (t *utlsRoundTripper) dialConnection(ctx context.Context, addr string) (net.Conn, error) {
 	contextDialer, ok := t.dialer.(proxy.ContextDialer)
 	if !ok {
 		return nil, fmt.Errorf("utls: dialer does not support context cancellation")
 	}
-	conn, errDial := contextDialer.DialContext(ctx, "tcp", addr)
+
+	dialCtx, cancelDial := withUtlsStageTimeout(ctx, t.dialTimeout)
+	defer cancelDial()
+
+	conn, errDial := contextDialer.DialContext(dialCtx, "tcp", addr)
+	if conn != nil {
+		conn = &onceCloseConn{Conn: conn}
+	}
 	if errDial != nil {
-		return nil, fmt.Errorf("utls: dial upstream: %w", errDial)
+		if errContext := utlsStageContextError(dialCtx); errContext != nil {
+			errDial = errContext
+		}
+		return nil, closeUtlsConnection(conn, "dial upstream", errDial)
+	}
+	if errContext := utlsStageContextError(dialCtx); errContext != nil {
+		return nil, closeUtlsConnection(conn, "dial upstream", errContext)
+	}
+	return conn, nil
+}
+
+func runUtlsConnectionStage(ctx context.Context, conn net.Conn, timeout time.Duration, stage func(context.Context) error) error {
+	stageCtx, cancelStage := withUtlsStageTimeout(ctx, timeout)
+	defer cancelStage()
+
+	if deadline, ok := stageCtx.Deadline(); ok {
+		if errDeadline := conn.SetDeadline(deadline); errDeadline != nil {
+			return fmt.Errorf("set connection deadline: %w", errDeadline)
+		}
+	}
+
+	cancelDone := make(chan struct{})
+	stopCancel := context.AfterFunc(stageCtx, func() {
+		_ = conn.SetDeadline(time.Now())
+		close(cancelDone)
+	})
+	errStage := stage(stageCtx)
+	if !stopCancel() {
+		<-cancelDone
+	}
+
+	if errContext := utlsStageContextError(stageCtx); errContext != nil {
+		return errContext
+	}
+	if errStage != nil {
+		return errStage
+	}
+	if errDeadline := conn.SetDeadline(time.Time{}); errDeadline != nil {
+		return fmt.Errorf("clear connection deadline: %w", errDeadline)
+	}
+	return nil
+}
+
+func (t *utlsRoundTripper) createConnection(ctx context.Context, host, addr string) (*http2.ClientConn, error) {
+	conn, errDial := t.dialConnection(ctx, addr)
+	if errDial != nil {
+		return nil, errDial
 	}
 
 	tlsConfig := &tls.Config{ServerName: host}
 	tlsConn := tls.UClient(conn, tlsConfig, tls.HelloChrome_Auto)
 
-	if errHandshake := tlsConn.HandshakeContext(ctx); errHandshake != nil {
-		if errors.Is(errHandshake, context.Canceled) || errors.Is(errHandshake, context.DeadlineExceeded) {
-			return nil, fmt.Errorf("utls: TLS handshake: %w", errHandshake)
-		}
-		if errClose := conn.Close(); errClose != nil {
-			return nil, fmt.Errorf("utls: TLS handshake: %w; close connection: %v", errHandshake, errClose)
-		}
-		return nil, fmt.Errorf("utls: TLS handshake: %w", errHandshake)
+	errHandshake := runUtlsConnectionStage(ctx, conn, t.tlsHandshakeTimeout, tlsConn.HandshakeContext)
+	if errHandshake != nil {
+		return nil, closeUtlsConnection(conn, "TLS handshake", errHandshake)
 	}
 
 	tr := &http2.Transport{}

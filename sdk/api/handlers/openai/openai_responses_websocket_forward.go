@@ -50,6 +50,39 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 	if c != nil && c.Request != nil {
 		downstreamSessionKey = websocketDownstreamSessionKey(c.Request)
 	}
+	forwardStreamError := func(errMsg *interfaces.ErrorMessage) (*interfaces.ErrorMessage, error) {
+		if errMsg == nil {
+			cancel(nil)
+			return nil, nil
+		}
+
+		h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), errMsg)
+		if opts.suppressError != nil && opts.suppressError(errMsg) {
+			cancel(errMsg.Error)
+			return errMsg, nil
+		}
+		markAPIResponseTimestamp(c)
+		if matched, errClose := writer.closeForUpstreamError(errMsg.Error); matched {
+			cancel(errMsg.Error)
+			if errClose != nil {
+				return errMsg, errClose
+			}
+			return errMsg, websocket.ErrCloseSent
+		}
+
+		errorPayload, wrote, errTerminate := writeResponsesWebsocketTerminalError(writer, wsTimelineLog, errMsg, nil)
+		if wrote {
+			log.Infof(
+				"responses websocket: downstream_out id=%s type=%d event=%s payload=%s",
+				sessionID,
+				websocket.TextMessage,
+				websocketPayloadEventType(errorPayload),
+				websocketPayloadPreview(errorPayload),
+			)
+		}
+		cancel(errMsg.Error)
+		return errMsg, errTerminate
+	}
 
 	for {
 		select {
@@ -61,40 +94,26 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 				errs = nil
 				continue
 			}
-			if errMsg == nil {
-				cancel(nil)
-				return completedOutput, completedResponseID, sortedStringSet(pendingToolCallIDs), nil, nil
-			}
-
-			h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), errMsg)
-			if opts.suppressError != nil && opts.suppressError(errMsg) {
-				cancel(errMsg.Error)
-				return completedOutput, completedResponseID, sortedStringSet(pendingToolCallIDs), errMsg, nil
-			}
-			markAPIResponseTimestamp(c)
-			if matched, errClose := writer.closeForUpstreamError(errMsg.Error); matched {
-				cancel(errMsg.Error)
-				if errClose != nil {
-					return completedOutput, completedResponseID, sortedStringSet(pendingToolCallIDs), errMsg, errClose
-				}
-				return completedOutput, completedResponseID, sortedStringSet(pendingToolCallIDs), errMsg, websocket.ErrCloseSent
-			}
-
-			errorPayload, wrote, errTerminate := writeResponsesWebsocketTerminalError(writer, wsTimelineLog, errMsg, nil)
-			if wrote {
-				log.Infof(
-					"responses websocket: downstream_out id=%s type=%d event=%s payload=%s",
-					sessionID,
-					websocket.TextMessage,
-					websocketPayloadEventType(errorPayload),
-					websocketPayloadPreview(errorPayload),
-				)
-			}
-			cancel(errMsg.Error)
-			return completedOutput, completedResponseID, sortedStringSet(pendingToolCallIDs), errMsg, errTerminate
+			forwardErrMsg, errTerminate := forwardStreamError(errMsg)
+			return completedOutput, completedResponseID, sortedStringSet(pendingToolCallIDs), forwardErrMsg, errTerminate
 		case chunk, ok := <-data:
 			if !ok {
 				if !completed {
+					// The execution bridge queues a terminal stream error before closing
+					// both channels. If select observes the closed data channel first,
+					// preserve that typed error instead of misclassifying it as a
+					// missing-terminal EOF and silently closing with 1006.
+					if errs != nil {
+						select {
+						case errMsg, okErr := <-errs:
+							if okErr {
+								forwardErrMsg, errTerminate := forwardStreamError(errMsg)
+								return completedOutput, completedResponseID, sortedStringSet(pendingToolCallIDs), forwardErrMsg, errTerminate
+							}
+							errs = nil
+						default:
+						}
+					}
 					errMsg := &interfaces.ErrorMessage{
 						StatusCode: http.StatusRequestTimeout,
 						Error:      fmt.Errorf("stream closed before response.completed"),

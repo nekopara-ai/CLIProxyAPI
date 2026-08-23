@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
 func TestManager_MarkResult_ConnectionLifecycleDoesNotCooldown(t *testing.T) {
@@ -297,6 +298,33 @@ func TestIsConnectionLifecycleError_TypedCloseWins(t *testing.T) {
 	assertNoCooldown(t, m, auth.ID, model)
 }
 
+func TestIsConnectionLifecycleError_ExplicitMarkerWinsOverStatus(t *testing.T) {
+	err := &markedStatusLifecycleError{
+		status: http.StatusRequestTimeout,
+		msg:    "stream closed before response.completed",
+	}
+	if !isConnectionLifecycleError(err) {
+		t.Fatal("explicit lifecycle marker should win over its HTTP-like status")
+	}
+	if isRequestInvalidError(err) {
+		t.Fatal("lifecycle marker must not stop credential fallback")
+	}
+
+	got := resultErrorFromError(err)
+	if got.Code != connectionLifecycleErrorCode {
+		t.Fatalf("code = %q, want %q", got.Code, connectionLifecycleErrorCode)
+	}
+	if got.HTTPStatus != http.StatusRequestTimeout {
+		t.Fatalf("HTTP status = %d, want %d", got.HTTPStatus, http.StatusRequestTimeout)
+	}
+	if got.IsRequestScoped() {
+		t.Fatal("explicit lifecycle marker became request-scoped")
+	}
+	if !shouldSkipCredentialCooldown(got) {
+		t.Fatalf("shouldSkipCredentialCooldown(%#v) = false, want true", got)
+	}
+}
+
 type statusBearingError struct {
 	status int
 	msg    string
@@ -318,6 +346,17 @@ func (e *statusBearingCloseError) Error() string {
 }
 func (e *statusBearingCloseError) StatusCode() int { return e.status }
 func (e *statusBearingCloseError) Unwrap() error   { return e.close }
+
+type markedStatusLifecycleError struct {
+	status int
+	msg    string
+}
+
+func (e *markedStatusLifecycleError) Error() string               { return e.msg }
+func (e *markedStatusLifecycleError) StatusCode() int             { return e.status }
+func (e *markedStatusLifecycleError) IsConnectionLifecycle() bool { return true }
+
+var _ cliproxyexecutor.ConnectionLifecycleError = (*markedStatusLifecycleError)(nil)
 
 func assertNoCooldown(t *testing.T, m *Manager, authID, model string) {
 	t.Helper()

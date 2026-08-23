@@ -29,6 +29,21 @@ func (codexIncompleteStreamError) IsRequestScoped() bool {
 	return true
 }
 
+type codexPrecommitIncompleteStreamError struct {
+	statusErr
+}
+
+func newCodexPrecommitIncompleteStreamError() codexPrecommitIncompleteStreamError {
+	return codexPrecommitIncompleteStreamError{statusErr: statusErr{
+		code: http.StatusRequestTimeout,
+		msg:  codexIncompleteStreamMessage,
+	}}
+}
+
+func (codexPrecommitIncompleteStreamError) IsConnectionLifecycle() bool {
+	return true
+}
+
 // Streamed Codex responses may emit response.output_item.done events while leaving
 // response.completed.response.output empty. Keep the stream path aligned with the
 // already-patched non-stream path by reconstructing response.output from those items.

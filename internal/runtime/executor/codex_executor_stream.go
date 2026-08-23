@@ -248,7 +248,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
-			streamErr := newCodexIncompleteStreamError()
+			streamErr := newCodexPrecommitIncompleteStreamError()
 			helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
 			reporter.PublishFailure(ctx, streamErr)
 			return nil, streamErr

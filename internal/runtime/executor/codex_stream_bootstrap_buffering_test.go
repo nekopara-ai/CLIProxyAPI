@@ -3,14 +3,17 @@ package executor
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/translator"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -247,6 +250,236 @@ func TestCodexExecutor_BootstrapBuffering_ContextCancelDuringBootstrap(t *testin
 	if !strings.Contains(err.Error(), context.Canceled.Error()) {
 		t.Fatalf("expected the context cancellation to surface, got: %v", err)
 	}
+}
+
+func TestCodexExecutor_BootstrapBuffering_CleanEOFBeforeOutputIsLifecycle408(t *testing.T) {
+	server := codexSSEServer(codexCreatedEvent, codexInProgressEvent)
+	defer server.Close()
+
+	req, opts := codexTestRequest()
+	result, err := NewCodexExecutor(codexBufferingConfig(true)).ExecuteStream(context.Background(), codexTestAuth(server.URL), req, opts)
+	if err == nil {
+		t.Fatal("expected clean EOF before generated output to fail the uncommitted attempt")
+	}
+	if result != nil {
+		t.Fatal("expected nil result so buffered handshake metadata cannot reach the client")
+	}
+	if got := statusCodeFromTestError(t, err); got != http.StatusRequestTimeout {
+		t.Fatalf("status code = %d, want %d", got, http.StatusRequestTimeout)
+	}
+
+	var lifecycleErr cliproxyexecutor.ConnectionLifecycleError
+	if !errors.As(err, &lifecycleErr) || lifecycleErr == nil || !lifecycleErr.IsConnectionLifecycle() {
+		t.Fatalf("error type = %T, want a connection lifecycle marker", err)
+	}
+	var requestScopedErr cliproxyexecutor.RequestScopedError
+	if errors.As(err, &requestScopedErr) {
+		t.Fatalf("precommit EOF error type = %T, must not be request-scoped", err)
+	}
+}
+
+func TestCodexExecutor_CleanEOFWithBufferingDisabledStaysRequestScopedInStream(t *testing.T) {
+	server := codexSSEServer(codexCreatedEvent, codexInProgressEvent)
+	defer server.Close()
+
+	req, opts := codexTestRequest()
+	result, err := NewCodexExecutor(codexBufferingConfig(false)).ExecuteStream(context.Background(), codexTestAuth(server.URL), req, opts)
+	if err != nil {
+		t.Fatalf("default unbuffered EOF must not fail synchronously: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected stream result while buffering is disabled")
+	}
+	_, streamErr := drainChunks(result)
+	assertRequestScopedIncompleteStreamError(t, streamErr)
+}
+
+func TestCodexExecutor_BootstrapBuffering_CleanEOFAfterOutputStaysRequestScopedInStream(t *testing.T) {
+	server := codexSSEServer(codexCreatedEvent, codexInProgressEvent, codexOutputAddedEvent)
+	defer server.Close()
+
+	req, opts := codexTestRequest()
+	result, err := NewCodexExecutor(codexBufferingConfig(true)).ExecuteStream(context.Background(), codexTestAuth(server.URL), req, opts)
+	if err != nil {
+		t.Fatalf("postcommit EOF must not fail synchronously: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected stream result after the first generated output event")
+	}
+	combined, streamErr := drainChunks(result)
+	if !strings.Contains(combined, "response.output_item.added") {
+		t.Fatalf("generated output event was not delivered before EOF: %s", combined)
+	}
+	assertRequestScopedIncompleteStreamError(t, streamErr)
+}
+
+func assertRequestScopedIncompleteStreamError(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected an incomplete-stream error")
+	}
+	if got := statusCodeFromTestError(t, err); got != http.StatusRequestTimeout {
+		t.Fatalf("status code = %d, want %d", got, http.StatusRequestTimeout)
+	}
+	var requestScopedErr cliproxyexecutor.RequestScopedError
+	if !errors.As(err, &requestScopedErr) || requestScopedErr == nil || !requestScopedErr.IsRequestScoped() {
+		t.Fatalf("error type = %T, want request-scoped marker", err)
+	}
+	var lifecycleErr cliproxyexecutor.ConnectionLifecycleError
+	if errors.As(err, &lifecycleErr) {
+		t.Fatalf("committed EOF error type = %T, must not carry a lifecycle retry marker", err)
+	}
+}
+
+func TestCodexManager_BootstrapBuffering_PrecommitEOFFailsOverWithoutCooling(t *testing.T) {
+	var firstCalls atomic.Int32
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		firstCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeCodexSSETestEvent(w, codexCreatedEvent)
+		writeCodexSSETestEvent(w, codexInProgressEvent)
+	}))
+	defer first.Close()
+
+	var secondCalls atomic.Int32
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		secondCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeCodexSSETestEvent(w, codexCreatedEvent)
+		writeCodexSSETestEvent(w, codexOutputAddedEvent)
+		writeCodexSSETestEvent(w, codexCompletedEventBody)
+	}))
+	defer second.Close()
+
+	manager, firstAuth := newCodexEOFTestManager(t, "codex-precommit-eof", true, first.URL, second.URL)
+	req, opts := codexTestRequest()
+	result, err := manager.ExecuteStream(context.Background(), []string{"codex"}, req, opts)
+	if err != nil {
+		t.Fatalf("precommit EOF did not fail over to the second credential: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected stream result from the second credential")
+	}
+	combined, streamErr := drainChunks(result)
+	if streamErr != nil {
+		t.Fatalf("second credential stream error: %v", streamErr)
+	}
+	if !strings.Contains(combined, "response.completed") {
+		t.Fatalf("second credential did not complete the stream: %s", combined)
+	}
+	if got := firstCalls.Load(); got != 1 {
+		t.Fatalf("first credential calls = %d, want 1", got)
+	}
+	if got := secondCalls.Load(); got != 1 {
+		t.Fatalf("second credential calls = %d, want 1", got)
+	}
+
+	firstState, ok := manager.GetByID(firstAuth.ID)
+	if !ok || firstState == nil {
+		t.Fatal("first credential is no longer registered")
+	}
+	if firstState.Unavailable || !firstState.NextRetryAfter.IsZero() {
+		t.Fatalf("connection lifecycle failure cooled credential: unavailable=%v next_retry_after=%v", firstState.Unavailable, firstState.NextRetryAfter)
+	}
+	if state := firstState.ModelStates[req.Model]; state != nil && (state.Unavailable || !state.NextRetryAfter.IsZero()) {
+		t.Fatalf("connection lifecycle failure cooled model: unavailable=%v next_retry_after=%v", state.Unavailable, state.NextRetryAfter)
+	}
+}
+
+func TestCodexManager_BootstrapBuffering_PostcommitEOFDoesNotTrySecondCredential(t *testing.T) {
+	var firstCalls atomic.Int32
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		firstCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeCodexSSETestEvent(w, codexCreatedEvent)
+		writeCodexSSETestEvent(w, codexOutputAddedEvent)
+	}))
+	defer first.Close()
+
+	var secondCalls atomic.Int32
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		secondCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeCodexSSETestEvent(w, codexCreatedEvent)
+		writeCodexSSETestEvent(w, codexOutputAddedEvent)
+		writeCodexSSETestEvent(w, codexCompletedEventBody)
+	}))
+	defer second.Close()
+
+	manager, _ := newCodexEOFTestManager(t, "codex-postcommit-eof", true, first.URL, second.URL)
+	req, opts := codexTestRequest()
+	result, err := manager.ExecuteStream(context.Background(), []string{"codex"}, req, opts)
+	if err != nil {
+		t.Fatalf("postcommit EOF must be returned through the selected stream: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected committed stream from the first credential")
+	}
+	combined, streamErr := drainChunks(result)
+	if !strings.Contains(combined, "response.output_item.added") {
+		t.Fatalf("first credential output was not delivered: %s", combined)
+	}
+	assertRequestScopedIncompleteStreamError(t, streamErr)
+	if got := firstCalls.Load(); got != 1 {
+		t.Fatalf("first credential calls = %d, want 1", got)
+	}
+	if got := secondCalls.Load(); got != 0 {
+		t.Fatalf("second credential calls = %d, want 0 after output was committed", got)
+	}
+}
+
+func writeCodexSSETestEvent(w http.ResponseWriter, event string) {
+	eventType := "message"
+	if parsed := strings.SplitN(event, `"type":"`, 2); len(parsed) == 2 {
+		eventType = strings.SplitN(parsed[1], `"`, 2)[0]
+	}
+	_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventType, event)
+}
+
+func newCodexEOFTestManager(t *testing.T, idPrefix string, buffering bool, firstURL, secondURL string) (*cliproxyauth.Manager, *cliproxyauth.Auth) {
+	t.Helper()
+
+	manager := cliproxyauth.NewManager(nil, nil, nil)
+	manager.SetRetryConfig(0, 0, 2)
+	manager.RegisterExecutor(NewCodexExecutor(codexBufferingConfig(buffering)))
+
+	auths := []*cliproxyauth.Auth{
+		{
+			ID:       idPrefix + "-a",
+			Provider: "codex",
+			Status:   cliproxyauth.StatusActive,
+			Attributes: map[string]string{
+				"api_key":  "test-a",
+				"base_url": firstURL,
+				"priority": "100",
+			},
+		},
+		{
+			ID:       idPrefix + "-b",
+			Provider: "codex",
+			Status:   cliproxyauth.StatusActive,
+			Attributes: map[string]string{
+				"api_key":  "test-b",
+				"base_url": secondURL,
+				"priority": "90",
+			},
+		},
+	}
+
+	modelRegistry := registry.GetGlobalRegistry()
+	for _, auth := range auths {
+		modelRegistry.RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "gpt-5.6-terra"}})
+		if _, err := manager.Register(context.Background(), auth); err != nil {
+			t.Fatalf("register auth %s: %v", auth.ID, err)
+		}
+	}
+	t.Cleanup(func() {
+		for _, auth := range auths {
+			modelRegistry.UnregisterClient(auth.ID)
+		}
+	})
+
+	return manager, auths[0]
 }
 
 func TestCodexWebsocketsExecutor_BootstrapBuffering_OverloadFailsAttempt(t *testing.T) {

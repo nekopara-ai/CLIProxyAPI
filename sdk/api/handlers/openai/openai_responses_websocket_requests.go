@@ -15,6 +15,8 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+const responsesWebsocketCanonicalReplayMaxBytes = 8 << 20
+
 func normalizeResponsesWebsocketRequest(rawJSON []byte, lastRequest []byte, lastResponseOutput []byte) ([]byte, []byte, *interfaces.ErrorMessage) {
 	return normalizeResponsesWebsocketRequestWithMode(rawJSON, lastRequest, lastResponseOutput, true, true)
 }
@@ -45,6 +47,110 @@ func normalizeResponsesWebsocketRequestWithIncrementalState(rawJSON []byte, last
 			Error:      fmt.Errorf("unsupported websocket request type: %s", requestType),
 		}
 	}
+}
+
+// prepareResponsesWebsocketCanonicalReplay builds an owned, self-contained
+// request that can be sent over HTTP if the current upstream websocket is lost.
+// A dependent turn is replayable only when the handler has a complete prior
+// transcript and the client proves that it is extending that exact response.
+func prepareResponsesWebsocketCanonicalReplay(rawJSON []byte, lastRequest []byte, lastResponseOutput []byte, lastResponseID string, lastResponsePendingToolCallIDs []string, canonicalStateComplete bool, allowCompactionReplayBypass bool) ([]byte, []byte, bool) {
+	if !json.Valid(rawJSON) || !responsesWebsocketCanonicalReplayWithinLimit(rawJSON) {
+		return nil, nil, false
+	}
+	requestRoot := util.ParseGJSONBytesNoCopy(rawJSON)
+	if !requestRoot.IsObject() {
+		return nil, nil, false
+	}
+
+	requestType := strings.TrimSpace(requestRoot.Get("type").String())
+	requestRequiresPriorState := requestType == wsRequestTypeAppend || strings.TrimSpace(requestRoot.Get("previous_response_id").String()) != ""
+	if !requestRequiresPriorState {
+		if requestType != wsRequestTypeCreate {
+			return nil, nil, false
+		}
+		normalized, nextLastRequest, errMsg := normalizeResponsesWebsocketRequestWithIncrementalState(
+			rawJSON,
+			nil,
+			[]byte("[]"),
+			"",
+			nil,
+			false,
+			false,
+		)
+		if errMsg != nil || !responsesWebsocketCanonicalRequestValid(normalized) || !responsesWebsocketCanonicalReplayWithinLimit(normalized) {
+			return nil, nil, false
+		}
+		return normalized, nextLastRequest, true
+	}
+
+	if !canonicalStateComplete || !responsesWebsocketCanonicalRequestValid(lastRequest) ||
+		!json.Valid(lastResponseOutput) || !util.ParseGJSONBytesNoCopy(lastResponseOutput).IsArray() ||
+		!responsesWebsocketCanonicalReplayWithinLimit(lastRequest, lastResponseOutput, rawJSON) {
+		return nil, nil, false
+	}
+	lastResponseID = strings.TrimSpace(lastResponseID)
+	if lastResponseID == "" {
+		return nil, nil, false
+	}
+	if previousResponseID := strings.TrimSpace(requestRoot.Get("previous_response_id").String()); previousResponseID != "" && previousResponseID != lastResponseID {
+		return nil, nil, false
+	}
+
+	requestInput := requestRoot.Get("input")
+	if !requestInput.Exists() || !requestInput.IsArray() || !inputSatisfiesPendingToolCalls(requestInput, lastResponsePendingToolCallIDs) {
+		return nil, nil, false
+	}
+	for _, item := range requestInput.Array() {
+		if strings.TrimSpace(item.Get("type").String()) == "compaction_trigger" {
+			return nil, nil, false
+		}
+	}
+	if inputContainsFullTranscript(requestInput) && !allowCompactionReplayBypass {
+		return nil, nil, false
+	}
+	lastModel := strings.TrimSpace(util.ParseGJSONBytesNoCopy(lastRequest).Get("model").String())
+	if requestRoot.Get("model").Exists() {
+		requestModel := strings.TrimSpace(requestRoot.Get("model").String())
+		if requestModel == "" || requestModel != lastModel {
+			return nil, nil, false
+		}
+	}
+
+	normalized, nextLastRequest, errMsg := normalizeResponsesWebsocketRequestWithIncrementalState(
+		rawJSON,
+		lastRequest,
+		lastResponseOutput,
+		lastResponseID,
+		lastResponsePendingToolCallIDs,
+		false,
+		allowCompactionReplayBypass,
+	)
+	if errMsg != nil || !responsesWebsocketCanonicalRequestValid(normalized) || !responsesWebsocketCanonicalReplayWithinLimit(normalized) {
+		return nil, nil, false
+	}
+	if gjson.GetBytes(normalized, "previous_response_id").Exists() || gjson.GetBytes(normalized, "type").Exists() {
+		return nil, nil, false
+	}
+	return normalized, nextLastRequest, true
+}
+
+func responsesWebsocketCanonicalRequestValid(requestJSON []byte) bool {
+	if !json.Valid(requestJSON) {
+		return false
+	}
+	root := util.ParseGJSONBytesNoCopy(requestJSON)
+	return root.IsObject() && strings.TrimSpace(root.Get("model").String()) != "" && root.Get("input").IsArray()
+}
+
+func responsesWebsocketCanonicalReplayWithinLimit(parts ...[]byte) bool {
+	total := 0
+	for _, part := range parts {
+		if len(part) > responsesWebsocketCanonicalReplayMaxBytes-total {
+			return false
+		}
+		total += len(part)
+	}
+	return true
 }
 
 func normalizeResponseCreateRequest(rawJSON []byte) ([]byte, []byte, *interfaces.ErrorMessage) {

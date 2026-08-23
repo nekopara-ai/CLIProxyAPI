@@ -218,7 +218,7 @@ func websocketPayloadPreview(payload []byte) string {
 }
 
 func isResponsesWebsocketCompletionEvent(eventType string) bool {
-	return eventType == wsEventTypeCompleted || eventType == wsEventTypeDone
+	return eventType == wsEventTypeCompleted || eventType == wsEventTypeDone || eventType == "response.incomplete"
 }
 
 type responsesWebsocketPayloadError struct {
