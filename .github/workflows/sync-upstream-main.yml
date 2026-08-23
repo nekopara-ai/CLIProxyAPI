@@ -11,6 +11,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: write
   contents: write
 
 concurrency:
@@ -21,7 +22,9 @@ jobs:
   sync:
     if: github.repository == 'nekopara-ai/CLIProxyAPI'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
+    env:
+      PATCH_BRANCH: codex/cpa-transport-effective-tier
     steps:
       - name: Sync main from upstream
         env:
@@ -33,3 +36,104 @@ jobs:
             -H "X-GitHub-Api-Version: 2026-03-10" \
             "repos/${GITHUB_REPOSITORY}/merge-upstream" \
             -f branch=main
+
+      - name: Checkout patched release branch
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ env.PATCH_BRANCH }}
+          fetch-depth: 0
+
+      - name: Merge synchronized main into patched release branch
+        id: merge-patched
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch --no-tags origin main
+
+          if git merge-base --is-ancestor origin/main HEAD; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "${PATCH_BRANCH} already contains origin/main"
+            exit 0
+          fi
+
+          if ! git merge --no-edit origin/main; then
+            echo "Automatic merge into ${PATCH_BRANCH} has conflicts:" >&2
+            git diff --name-only --diff-filter=U >&2 || true
+            git merge --abort || true
+            exit 1
+          fi
+
+          git push origin "HEAD:refs/heads/${PATCH_BRANCH}"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve patched release state
+        id: release-state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_REPOSITORY: router-for-me/CLIProxyAPI
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          source_sha="$(git rev-parse HEAD)"
+          main_sha="$(git rev-parse origin/main)"
+          if ! git merge-base --is-ancestor "$main_sha" "$source_sha"; then
+            echo "Patched source ${source_sha} does not contain main ${main_sha}" >&2
+            exit 1
+          fi
+
+          upstream_tag="$(gh api "repos/${UPSTREAM_REPOSITORY}/releases/latest" --jq .tag_name)"
+          if [[ ! "$upstream_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Unexpected upstream release tag: ${upstream_tag}" >&2
+            exit 1
+          fi
+          git fetch --no-tags \
+            "https://github.com/${UPSTREAM_REPOSITORY}.git" \
+            "refs/tags/${upstream_tag}:refs/tags/${upstream_tag}"
+          upstream_commit="$(git rev-list -n 1 "$upstream_tag")"
+          if ! git merge-base --is-ancestor "$upstream_commit" "$source_sha"; then
+            echo "Patched source does not contain upstream release ${upstream_tag}" >&2
+            exit 1
+          fi
+
+          patch_revision="$(git rev-list --count "${upstream_commit}..${source_sha}")"
+          if [[ ! "$patch_revision" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Invalid patch revision: ${patch_revision}" >&2
+            exit 1
+          fi
+          release_version="${upstream_tag#v}-nekopara.${patch_revision}"
+          release_tag="v${release_version}"
+          archive_name="CLIProxyAPI_${release_version}_linux_amd64.tar.gz"
+
+          tag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${release_tag}" --jq .object.sha 2>/dev/null || true)"
+          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${release_tag}" 2>/dev/null || true)"
+          needs_release=true
+          if [[ "$tag_sha" == "$source_sha" && -n "$release_json" ]]; then
+            if jq -e \
+              --arg archive "$archive_name" \
+              '(.draft == false) and (.prerelease == false) and
+               ([.assets[].name] | index($archive) != null) and
+               ([.assets[].name] | index("checksums.txt") != null)' \
+              <<<"$release_json" >/dev/null; then
+              needs_release=false
+            fi
+          fi
+
+          echo "main_sha=${main_sha}" >> "$GITHUB_OUTPUT"
+          echo "needs_release=${needs_release}" >> "$GITHUB_OUTPUT"
+          echo "release_tag=${release_tag}" >> "$GITHUB_OUTPUT"
+          echo "source_sha=${source_sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch patched binary release
+        if: steps.release-state.outputs.needs_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run patched-release.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$PATCH_BRANCH" \
+            -f source_sha="${{ steps.release-state.outputs.source_sha }}" \
+            -f main_sha="${{ steps.release-state.outputs.main_sha }}"
