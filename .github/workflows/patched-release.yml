@@ -1,0 +1,330 @@
+name: patched-release
+
+on:
+  push:
+    branches:
+      - codex/cpa-transport-effective-tier
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact patched branch commit to build
+        required: false
+        type: string
+      main_sha:
+        description: Exact synchronized main commit contained by source_sha
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: patched-release
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.26.4"
+  GO_LINUX_AMD64_SHA256: "1153d3d50e0ac764b447adfe05c2bcf08e889d42a02e0fe0259bd47f6733ad7f"
+  PATCH_BRANCH: codex/cpa-transport-effective-tier
+  UPSTREAM_REPOSITORY: router-for-me/CLIProxyAPI
+
+jobs:
+  build-linux-amd64:
+    if: >-
+      github.repository == 'nekopara-ai/CLIProxyAPI' &&
+      github.ref == 'refs/heads/codex/cpa-transport-effective-tier'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      already_released: ${{ steps.metadata.outputs.already_released }}
+      archive_name: ${{ steps.metadata.outputs.archive_name }}
+      release_tag: ${{ steps.metadata.outputs.release_tag }}
+      release_version: ${{ steps.metadata.outputs.release_version }}
+      source_sha: ${{ steps.metadata.outputs.source_sha }}
+      upstream_tag: ${{ steps.metadata.outputs.upstream_tag }}
+    steps:
+      - name: Checkout fixed patched commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Resolve and validate release metadata
+        id: metadata
+        env:
+          EXPECTED_MAIN_SHA: ${{ inputs.main_sha }}
+          EXPECTED_SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$EXPECTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Invalid source SHA: ${EXPECTED_SOURCE_SHA}" >&2
+            exit 1
+          fi
+
+          git fetch --no-tags origin \
+            "+refs/heads/${PATCH_BRANCH}:refs/remotes/origin/${PATCH_BRANCH}" \
+            "+refs/heads/main:refs/remotes/origin/main"
+
+          source_sha="$(git rev-parse HEAD)"
+          patch_head="$(git rev-parse "refs/remotes/origin/${PATCH_BRANCH}")"
+          if [[ "$source_sha" != "$EXPECTED_SOURCE_SHA" || "$source_sha" != "$patch_head" ]]; then
+            echo "Refusing stale build: source=${source_sha} expected=${EXPECTED_SOURCE_SHA} patch_head=${patch_head}" >&2
+            exit 1
+          fi
+
+          main_sha="$EXPECTED_MAIN_SHA"
+          if [[ -z "$main_sha" ]]; then
+            main_sha="$(git rev-parse refs/remotes/origin/main)"
+          fi
+          if [[ ! "$main_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Invalid main SHA: ${main_sha}" >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$main_sha" refs/remotes/origin/main; then
+            echo "Expected main commit ${main_sha} is not in the current main history" >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$main_sha" "$source_sha"; then
+            echo "Patched source ${source_sha} does not contain main ${main_sha}" >&2
+            exit 1
+          fi
+
+          upstream_tag="$(gh api "repos/${UPSTREAM_REPOSITORY}/releases/latest" --jq .tag_name)"
+          if [[ ! "$upstream_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Unexpected upstream release tag: ${upstream_tag}" >&2
+            exit 1
+          fi
+          git fetch --no-tags \
+            "https://github.com/${UPSTREAM_REPOSITORY}.git" \
+            "refs/tags/${upstream_tag}:refs/tags/${upstream_tag}"
+          upstream_commit="$(git rev-list -n 1 "$upstream_tag")"
+          if ! git merge-base --is-ancestor "$upstream_commit" "$source_sha"; then
+            echo "Patched source does not contain upstream release ${upstream_tag}" >&2
+            exit 1
+          fi
+
+          patch_revision="$(git rev-list --count "${upstream_commit}..${source_sha}")"
+          if [[ ! "$patch_revision" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Invalid patch revision: ${patch_revision}" >&2
+            exit 1
+          fi
+
+          release_version="${upstream_tag#v}-nekopara.${patch_revision}"
+          release_tag="v${release_version}"
+          archive_name="CLIProxyAPI_${release_version}_linux_amd64.tar.gz"
+
+          existing_tag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${release_tag}" --jq .object.sha 2>/dev/null || true)"
+          if [[ -n "$existing_tag_sha" && "$existing_tag_sha" != "$source_sha" ]]; then
+            echo "Tag ${release_tag} points to ${existing_tag_sha}, expected ${source_sha}" >&2
+            exit 1
+          fi
+
+          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${release_tag}" 2>/dev/null || true)"
+          already_released=false
+          if [[ -n "$release_json" && "$existing_tag_sha" == "$source_sha" ]]; then
+            if jq -e \
+              --arg archive "$archive_name" \
+              '(.draft == false) and (.prerelease == false) and
+               ([.assets[].name] | index($archive) != null) and
+               ([.assets[].name] | index("checksums.txt") != null)' \
+              <<<"$release_json" >/dev/null; then
+              already_released=true
+            fi
+          fi
+
+          echo "already_released=${already_released}" >> "$GITHUB_OUTPUT"
+          echo "archive_name=${archive_name}" >> "$GITHUB_OUTPUT"
+          echo "release_tag=${release_tag}" >> "$GITHUB_OUTPUT"
+          echo "release_version=${release_version}" >> "$GITHUB_OUTPUT"
+          echo "source_sha=${source_sha}" >> "$GITHUB_OUTPUT"
+          echo "upstream_tag=${upstream_tag}" >> "$GITHUB_OUTPUT"
+
+          echo "RELEASE_VERSION=${release_version}" >> "$GITHUB_ENV"
+          echo "COMMIT=$(git rev-parse --short=12 "$source_sha")" >> "$GITHUB_ENV"
+          echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+
+      - name: Verify fork update source
+        if: steps.metadata.outputs.already_released != 'true'
+        run: |
+          grep -F \
+            'https://api.github.com/repos/nekopara-ai/CLIProxyAPI/releases/latest' \
+            internal/api/handlers/management/config_basic.go
+
+      - name: Refresh models catalog
+        if: steps.metadata.outputs.already_released != 'true'
+        run: bash .github/scripts/refresh-model-catalogs.sh
+
+      - name: Run patched-path tests
+        if: steps.metadata.outputs.already_released != 'true'
+        run: |
+          go test \
+            ./internal/api/handlers/management \
+            ./internal/pluginhost \
+            ./internal/redisqueue \
+            ./internal/runtime/executor/... \
+            ./sdk/api/handlers/openai \
+            ./sdk/cliproxy/... \
+            ./sdk/pluginapi
+
+      - name: Verify server build
+        if: steps.metadata.outputs.already_released != 'true'
+        run: |
+          go build -o test-output ./cmd/server
+          rm -f test-output
+
+      - name: Build Linux amd64 archive
+        if: steps.metadata.outputs.already_released != 'true'
+        env:
+          MANYLINUX_IMAGE: quay.io/pypa/manylinux2014_x86_64@sha256:95440e0e72dd3a81dc8d2cf59a84d57af661456620f5bc821ff92048d0e54ff9
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          archive_dir="dist/linux-amd64/archive"
+          archive_name="${{ steps.metadata.outputs.archive_name }}"
+          rm -rf dist
+          mkdir -p "$archive_dir"
+
+          docker run --rm \
+            -v "$PWD:/src" \
+            -w /src \
+            -e GO_VERSION \
+            -e GO_LINUX_AMD64_SHA256 \
+            -e RELEASE_VERSION \
+            -e COMMIT \
+            -e BUILD_DATE \
+            "$MANYLINUX_IMAGE" \
+            bash -euo pipefail -c '
+              go_archive="go${GO_VERSION}.linux-amd64.tar.gz"
+              curl -fsSL "https://go.dev/dl/${go_archive}" -o "/tmp/${go_archive}"
+              echo "${GO_LINUX_AMD64_SHA256}  /tmp/${go_archive}" | sha256sum -c -
+              rm -rf /usr/local/go
+              tar -C /usr/local -xzf "/tmp/${go_archive}"
+              export PATH="/usr/local/go/bin:${PATH}"
+
+              CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -buildvcs=false \
+                -ldflags="-s -w -X main.Version=${RELEASE_VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" \
+                -o "'"$archive_dir"'/cli-proxy-api" ./cmd/server/
+
+              glibc_versions="$(readelf --version-info "'"$archive_dir"'/cli-proxy-api" | sed -n "s/.*Name: GLIBC_\([0-9.]*\).*/\1/p" | sort -Vu)"
+              if [[ -n "$glibc_versions" ]]; then
+                max_glibc="$(printf "%s\n" "$glibc_versions" | sort -V | tail -n 1)"
+                if [[ "$(printf "2.17\n%s\n" "$max_glibc" | sort -V | tail -n 1)" != "2.17" ]]; then
+                  echo "Binary requires GLIBC_${max_glibc}; expected GLIBC_2.17 or older" >&2
+                  exit 1
+                fi
+              fi
+            '
+
+          cp LICENSE README.md README_CN.md config.example.yaml "$archive_dir/"
+          tar -C "$archive_dir" -czf "dist/$archive_name" \
+            cli-proxy-api LICENSE README.md README_CN.md config.example.yaml
+          (
+            cd dist
+            sha256sum "$archive_name" > checksums.txt
+          )
+
+      - name: Upload verified workflow artifact
+        if: steps.metadata.outputs.already_released != 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: patched-linux-amd64-${{ steps.metadata.outputs.source_sha }}
+          path: |
+            dist/${{ steps.metadata.outputs.archive_name }}
+            dist/checksums.txt
+          if-no-files-found: error
+
+  publish-release:
+    needs: build-linux-amd64
+    if: needs.build-linux-amd64.outputs.already_released != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      ARCHIVE_NAME: ${{ needs.build-linux-amd64.outputs.archive_name }}
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ needs.build-linux-amd64.outputs.release_tag }}
+      RELEASE_VERSION: ${{ needs.build-linux-amd64.outputs.release_version }}
+      SOURCE_SHA: ${{ needs.build-linux-amd64.outputs.source_sha }}
+      UPSTREAM_TAG: ${{ needs.build-linux-amd64.outputs.upstream_tag }}
+    steps:
+      - name: Download verified workflow artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: patched-linux-amd64-${{ env.SOURCE_SHA }}
+          path: dist
+
+      - name: Verify downloaded release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "dist/${ARCHIVE_NAME}"
+          test -f dist/checksums.txt
+          (
+            cd dist
+            sha256sum -c checksums.txt
+            tar -tzf "$ARCHIVE_NAME" | grep -Fx cli-proxy-api
+          )
+
+      - name: Publish verified fork release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ref_path="repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}"
+          existing_sha="$(gh api "$ref_path" --jq .object.sha 2>/dev/null || true)"
+          if [[ -n "$existing_sha" && "$existing_sha" != "$SOURCE_SHA" ]]; then
+            echo "Tag ${RELEASE_TAG} points to ${existing_sha}, expected ${SOURCE_SHA}" >&2
+            exit 1
+          fi
+          if [[ -z "$existing_sha" ]]; then
+            gh api \
+              --method POST \
+              "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="refs/tags/${RELEASE_TAG}" \
+              -f sha="$SOURCE_SHA" >/dev/null
+          fi
+
+          notes_file="$(mktemp)"
+          trap 'rm -f "$notes_file"' EXIT
+          {
+            echo "Patched CLIProxyAPI build for DMIT Linux amd64."
+            echo
+            echo "- Upstream base: ${UPSTREAM_TAG}"
+            echo "- Source commit: ${SOURCE_SHA}"
+            echo "- GLIBC baseline: 2.17"
+          } > "$notes_file"
+
+          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --draft \
+              --title "$RELEASE_TAG" \
+              --notes-file "$notes_file"
+          fi
+
+          gh release upload "$RELEASE_TAG" \
+            "dist/${ARCHIVE_NAME}" \
+            dist/checksums.txt \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
+          gh release edit "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft=false \
+            --latest \
+            --title "$RELEASE_TAG" \
+            --notes-file "$notes_file"
