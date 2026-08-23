@@ -67,9 +67,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          trap 'rc=$?; echo "::error file=.github/workflows/patched-release.yml::metadata command failed at shell line ${LINENO} (exit ${rc}): ${BASH_COMMAND}"; exit "$rc"' ERR
 
           if [[ ! "$EXPECTED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "Invalid source SHA: ${EXPECTED_SOURCE_SHA}" >&2
+            echo "::error file=.github/workflows/patched-release.yml::Invalid source SHA: ${EXPECTED_SOURCE_SHA}"
             exit 1
           fi
 
@@ -80,7 +81,7 @@ jobs:
           source_sha="$(git rev-parse HEAD)"
           patch_head="$(git rev-parse "refs/remotes/origin/${PATCH_BRANCH}")"
           if [[ "$source_sha" != "$EXPECTED_SOURCE_SHA" || "$source_sha" != "$patch_head" ]]; then
-            echo "Refusing stale build: source=${source_sha} expected=${EXPECTED_SOURCE_SHA} patch_head=${patch_head}" >&2
+            echo "::error file=.github/workflows/patched-release.yml::Refusing stale build: source=${source_sha} expected=${EXPECTED_SOURCE_SHA} patch_head=${patch_head}"
             exit 1
           fi
 
@@ -89,35 +90,57 @@ jobs:
             main_sha="$(git rev-parse refs/remotes/origin/main)"
           fi
           if [[ ! "$main_sha" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "Invalid main SHA: ${main_sha}" >&2
+            echo "::error file=.github/workflows/patched-release.yml::Invalid main SHA: ${main_sha}"
             exit 1
           fi
           if ! git merge-base --is-ancestor "$main_sha" refs/remotes/origin/main; then
-            echo "Expected main commit ${main_sha} is not in the current main history" >&2
+            echo "::error file=.github/workflows/patched-release.yml::Expected main commit ${main_sha} is not in the current main history"
             exit 1
           fi
           if ! git merge-base --is-ancestor "$main_sha" "$source_sha"; then
-            echo "Patched source ${source_sha} does not contain main ${main_sha}" >&2
+            echo "::error file=.github/workflows/patched-release.yml::Patched source ${source_sha} does not contain main ${main_sha}"
             exit 1
           fi
 
-          upstream_tag="$(gh api "repos/${UPSTREAM_REPOSITORY}/releases/latest" --jq .tag_name)"
+          upstream_release_json="$(gh api "repos/${UPSTREAM_REPOSITORY}/releases/latest")"
+          upstream_tag="$(jq -r .tag_name <<<"$upstream_release_json")"
           if [[ ! "$upstream_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Unexpected upstream release tag: ${upstream_tag}" >&2
+            echo "::error file=.github/workflows/patched-release.yml::Unexpected upstream release tag: ${upstream_tag}"
             exit 1
           fi
-          git fetch --no-tags \
-            "https://github.com/${UPSTREAM_REPOSITORY}.git" \
-            "refs/tags/${upstream_tag}:refs/tags/${upstream_tag}"
-          upstream_commit="$(git rev-list -n 1 "$upstream_tag")"
+
+          upstream_ref_json="$(gh api "repos/${UPSTREAM_REPOSITORY}/git/ref/tags/${upstream_tag}")"
+          upstream_object_type="$(jq -r .object.type <<<"$upstream_ref_json")"
+          upstream_object_sha="$(jq -r .object.sha <<<"$upstream_ref_json")"
+          for _ in 1 2 3 4; do
+            if [[ "$upstream_object_type" == "commit" ]]; then
+              break
+            fi
+            if [[ "$upstream_object_type" != "tag" || ! "$upstream_object_sha" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error file=.github/workflows/patched-release.yml::Unexpected upstream tag object: type=${upstream_object_type} sha=${upstream_object_sha}"
+              exit 1
+            fi
+            upstream_tag_object="$(gh api "repos/${UPSTREAM_REPOSITORY}/git/tags/${upstream_object_sha}")"
+            upstream_object_type="$(jq -r .object.type <<<"$upstream_tag_object")"
+            upstream_object_sha="$(jq -r .object.sha <<<"$upstream_tag_object")"
+          done
+          if [[ "$upstream_object_type" != "commit" || ! "$upstream_object_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error file=.github/workflows/patched-release.yml::Could not resolve upstream tag ${upstream_tag} to a commit"
+            exit 1
+          fi
+          upstream_commit="$upstream_object_sha"
+          if ! git cat-file -e "${upstream_commit}^{commit}"; then
+            echo "::error file=.github/workflows/patched-release.yml::Upstream commit ${upstream_commit} is absent from the checked-out history"
+            exit 1
+          fi
           if ! git merge-base --is-ancestor "$upstream_commit" "$source_sha"; then
-            echo "Patched source does not contain upstream release ${upstream_tag}" >&2
+            echo "::error file=.github/workflows/patched-release.yml::Patched source does not contain upstream release ${upstream_tag}"
             exit 1
           fi
 
           patch_revision="$(git rev-list --count "${upstream_commit}..${source_sha}")"
           if [[ ! "$patch_revision" =~ ^[1-9][0-9]*$ ]]; then
-            echo "Invalid patch revision: ${patch_revision}" >&2
+            echo "::error file=.github/workflows/patched-release.yml::Invalid patch revision: ${patch_revision}"
             exit 1
           fi
 
@@ -127,7 +150,7 @@ jobs:
 
           existing_tag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${release_tag}" --jq .object.sha 2>/dev/null || true)"
           if [[ -n "$existing_tag_sha" && "$existing_tag_sha" != "$source_sha" ]]; then
-            echo "Tag ${release_tag} points to ${existing_tag_sha}, expected ${source_sha}" >&2
+            echo "::error file=.github/workflows/patched-release.yml::Tag ${release_tag} points to ${existing_tag_sha}, expected ${source_sha}"
             exit 1
           fi
 
