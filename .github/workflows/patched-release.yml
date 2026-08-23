@@ -36,10 +36,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
+      artifact-metadata: write
+      attestations: write
       contents: read
+      id-token: write
     outputs:
       already_released: ${{ steps.metadata.outputs.already_released }}
       archive_name: ${{ steps.metadata.outputs.archive_name }}
+      main_sha: ${{ steps.metadata.outputs.main_sha }}
       release_tag: ${{ steps.metadata.outputs.release_tag }}
       release_version: ${{ steps.metadata.outputs.release_version }}
       source_sha: ${{ steps.metadata.outputs.source_sha }}
@@ -167,7 +171,8 @@ jobs:
               --arg archive "$archive_name" \
               '(.draft == false) and (.prerelease == false) and
                ([.assets[].name] | index($archive) != null) and
-               ([.assets[].name] | index("checksums.txt") != null)' \
+               ([.assets[].name] | index("checksums.txt") != null) and
+               ([.assets[].name] | index("build-info.json") != null)' \
               <<<"$release_json" >/dev/null; then
               already_released=true
             fi
@@ -175,6 +180,7 @@ jobs:
 
           echo "already_released=${already_released}" >> "$GITHUB_OUTPUT"
           echo "archive_name=${archive_name}" >> "$GITHUB_OUTPUT"
+          echo "main_sha=${main_sha}" >> "$GITHUB_OUTPUT"
           echo "release_tag=${release_tag}" >> "$GITHUB_OUTPUT"
           echo "release_version=${release_version}" >> "$GITHUB_OUTPUT"
           echo "source_sha=${source_sha}" >> "$GITHUB_OUTPUT"
@@ -264,9 +270,36 @@ jobs:
           cp LICENSE README.md README_CN.md config.example.yaml "$archive_dir/"
           tar -C "$archive_dir" -czf "dist/$archive_name" \
             cli-proxy-api LICENSE README.md README_CN.md config.example.yaml
+          archive_sha256="$(sha256sum "dist/$archive_name" | awk '{print $1}')"
+          archive_size="$(stat -c %s "dist/$archive_name")"
+          jq -n \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg tag "${{ steps.metadata.outputs.release_tag }}" \
+            --arg source_commit "${{ steps.metadata.outputs.source_sha }}" \
+            --arg main_commit "${{ steps.metadata.outputs.main_sha }}" \
+            --arg upstream_tag "${{ steps.metadata.outputs.upstream_tag }}" \
+            --arg asset_name "$archive_name" \
+            --arg asset_sha256 "$archive_sha256" \
+            --arg build_date "$BUILD_DATE" \
+            --arg go_version "$GO_VERSION" \
+            --argjson asset_size "$archive_size" \
+            '{
+              schema_version: 1,
+              repository: $repository,
+              tag: $tag,
+              source_commit: $source_commit,
+              main_commit: $main_commit,
+              upstream_tag: $upstream_tag,
+              asset_name: $asset_name,
+              asset_sha256: $asset_sha256,
+              asset_size: $asset_size,
+              build_date: $build_date,
+              go_version: $go_version,
+              glibc_baseline: "2.17"
+            }' > dist/build-info.json
           (
             cd dist
-            sha256sum "$archive_name" > checksums.txt
+            sha256sum "$archive_name" build-info.json > checksums.txt
           )
 
       - name: Upload verified workflow artifact
@@ -276,8 +309,18 @@ jobs:
           name: patched-linux-amd64-${{ steps.metadata.outputs.source_sha }}
           path: |
             dist/${{ steps.metadata.outputs.archive_name }}
+            dist/build-info.json
             dist/checksums.txt
           if-no-files-found: error
+
+      - name: Attest release provenance
+        if: steps.metadata.outputs.already_released != 'true'
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: |
+            ${{ github.workspace }}/dist/${{ steps.metadata.outputs.archive_name }}
+            ${{ github.workspace }}/dist/build-info.json
+            ${{ github.workspace }}/dist/checksums.txt
 
   publish-release:
     needs: build-linux-amd64
@@ -289,6 +332,7 @@ jobs:
     env:
       ARCHIVE_NAME: ${{ needs.build-linux-amd64.outputs.archive_name }}
       GH_TOKEN: ${{ github.token }}
+      MAIN_SHA: ${{ needs.build-linux-amd64.outputs.main_sha }}
       RELEASE_TAG: ${{ needs.build-linux-amd64.outputs.release_tag }}
       RELEASE_VERSION: ${{ needs.build-linux-amd64.outputs.release_version }}
       SOURCE_SHA: ${{ needs.build-linux-amd64.outputs.source_sha }}
@@ -305,11 +349,33 @@ jobs:
         run: |
           set -euo pipefail
           test -f "dist/${ARCHIVE_NAME}"
+          test -f dist/build-info.json
           test -f dist/checksums.txt
           (
             cd dist
             sha256sum -c checksums.txt
             tar -tzf "$ARCHIVE_NAME" | grep -Fx cli-proxy-api
+            archive_sha256="$(sha256sum "$ARCHIVE_NAME" | awk '{print $1}')"
+            jq -e \
+              --arg repository "$GITHUB_REPOSITORY" \
+              --arg tag "$RELEASE_TAG" \
+              --arg source_commit "$SOURCE_SHA" \
+              --arg main_commit "$MAIN_SHA" \
+              --arg asset_name "$ARCHIVE_NAME" \
+              --arg asset_sha256 "$archive_sha256" \
+              --arg upstream_tag "$UPSTREAM_TAG" \
+              --argjson asset_size "$(stat -c %s "$ARCHIVE_NAME")" \
+              '.schema_version == 1 and
+               .repository == $repository and
+               .tag == $tag and
+               .source_commit == $source_commit and
+               .main_commit == $main_commit and
+               .upstream_tag == $upstream_tag and
+               .asset_name == $asset_name and
+               .asset_sha256 == $asset_sha256 and
+               .asset_size == $asset_size and
+               .glibc_baseline == "2.17"' \
+              build-info.json >/dev/null
           )
 
       - name: Publish verified fork release
@@ -355,6 +421,7 @@ jobs:
 
           gh release upload "$RELEASE_TAG" \
             "dist/${ARCHIVE_NAME}" \
+            dist/build-info.json \
             dist/checksums.txt \
             --repo "$GITHUB_REPOSITORY" \
             --clobber

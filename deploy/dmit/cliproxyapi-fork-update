@@ -1,0 +1,607 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+umask 077
+
+readonly REPOSITORY="nekopara-ai/CLIProxyAPI"
+readonly API_ROOT="https://api.github.com/repos/${REPOSITORY}"
+readonly BASE_DIR="/root/cliproxyapi"
+readonly LIVE_BINARY="${BASE_DIR}/cli-proxy-api"
+readonly CONFIG_FILE="${BASE_DIR}/config.yaml"
+readonly SERVICE="cliproxyapi.service"
+readonly STATE_DIR="/var/lib/cliproxyapi-fork-updater"
+readonly INSTALLED_STATE="${STATE_DIR}/installed.json"
+readonly TRANSACTION_STATE="${STATE_DIR}/transaction.json"
+readonly QUARANTINE_STATE="${STATE_DIR}/quarantine.json"
+readonly LOG_DIR="${BASE_DIR}/upgrade-logs"
+readonly STAGE_ROOT="${BASE_DIR}/upgrade-stage"
+readonly BACKUP_ROOT="${BASE_DIR}/upgrade-backups"
+readonly PROBE="/usr/local/libexec/cliproxyapi-fork-probe"
+readonly LOCK_FILE="/run/lock/cliproxyapi-fork-update.lock"
+readonly MIN_FREE_KB=1048576
+
+MODE="update"
+case "${1:-}" in
+  "") ;;
+  --bootstrap) MODE="bootstrap" ;;
+  --check) MODE="check" ;;
+  --recover) MODE="recover" ;;
+  --poststop) MODE="poststop" ;;
+  *) echo "usage: $0 [--bootstrap|--check|--recover|--poststop]" >&2; exit 2 ;;
+esac
+
+install -d -m 0700 "$STATE_DIR" "$LOG_DIR" "$STAGE_ROOT" "$BACKUP_ROOT"
+readonly STARTED_AT="$(date -u +%Y%m%dT%H%M%SZ)"
+readonly LOG_FILE="${LOG_DIR}/${STARTED_AT}-fork-auto-update-${MODE}.log"
+touch "$LOG_FILE"
+chmod 0600 "$LOG_FILE"
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  printf '%s updater already running\n' "$(date -u +%FT%TZ)" >&2
+  exit 75
+fi
+
+log() {
+  printf '%s %s\n' "$(date -u +%FT%TZ)" "$*"
+}
+
+die() {
+  log "ERROR: $*"
+  exit 1
+}
+
+require_base_commands() {
+  local command_name
+  for command_name in jq flock sha256sum install sync mv chmod rm date dirname tee mktemp awk; do
+    command -v "$command_name" >/dev/null 2>&1 || die "missing command: ${command_name}"
+  done
+}
+
+require_update_environment() {
+  local command_name
+  for command_name in curl tar readelf python3 systemctl timeout stat ss sed grep sort seq sleep df find tail; do
+    command -v "$command_name" >/dev/null 2>&1 || die "missing command: ${command_name}"
+  done
+  [[ -x "$PROBE" ]] || die "probe is not executable: ${PROBE}"
+  [[ -x "$LIVE_BINARY" ]] || die "live binary is not executable: ${LIVE_BINARY}"
+  [[ -r "$CONFIG_FILE" ]] || die "config is not readable: ${CONFIG_FILE}"
+}
+
+atomic_write() {
+  local target="$1"
+  local content="$2"
+  local temp
+  temp="$(mktemp "${target}.tmp.XXXXXX")"
+  printf '%s\n' "$content" > "$temp"
+  chmod 0600 "$temp"
+  sync -f "$temp"
+  mv -f "$temp" "$target"
+  sync -f "$(dirname "$target")"
+}
+
+atomic_install_binary() {
+  local source="$1"
+  local suffix="$2"
+  local staged="${BASE_DIR}/.cli-proxy-api.${suffix}.$$"
+  install -m 0755 -o root -g root "$source" "$staged"
+  sync -f "$staged"
+  mv -f "$staged" "$LIVE_BINARY"
+  sync -f "$BASE_DIR"
+}
+
+read_binary_identity() {
+  local binary="$1"
+  local line
+  line="$(cd "$(dirname "$binary")" && env -i HOME="$(dirname "$binary")" PATH=/usr/bin:/bin timeout 5 "$binary" -h 2>&1 | sed -n '1p' || true)"
+  if [[ ! "$line" =~ ^CLIProxyAPI\ Version:\ ([^,]+),\ Commit:\ ([0-9a-f]+|none),\ BuiltAt:\ (.+)$ ]]; then
+    return 1
+  fi
+  printf '%s\t%s\t%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+}
+
+version_compare() {
+  python3 - "$1" "$2" <<'PY'
+import re
+import sys
+
+def parse(value: str, require_fork: bool):
+    pattern = r"^v?(\d+)\.(\d+)\.(\d+)(?:-nekopara\.([1-9]\d*))?$"
+    match = re.fullmatch(pattern, value)
+    if not match:
+        raise SystemExit(2)
+    revision = match.group(4)
+    if require_fork and revision is None:
+        raise SystemExit(2)
+    return tuple(int(part) for part in match.group(1, 2, 3)) + (int(revision or 0),)
+
+candidate = parse(sys.argv[1], True)
+current = parse(sys.argv[2], False)
+print((candidate > current) - (candidate < current))
+PY
+}
+
+curl_json() {
+  local url="$1"
+  local output="$2"
+  curl --fail --silent --show-error --location \
+    --proto '=https' --tlsv1.2 \
+    --retry 3 --retry-all-errors --retry-delay 2 \
+    --connect-timeout 15 --max-time 90 \
+    -H 'Accept: application/vnd.github+json' \
+    -H 'X-GitHub-Api-Version: 2026-03-10' \
+    "$url" -o "$output"
+  chmod 0600 "$output"
+}
+
+download_asset() {
+  local url="$1"
+  local output="$2"
+  [[ "$url" == https://github.com/nekopara-ai/CLIProxyAPI/releases/download/* ]] || die "unexpected asset URL"
+  curl --fail --silent --show-error --location \
+    --proto '=https' --tlsv1.2 \
+    --retry 3 --retry-all-errors --retry-delay 2 \
+    --connect-timeout 15 --max-time 300 \
+    "$url" -o "$output"
+  chmod 0600 "$output"
+}
+
+service_active() {
+  [[ "$(systemctl is-active "$SERVICE" 2>/dev/null || true)" == "active" ]]
+}
+
+assert_running_binary_matches_disk() {
+  service_active || die "${SERVICE} is not active"
+  local pid proc_sha disk_sha
+  pid="$(systemctl show "$SERVICE" -p MainPID --value)"
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || die "invalid MainPID: ${pid}"
+  [[ -r "/proc/${pid}/exe" ]] || die "running executable is unavailable"
+  proc_sha="$(sha256sum "/proc/${pid}/exe" | awk '{print $1}')"
+  disk_sha="$(sha256sum "$LIVE_BINARY" | awk '{print $1}')"
+  [[ "$proc_sha" == "$disk_sha" ]] || die "running executable differs from on-disk binary"
+  ss -lntp | grep -F "pid=${pid}," | grep -F ':38317' >/dev/null || die "expected listener is missing for PID ${pid}"
+}
+
+run_probe() {
+  local mode="$1"
+  local attempts="${2:-1}"
+  "$PROBE" "$mode" --config "$CONFIG_FILE" --attempts "$attempts"
+}
+
+wait_for_local_health() {
+  local attempt
+  for attempt in $(seq 1 30); do
+    if service_active && run_probe models 1; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+update_transaction_phase() {
+  local phase="$1"
+  local json
+  json="$(jq --arg phase "$phase" --arg updated_at "$(date -u +%FT%TZ)" '.phase=$phase | .updated_at=$updated_at' "$TRANSACTION_STATE")"
+  atomic_write "$TRANSACTION_STATE" "$json"
+}
+
+record_quarantine() {
+  local reason="$1"
+  local tag commit current json
+  tag="$(jq -r .new_tag "$TRANSACTION_STATE")"
+  commit="$(jq -r .new_commit "$TRANSACTION_STATE")"
+  if [[ -s "$QUARANTINE_STATE" ]]; then
+    current="$(cat "$QUARANTINE_STATE")"
+  else
+    current='[]'
+  fi
+  json="$(jq \
+    --arg tag "$tag" \
+    --arg commit "$commit" \
+    --arg reason "$reason" \
+    --arg at "$(date -u +%FT%TZ)" \
+    'map(select(.tag != $tag or .commit != $commit)) + [{tag:$tag,commit:$commit,reason:$reason,at:$at}]' \
+    <<<"$current")"
+  atomic_write "$QUARANTINE_STATE" "$json"
+}
+
+write_installed_from_transaction() {
+  local json
+  json="$(jq '{
+    schema_version: 1,
+    tag: .new_tag,
+    source_commit: .new_commit,
+    main_commit: .new_main_commit,
+    release_id: .release_id,
+    archive_name: .archive_name,
+    asset_sha256: .asset_sha256,
+    build_info_sha256: .build_info_sha256,
+    checksums_sha256: .checksums_sha256,
+    binary_sha256: .new_binary_sha256,
+    installed_at: .verified_at
+  }' "$TRANSACTION_STATE")"
+  atomic_write "$INSTALLED_STATE" "$json"
+}
+
+rollback_transaction() {
+  local reason="$1"
+  local backup_binary old_sha live_sha
+  [[ -s "$TRANSACTION_STATE" ]] || return 1
+  backup_binary="$(jq -r .backup_binary "$TRANSACTION_STATE")"
+  old_sha="$(jq -r .old_binary_sha256 "$TRANSACTION_STATE")"
+  [[ -f "$backup_binary" ]] || { log "CRITICAL: rollback binary missing"; return 1; }
+  [[ "$(sha256sum "$backup_binary" | awk '{print $1}')" == "$old_sha" ]] || {
+    log "CRITICAL: rollback binary checksum mismatch"
+    return 1
+  }
+
+  update_transaction_phase rollback-started
+  atomic_install_binary "$backup_binary" rollback
+  live_sha="$(sha256sum "$LIVE_BINARY" | awk '{print $1}')"
+  [[ "$live_sha" == "$old_sha" ]] || { log "CRITICAL: rollback install checksum mismatch"; return 1; }
+  systemctl restart "$SERVICE" || { log "CRITICAL: rollback restart failed"; return 1; }
+  if ! wait_for_local_health; then
+    log "CRITICAL: rollback health check failed"
+    return 1
+  fi
+  record_quarantine "$reason"
+  rm -f "$TRANSACTION_STATE"
+  sync -f "$STATE_DIR"
+  log "rollback completed and candidate quarantined: ${reason}"
+  return 0
+}
+
+recover_pending_transaction() {
+  local boot_mode="$1"
+  [[ -s "$TRANSACTION_STATE" ]] || return 0
+  local phase old_sha new_sha live_sha backup_binary
+  phase="$(jq -r .phase "$TRANSACTION_STATE")"
+  old_sha="$(jq -r .old_binary_sha256 "$TRANSACTION_STATE")"
+  new_sha="$(jq -r .new_binary_sha256 "$TRANSACTION_STATE")"
+  live_sha="$(sha256sum "$LIVE_BINARY" | awk '{print $1}')"
+  log "recovering transaction phase=${phase}"
+
+  if [[ "$phase" == "verified" ]]; then
+    [[ "$live_sha" == "$new_sha" ]] || die "verified transaction does not match live binary"
+    write_installed_from_transaction
+    rm -f "$TRANSACTION_STATE"
+    sync -f "$STATE_DIR"
+    log "finalized verified transaction"
+    return 0
+  fi
+
+  if [[ "$live_sha" == "$old_sha" ]]; then
+    if [[ "$phase" != "prepared" ]]; then
+      record_quarantine crash-recovery
+    fi
+    rm -f "$TRANSACTION_STATE"
+    sync -f "$STATE_DIR"
+    log "cleared ${phase} transaction with the previous binary already restored"
+    return 0
+  fi
+
+  if [[ "$live_sha" != "$new_sha" ]]; then
+    die "pending transaction live binary matches neither old nor new checksum"
+  fi
+  backup_binary="$(jq -r .backup_binary "$TRANSACTION_STATE")"
+  [[ "$(sha256sum "$backup_binary" | awk '{print $1}')" == "$old_sha" ]] || die "pending transaction backup is invalid"
+
+  if [[ "$boot_mode" == "true" ]]; then
+    update_transaction_phase rollback-started
+    atomic_install_binary "$backup_binary" boot-recovery
+    [[ "$(sha256sum "$LIVE_BINARY" | awk '{print $1}')" == "$old_sha" ]] || die "boot recovery checksum mismatch"
+    record_quarantine crash-recovery
+    rm -f "$TRANSACTION_STATE"
+    sync -f "$STATE_DIR"
+    log "boot recovery restored the previous binary"
+    return 0
+  fi
+
+  rollback_transaction crash-recovery || die "automatic crash recovery failed"
+  return 0
+}
+
+handle_signal() {
+  trap - INT TERM HUP
+  log "received termination signal"
+  if [[ -s "$TRANSACTION_STATE" ]]; then
+    recover_pending_transaction false || true
+  fi
+  exit 130
+}
+
+handle_exit() {
+  local exit_code="$?"
+  trap - EXIT INT TERM HUP
+  if (( exit_code != 0 )) && [[ -s "$TRANSACTION_STATE" ]]; then
+    log "unexpected failure with a pending transaction; starting immediate recovery"
+    if ! recover_pending_transaction false; then
+      log "CRITICAL: immediate EXIT recovery failed; persistent transaction retained"
+    fi
+  fi
+  exit "$exit_code"
+}
+
+trap handle_signal INT TERM HUP
+
+require_base_commands
+
+if [[ "$MODE" == "recover" ]]; then
+  if [[ -s "$TRANSACTION_STATE" ]]; then
+    [[ -x "$LIVE_BINARY" ]] || die "live binary is not executable: ${LIVE_BINARY}"
+  fi
+  recover_pending_transaction true
+  exit 0
+fi
+
+if [[ "$MODE" == "poststop" ]]; then
+  if [[ ! -s "$TRANSACTION_STATE" ]]; then
+    log "post-stop recovery found no pending transaction"
+    exit 0
+  fi
+  require_update_environment
+  recover_pending_transaction false
+  if ! wait_for_local_health; then
+    systemctl restart "$SERVICE" || die "post-stop recovery could not restart ${SERVICE}"
+    wait_for_local_health || die "post-stop recovery could not restore local health"
+  fi
+  log "post-stop recovery completed"
+  exit 0
+fi
+
+trap handle_exit EXIT
+require_update_environment
+
+recover_pending_transaction false
+assert_running_binary_matches_disk
+run_probe models 1
+
+available_kb="$(df -Pk "$BASE_DIR" | awk 'NR==2 {print $4}')"
+[[ "$available_kb" =~ ^[0-9]+$ ]] || die "could not determine free space"
+(( available_kb >= MIN_FREE_KB )) || die "less than 1 GiB free space remains"
+
+identity="$(read_binary_identity "$LIVE_BINARY")" || die "could not parse current binary identity"
+IFS=$'\t' read -r current_version current_commit current_build_date <<<"$identity"
+current_binary_sha="$(sha256sum "$LIVE_BINARY" | awk '{print $1}')"
+log "current version=${current_version} commit=${current_commit} sha256=${current_binary_sha}"
+
+if [[ "$MODE" == "update" ]]; then
+  [[ -s "$INSTALLED_STATE" ]] || die "automatic updates require an approved bootstrap state"
+  state_tag="$(jq -r .tag "$INSTALLED_STATE")"
+  state_commit="$(jq -r .source_commit "$INSTALLED_STATE")"
+  state_binary_sha="$(jq -r .binary_sha256 "$INSTALLED_STATE")"
+  [[ "${state_tag#v}" == "$current_version" ]] || die "installed state version does not match the live binary"
+  [[ "$current_commit" == "${state_commit:0:${#current_commit}}" ]] || die "installed state commit does not match the live binary"
+  [[ "$state_binary_sha" == "$current_binary_sha" ]] || die "installed state checksum does not match the live binary"
+fi
+
+stage_dir="${STAGE_ROOT}/fork-${STARTED_AT}"
+install -d -m 0700 "$stage_dir"
+release_json="${stage_dir}/release.json"
+curl_json "${API_ROOT}/releases/latest" "$release_json"
+
+release_id="$(jq -r .id "$release_json")"
+release_tag="$(jq -r .tag_name "$release_json")"
+release_version="${release_tag#v}"
+[[ "$release_id" =~ ^[1-9][0-9]*$ ]] || die "invalid release ID"
+[[ "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-nekopara\.[1-9][0-9]*$ ]] || die "invalid fork release tag: ${release_tag}"
+jq -e '.draft == false and .prerelease == false' "$release_json" >/dev/null || die "latest release is not stable"
+
+archive_name="CLIProxyAPI_${release_version}_linux_amd64.tar.gz"
+for asset_name in "$archive_name" checksums.txt build-info.json; do
+  count="$(jq --arg name "$asset_name" '[.assets[] | select(.name == $name)] | length' "$release_json")"
+  [[ "$count" == "1" ]] || die "release must contain exactly one ${asset_name}"
+done
+
+archive_url="$(jq -r --arg name "$archive_name" '.assets[] | select(.name == $name) | .browser_download_url' "$release_json")"
+checksums_url="$(jq -r '.assets[] | select(.name == "checksums.txt") | .browser_download_url' "$release_json")"
+build_info_url="$(jq -r '.assets[] | select(.name == "build-info.json") | .browser_download_url' "$release_json")"
+archive_digest="$(jq -r --arg name "$archive_name" '.assets[] | select(.name == $name) | .digest' "$release_json")"
+build_info_digest="$(jq -r '.assets[] | select(.name == "build-info.json") | .digest' "$release_json")"
+checksums_digest="$(jq -r '.assets[] | select(.name == "checksums.txt") | .digest' "$release_json")"
+archive_api_size="$(jq -r --arg name "$archive_name" '.assets[] | select(.name == $name) | .size' "$release_json")"
+[[ "$archive_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die "archive API digest is missing or invalid"
+[[ "$build_info_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die "build-info API digest is missing or invalid"
+[[ "$checksums_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die "checksums API digest is missing or invalid"
+[[ "$archive_api_size" =~ ^[1-9][0-9]*$ ]] || die "archive API size is missing or invalid"
+
+tag_json="${stage_dir}/tag.json"
+curl_json "${API_ROOT}/git/ref/tags/${release_tag}" "$tag_json"
+tag_type="$(jq -r .object.type "$tag_json")"
+source_commit="$(jq -r .object.sha "$tag_json")"
+[[ "$tag_type" == "commit" && "$source_commit" =~ ^[0-9a-f]{40}$ ]] || die "release tag is not a lightweight commit tag"
+
+comparison="$(version_compare "$release_tag" "$current_version")" || die "could not compare release versions"
+if [[ "$comparison" == "-1" ]]; then
+  die "refusing downgrade from ${current_version} to ${release_version}"
+fi
+
+if [[ "$comparison" == "0" && "$MODE" == "update" ]]; then
+  [[ "$(jq -r .tag "$INSTALLED_STATE")" == "$release_tag" ]] || die "same version has a different state tag"
+  [[ "$(jq -r .source_commit "$INSTALLED_STATE")" == "$source_commit" ]] || die "same tag moved to another commit"
+  [[ "sha256:$(jq -r .asset_sha256 "$INSTALLED_STATE")" == "$archive_digest" ]] || die "same release asset digest changed"
+  [[ "sha256:$(jq -r .build_info_sha256 "$INSTALLED_STATE")" == "$build_info_digest" ]] || die "same release build-info digest changed"
+  [[ "sha256:$(jq -r .checksums_sha256 "$INSTALLED_STATE")" == "$checksums_digest" ]] || die "same release checksums digest changed"
+  log "already current: ${release_tag}; no restart required"
+  exit 0
+fi
+
+if [[ -s "$QUARANTINE_STATE" ]] && jq -e --arg tag "$release_tag" --arg commit "$source_commit" 'any(.[]; .tag == $tag and .commit == $commit)' "$QUARANTINE_STATE" >/dev/null; then
+  die "release ${release_tag} is quarantined after a previous rollback"
+fi
+
+archive_path="${stage_dir}/${archive_name}"
+checksums_path="${stage_dir}/checksums.txt"
+build_info_path="${stage_dir}/build-info.json"
+download_asset "$archive_url" "$archive_path"
+download_asset "$checksums_url" "$checksums_path"
+download_asset "$build_info_url" "$build_info_path"
+
+archive_sha256="$(sha256sum "$archive_path" | awk '{print $1}')"
+build_info_sha256="$(sha256sum "$build_info_path" | awk '{print $1}')"
+checksums_sha256="$(sha256sum "$checksums_path" | awk '{print $1}')"
+archive_size="$(stat -c %s "$archive_path")"
+[[ "sha256:${archive_sha256}" == "$archive_digest" ]] || die "archive digest does not match GitHub asset metadata"
+[[ "sha256:${build_info_sha256}" == "$build_info_digest" ]] || die "build-info digest does not match GitHub asset metadata"
+[[ "sha256:${checksums_sha256}" == "$checksums_digest" ]] || die "checksums digest does not match GitHub asset metadata"
+[[ "$archive_size" == "$archive_api_size" ]] || die "archive size does not match GitHub asset metadata"
+
+mapfile -t archive_checksum_lines < <(awk -v name="$archive_name" '$2 == name {print $1}' "$checksums_path")
+mapfile -t build_info_checksum_lines < <(awk '$2 == "build-info.json" {print $1}' "$checksums_path")
+[[ "${#archive_checksum_lines[@]}" == "1" && "${archive_checksum_lines[0]}" =~ ^[0-9a-f]{64}$ ]] || die "archive checksum entry is missing or ambiguous"
+[[ "${#build_info_checksum_lines[@]}" == "1" && "${build_info_checksum_lines[0]}" =~ ^[0-9a-f]{64}$ ]] || die "build-info checksum entry is missing or ambiguous"
+[[ "${archive_checksum_lines[0]}" == "$archive_sha256" ]] || die "archive checksum file mismatch"
+[[ "${build_info_checksum_lines[0]}" == "$build_info_sha256" ]] || die "build-info checksum file mismatch"
+
+jq -e \
+  --arg repository "$REPOSITORY" \
+  --arg tag "$release_tag" \
+  --arg source_commit "$source_commit" \
+  --arg archive_name "$archive_name" \
+  --arg archive_sha256 "$archive_sha256" \
+  --argjson archive_size "$archive_size" \
+  '.schema_version == 1 and
+   .repository == $repository and
+   .tag == $tag and
+   .source_commit == $source_commit and
+   (.main_commit | test("^[0-9a-f]{40}$")) and
+   (.upstream_tag | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")) and
+   .asset_name == $archive_name and
+   .asset_sha256 == $archive_sha256 and
+   .asset_size == $archive_size and
+   .glibc_baseline == "2.17"' \
+  "$build_info_path" >/dev/null || die "build-info contract validation failed"
+main_commit="$(jq -r .main_commit "$build_info_path")"
+
+expected_members=$'LICENSE\nREADME.md\nREADME_CN.md\ncli-proxy-api\nconfig.example.yaml'
+actual_members="$(tar -tzf "$archive_path" | LC_ALL=C sort)"
+[[ "$actual_members" == "$expected_members" ]] || die "archive member list is unexpected"
+if tar -tvzf "$archive_path" | awk 'substr($1, 1, 1) != "-" {exit 1}'; then
+  :
+else
+  die "archive contains a non-regular member"
+fi
+
+extract_dir="${stage_dir}/extract"
+install -d -m 0700 "$extract_dir"
+tar -xzf "$archive_path" -C "$extract_dir" --no-same-owner --no-same-permissions cli-proxy-api
+candidate_binary="${extract_dir}/cli-proxy-api"
+[[ -f "$candidate_binary" && ! -L "$candidate_binary" ]] || die "candidate binary is not a regular file"
+chmod 0755 "$candidate_binary"
+
+readelf -h "$candidate_binary" | grep -F 'Class:                             ELF64' >/dev/null || die "candidate is not ELF64"
+readelf -h "$candidate_binary" | grep -F 'Machine:                           Advanced Micro Devices X86-64' >/dev/null || die "candidate is not x86-64"
+readelf -l "$candidate_binary" | grep -F 'Requesting program interpreter: /lib64/ld-linux-x86-64.so.2' >/dev/null || die "candidate interpreter is unexpected"
+max_glibc="$(readelf --version-info "$candidate_binary" | sed -n 's/.*Name: GLIBC_\([0-9.]*\).*/\1/p' | sort -V | tail -n 1)"
+python3 - "$max_glibc" <<'PY' || die "candidate requires GLIBC newer than 2.17"
+import sys
+value = tuple(int(part) for part in sys.argv[1].split("."))
+raise SystemExit(0 if value <= (2, 17) else 1)
+PY
+
+candidate_identity="$(read_binary_identity "$candidate_binary")" || die "could not parse candidate binary identity"
+IFS=$'\t' read -r candidate_version candidate_commit candidate_build_date <<<"$candidate_identity"
+[[ "$candidate_version" == "$release_version" ]] || die "candidate version does not match release tag"
+[[ "$candidate_commit" == "${source_commit:0:${#candidate_commit}}" ]] || die "candidate commit does not match release tag"
+candidate_binary_sha="$(sha256sum "$candidate_binary" | awk '{print $1}')"
+
+log "validated candidate tag=${release_tag} commit=${source_commit} archive_sha256=${archive_sha256} binary_sha256=${candidate_binary_sha} max_glibc=${max_glibc}"
+run_probe all 2
+
+if [[ "$MODE" == "check" ]]; then
+  log "check-only validation succeeded; production was not changed"
+  exit 0
+fi
+
+if [[ "$MODE" == "bootstrap" && "$comparison" == "0" ]]; then
+  die "bootstrap target is not newer than the current binary"
+fi
+
+backup_dir="${BACKUP_ROOT}/${STARTED_AT}-${current_version}-to-${release_version}"
+install -d -m 0700 "$backup_dir"
+backup_binary="${backup_dir}/cli-proxy-api"
+install -m 0755 -o root -g root "$LIVE_BINARY" "$backup_binary"
+[[ "$(sha256sum "$backup_binary" | awk '{print $1}')" == "$current_binary_sha" ]] || die "backup binary checksum mismatch"
+install -m 0600 -o root -g root "$CONFIG_FILE" "${backup_dir}/config.yaml"
+install -m 0600 -o root -g root /etc/systemd/system/cliproxyapi.service "${backup_dir}/cliproxyapi.service"
+if [[ -d /etc/systemd/system/cliproxyapi.service.d ]]; then
+  install -d -m 0700 "${backup_dir}/cliproxyapi.service.d"
+  find /etc/systemd/system/cliproxyapi.service.d -maxdepth 1 -type f -exec install -m 0600 -o root -g root {} "${backup_dir}/cliproxyapi.service.d/" \;
+fi
+backup_manifest="$(jq -n \
+  --arg created_at "$(date -u +%FT%TZ)" \
+  --arg old_version "$current_version" \
+  --arg old_commit "$current_commit" \
+  --arg old_binary_sha256 "$current_binary_sha" \
+  --arg new_tag "$release_tag" \
+  --arg new_commit "$source_commit" \
+  '{schema_version:1,created_at:$created_at,old_version:$old_version,old_commit:$old_commit,old_binary_sha256:$old_binary_sha256,new_tag:$new_tag,new_commit:$new_commit}')"
+atomic_write "${backup_dir}/manifest.json" "$backup_manifest"
+(
+  cd "$backup_dir"
+  while IFS= read -r -d '' backup_file; do
+    sha256sum "${backup_file#./}"
+  done < <(find . -type f ! -name SHA256SUMS -print0 | LC_ALL=C sort -z)
+) > "${backup_dir}/SHA256SUMS"
+chmod 0600 "${backup_dir}/SHA256SUMS"
+sync -f "${backup_dir}/SHA256SUMS"
+sync -f "$backup_dir"
+
+transaction="$(jq -n \
+  --arg phase prepared \
+  --arg created_at "$(date -u +%FT%TZ)" \
+  --arg backup_binary "$backup_binary" \
+  --arg old_version "$current_version" \
+  --arg old_commit "$current_commit" \
+  --arg old_binary_sha256 "$current_binary_sha" \
+  --arg new_tag "$release_tag" \
+  --arg new_commit "$source_commit" \
+  --arg new_main_commit "$main_commit" \
+  --arg new_binary_sha256 "$candidate_binary_sha" \
+  --arg archive_name "$archive_name" \
+  --arg asset_sha256 "$archive_sha256" \
+  --arg build_info_sha256 "$build_info_sha256" \
+  --arg checksums_sha256 "$checksums_sha256" \
+  --argjson release_id "$release_id" \
+  '{schema_version:1,phase:$phase,created_at:$created_at,updated_at:$created_at,backup_binary:$backup_binary,old_version:$old_version,old_commit:$old_commit,old_binary_sha256:$old_binary_sha256,new_tag:$new_tag,new_commit:$new_commit,new_main_commit:$new_main_commit,new_binary_sha256:$new_binary_sha256,archive_name:$archive_name,asset_sha256:$asset_sha256,build_info_sha256:$build_info_sha256,checksums_sha256:$checksums_sha256,release_id:$release_id}')"
+atomic_write "$TRANSACTION_STATE" "$transaction"
+
+old_pid="$(systemctl show "$SERVICE" -p MainPID --value)"
+atomic_install_binary "$candidate_binary" candidate
+[[ "$(sha256sum "$LIVE_BINARY" | awk '{print $1}')" == "$candidate_binary_sha" ]] || {
+  rollback_transaction install-checksum-failed || true
+  die "installed candidate checksum mismatch"
+}
+update_transaction_phase installed-unverified
+
+if ! systemctl restart "$SERVICE"; then
+  rollback_transaction restart-failed || die "restart and rollback both failed"
+  die "candidate restart failed and was rolled back"
+fi
+if ! wait_for_local_health; then
+  rollback_transaction local-health-failed || die "health check and rollback both failed"
+  die "candidate local health failed and was rolled back"
+fi
+if ! run_probe all 2; then
+  rollback_transaction e2e-failed || die "E2E check and rollback both failed"
+  die "candidate E2E failed and was rolled back"
+fi
+
+new_pid="$(systemctl show "$SERVICE" -p MainPID --value)"
+[[ "$new_pid" =~ ^[1-9][0-9]*$ && "$new_pid" != "$old_pid" ]] || {
+  rollback_transaction pid-check-failed || die "PID validation and rollback both failed"
+  die "candidate PID validation failed and was rolled back"
+}
+assert_running_binary_matches_disk
+
+verified_at="$(date -u +%FT%TZ)"
+transaction="$(jq --arg verified_at "$verified_at" '.phase="verified" | .verified_at=$verified_at | .updated_at=$verified_at' "$TRANSACTION_STATE")"
+atomic_write "$TRANSACTION_STATE" "$transaction"
+write_installed_from_transaction
+rm -f "$TRANSACTION_STATE"
+sync -f "$STATE_DIR"
+
+log "upgrade verified old_pid=${old_pid} new_pid=${new_pid} tag=${release_tag} backup=${backup_dir}"

@@ -1,0 +1,31 @@
+[Unit]
+Description=Recover an interrupted CLIProxyAPI fork update
+Documentation=https://github.com/nekopara-ai/CLIProxyAPI/tree/main/deploy/dmit
+After=local-fs.target
+Before=cliproxyapi.service
+RequiresMountsFor=/root/cliproxyapi /var/lib/cliproxyapi-fork-updater
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/cliproxyapi-fork-update --recover
+RemainAfterExit=yes
+User=root
+Group=root
+UMask=0077
+TimeoutStartSec=2min
+PrivateNetwork=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectControlGroups=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ReadWritePaths=/root/cliproxyapi /var/lib/cliproxyapi-fork-updater /run/lock
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
