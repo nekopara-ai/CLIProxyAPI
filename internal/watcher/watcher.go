@@ -56,6 +56,9 @@ type Watcher struct {
 	lastConfigHash                string
 	authQueue                     chan<- AuthUpdate
 	currentAuths                  map[string]*coreauth.Auth
+	authRevisions                 map[string]uint64 // Includes deletion tombstones; guarded by clientsMutex.
+	fileObservations              map[string]uint64 // Tracks file events even when content is unchanged.
+	activeAuthScans               int               // Guarded by clientsMutex.
 	runtimeAuths                  map[string]*coreauth.Auth
 	dispatchMu                    sync.Mutex
 	dispatchCond                  *sync.Cond
@@ -79,9 +82,10 @@ const (
 
 // AuthUpdate describes an incremental change to auth configuration.
 type AuthUpdate struct {
-	Action AuthUpdateAction
-	ID     string
-	Auth   *coreauth.Auth
+	Action   AuthUpdateAction
+	ID       string
+	Auth     *coreauth.Auth
+	revision uint64 // Watcher-local ordering, independent of runtime auth generations.
 }
 
 const (
