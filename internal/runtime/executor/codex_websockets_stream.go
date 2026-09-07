@@ -70,6 +70,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	}
 	body = sanitizeOpenAIResponsesReasoningEncryptedContent(ctx, "codex websockets executor", body)
 	body = normalizeCodexWebsocketParallelToolCalls(body, opts.Headers)
+	body = helps.NormalizeCodexToolSchemas(body)
 	multiAgentV2Conflict := helps.HasCodexMultiAgentV2NamespaceConflict(body)
 	body, optimizeMultiAgentV2 := helps.OptimizeCodexMultiAgentV2RequestForAuth(ctx, opts.Headers, body, e.cfg, auth, baseModel)
 	body, replayScope, errReplay := applyCodexReasoningReplayCacheRequired(ctx, from, req, opts, body)
@@ -295,6 +296,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	// delivered as an in-stream chunk after the buffered handshake so downstream behaviour stays
 	// identical to the unbuffered path instead of silently turning into a credential failover.
 	var bootstrapTerminalErr error
+	sawOutputDelta := false
 
 	if buffering {
 		for {
@@ -408,6 +410,23 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			eventType := gjson.GetBytes(payload, "type").String()
 			terminalSuccess := isCodexWebsocketSuccessfulTerminalEvent(eventType)
 			isTerminalEvent := terminalSuccess || eventType == "response.failed" || eventType == "error"
+			if helps.HasMeaningfulCodexOutputDelta(payload) {
+				sawOutputDelta = true
+			}
+			if helps.IsCodexTerminalEmptyIncomplete(payload, len(outputItemsByIndex)+len(outputItemsFallback), sawOutputDelta) {
+				streamErr := newCodexEmptyIncompleteStreamError()
+				helps.RecordAPIWebsocketError(ctx, e.cfg, "upstream_error", streamErr)
+				reporter.PublishFailure(ctx, streamErr)
+				if sess != nil {
+					e.invalidateUpstreamConn(sess, conn, "terminal_empty_incomplete", streamErr)
+					sess.clearActive(conn, readCh)
+					unlockStreamSession()
+				} else if closer != nil {
+					_ = closer.Close()
+				}
+				bootstrapTerminalErr = streamErr
+				break
+			}
 			if eventType == "response.output_item.done" {
 				collectCodexOutputItemDone(payload, outputItemsByIndex, &outputItemsFallback)
 			}
@@ -612,6 +631,22 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			eventType := gjson.GetBytes(payload, "type").String()
 			terminalSuccess := isCodexWebsocketSuccessfulTerminalEvent(eventType)
 			isTerminalEvent := terminalSuccess || eventType == "response.failed" || eventType == "error"
+			if helps.HasMeaningfulCodexOutputDelta(payload) {
+				sawOutputDelta = true
+			}
+			if helps.IsCodexTerminalEmptyIncomplete(payload, len(outputItemsByIndex)+len(outputItemsFallback), sawOutputDelta) {
+				streamErr := newCodexEmptyIncompleteStreamError()
+				helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
+				reporter.PublishFailure(ctx, streamErr)
+				if sess != nil {
+					e.invalidateUpstreamConn(sess, conn, "terminal_empty_incomplete", streamErr)
+					unlockStreamSession()
+				}
+				_ = send(cliproxyexecutor.StreamChunk{Err: streamErr})
+				terminateReason = "terminal_empty_incomplete"
+				terminateErr = streamErr
+				return
+			}
 			if eventType == "response.output_item.done" {
 				collectCodexOutputItemDone(payload, outputItemsByIndex, &outputItemsFallback)
 			}
