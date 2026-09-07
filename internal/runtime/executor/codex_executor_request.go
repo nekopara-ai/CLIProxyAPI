@@ -23,8 +23,9 @@ import (
 )
 
 const (
-	codexUserAgent             = "codex-tui/0.153.3 (Mac OS 26.5.1; arm64) iTerm.app/3.6.11 (codex-tui; 0.153.3)"
-	codexOriginator            = "codex-tui"
+	codexVersion               = "0.153.4"
+	codexOriginator            = "codex_cli_rs"
+	codexUserAgent             = codexOriginator + "/" + codexVersion + " (Linux 7.0.0-28; x86_64) rust"
 	codexDefaultImageToolModel = "gpt-image-2"
 	codexResponsesLiteHeader   = "X-OpenAI-Internal-Codex-Responses-Lite"
 	codexResponsesLiteMetadata = "client_metadata.ws_request_header_x_openai_internal_codex_responses_lite"
@@ -297,6 +298,14 @@ func applyModelHeaderOverrides(headers http.Header, modelName string) {
 	if len(overrides) == 0 {
 		return
 	}
+	// Remote model catalogs may still contain the previous built-in Codex identity.
+	// Migrate that exact profile while preserving other model-specific overrides.
+	const legacyCodexUserAgent = "codex-tui/0.153.3 (Mac OS 26.5.1; arm64) iTerm.app/3.6.11 (codex-tui; 0.153.3)"
+	if overrides["user-agent"] == legacyCodexUserAgent && overrides["originator"] == "codex-tui" {
+		overrides["user-agent"] = codexUserAgent
+		overrides["originator"] = codexOriginator
+		overrides["version"] = codexVersion
+	}
 	for key, value := range overrides {
 		headers.Set(key, value)
 	}
@@ -375,6 +384,7 @@ func applyCodexCloakingHeaders(headers http.Header, cfg *config.Config) {
 	}
 	headers.Set("User-Agent", codexUserAgent)
 	headers.Set("Originator", codexOriginator)
+	headers.Set("Version", codexVersion)
 }
 
 func normalizeCodexInstructions(body []byte) []byte {

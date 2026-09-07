@@ -244,7 +244,7 @@ codex:
   # Some superstitious users believe request tracking identifiers can be used
   # as evidence for TOS enforcement bans; this option only satisfies those odd concerns.
   identity-confuse: false
-  # Disable forcing the official Codex User-Agent and Originator headers on HTTP/SSE and WebSocket requests.
+  # Disable forcing the official Codex User-Agent, Originator, and Version headers on HTTP/SSE and WebSocket requests.
   disable-codex-cloaking: false
   # Hold back the initial handshake events (response.created, response.in_progress and the
   # websocket metadata frames) until the upstream emits its first generated event.
@@ -617,7 +617,7 @@ nonstream-keepalive-interval: 0
 # does not send the header. `user-agent` applies to HTTP and websocket requests;
 # `beta-features` only applies to websocket requests. They do not apply to codex-api-key entries.
 # codex-header-defaults:
-#   user-agent: "codex_cli_rs/0.114.0 (Mac OS 14.2.0; x86_64) vscode/1.111.0"
+#   user-agent: "codex_cli_rs/0.153.4 (Linux 7.0.0-28; x86_64) rust"
 #   beta-features: "multi_agent"
 
 # OpenAI compatibility providers

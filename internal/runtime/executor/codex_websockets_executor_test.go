@@ -1089,11 +1089,8 @@ func TestApplyCodexWebsocketHeadersDefaultsToCurrentResponsesBeta(t *testing.T) 
 	if !strings.HasPrefix(codexUserAgent, codexOriginator+"/") {
 		t.Fatalf("default Codex User-Agent = %s, want prefix %s/", codexUserAgent, codexOriginator)
 	}
-	if !strings.HasPrefix(codexUserAgent, "codex-tui/") {
-		t.Fatalf("default Codex User-Agent = %s, want codex-tui prefix", codexUserAgent)
-	}
-	if !strings.Contains(codexUserAgent, "(codex-tui;") {
-		t.Fatalf("default Codex User-Agent = %s, want codex-tui suffix", codexUserAgent)
+	if got, want := codexUserAgent, "codex_cli_rs/0.153.4 (Linux 7.0.0-28; x86_64) rust"; got != want {
+		t.Fatalf("default Codex User-Agent = %s, want %s", got, want)
 	}
 	if got := headers.Get("Originator"); got != codexOriginator {
 		t.Fatalf("Originator = %s, want %s", got, codexOriginator)
@@ -1125,6 +1122,7 @@ func TestApplyCodexWebsocketHeadersDefaultsToCodexCloaking(t *testing.T) {
 				Attributes: map[string]string{
 					"header:User-Agent": "custom-ua",
 					"header:Originator": "custom-origin",
+					"header:Version":    "0.100.0",
 				},
 			},
 		},
@@ -1136,6 +1134,7 @@ func TestApplyCodexWebsocketHeadersDefaultsToCodexCloaking(t *testing.T) {
 					"api_key":           "sk-test",
 					"header:User-Agent": "custom-ua",
 					"header:Originator": "custom-origin",
+					"header:Version":    "0.100.0",
 				},
 			},
 			token: "sk-test",
@@ -1150,10 +1149,12 @@ func TestApplyCodexWebsocketHeadersDefaultsToCodexCloaking(t *testing.T) {
 			ctx := contextWithGinHeaders(map[string]string{
 				"User-Agent": "client-ua",
 				"Originator": "client-origin",
+				"Version":    "0.101.0",
 			})
 			headers := http.Header{}
 			headers.Set("User-Agent", "existing-ua")
 			headers.Set("Originator", "existing-origin")
+			headers.Set("Version", "0.102.0")
 
 			headers = applyCodexWebsocketHeaders(ctx, headers, tt.auth, tt.token, cfg)
 
@@ -1162,6 +1163,9 @@ func TestApplyCodexWebsocketHeadersDefaultsToCodexCloaking(t *testing.T) {
 			}
 			if got := headers.Get("Originator"); got != codexOriginator {
 				t.Fatalf("Originator = %q, want %q", got, codexOriginator)
+			}
+			if got := headers.Get("Version"); got != codexVersion {
+				t.Fatalf("Version = %q, want %q", got, codexVersion)
 			}
 		})
 	}
@@ -1716,6 +1720,7 @@ func TestApplyCodexHeadersDefaultsToCodexCloaking(t *testing.T) {
 	}
 	req.Header.Set("User-Agent", "existing-ua")
 	req.Header.Set("Originator", "existing-origin")
+	req.Header.Set("Version", "0.102.0")
 	cfg := &config.Config{
 		CodexHeaderDefaults: config.CodexHeaderDefaults{
 			UserAgent: "config-ua",
@@ -1727,11 +1732,13 @@ func TestApplyCodexHeadersDefaultsToCodexCloaking(t *testing.T) {
 			"api_key":           "api-key",
 			"header:User-Agent": "custom-ua",
 			"header:Originator": "custom-origin",
+			"header:Version":    "0.100.0",
 		},
 	}
 	ginHeaders := http.Header{
 		"User-Agent": []string{"client-ua"},
 		"Originator": []string{"client-origin"},
+		"Version":    []string{"0.101.0"},
 	}
 
 	applyCodexHeadersFromSources(req, auth, "api-key", false, cfg, ginHeaders)
@@ -1741,6 +1748,9 @@ func TestApplyCodexHeadersDefaultsToCodexCloaking(t *testing.T) {
 	}
 	if got := req.Header.Get("Originator"); got != codexOriginator {
 		t.Fatalf("Originator = %q, want %q", got, codexOriginator)
+	}
+	if got := req.Header.Get("Version"); got != codexVersion {
+		t.Fatalf("Version = %q, want %q", got, codexVersion)
 	}
 }
 
@@ -1822,7 +1832,7 @@ func TestApplyCodexWebsocketHeaders_EmptyAPIKey_OmitsAuthorizationAndOAuthHeader
 }
 
 func TestApplyModelHeaderOverridesFromModelConfig(t *testing.T) {
-	const wantUA = "codex-tui/0.153.3 (Mac OS 26.5.1; arm64) iTerm.app/3.6.11 (codex-tui; 0.153.3)"
+	const wantUA = "codex_cli_rs/0.153.4 (Linux 7.0.0-28; x86_64) rust"
 	req, err := http.NewRequest(http.MethodPost, "https://example.com/responses", nil)
 	if err != nil {
 		t.Fatalf("NewRequest() error = %v", err)
@@ -1843,13 +1853,55 @@ func TestApplyModelHeaderOverridesFromModelConfig(t *testing.T) {
 	if got := req.Header.Get("User-Agent"); got != wantUA {
 		t.Fatalf("User-Agent = %q, want %q", got, wantUA)
 	}
-	if got := codexSessionHeaderValue(req.Header); got == "" {
-		t.Fatal("expected Session_id to be set for Mac OS User-Agent override")
+	if got := req.Header.Get("Originator"); got != "codex_cli_rs" {
+		t.Fatalf("Originator = %q, want codex_cli_rs", got)
+	}
+	if got := req.Header.Get("Version"); got != "0.153.4" {
+		t.Fatalf("Version = %q, want 0.153.4", got)
+	}
+	if got := codexSessionHeaderValue(req.Header); got != "" {
+		t.Fatalf("Session_id = %q, want no Mac OS session fallback for Linux User-Agent", got)
 	}
 
 	applyModelHeaderOverrides(req.Header, "gpt-5.4")
 	if got := req.Header.Get("User-Agent"); got != wantUA {
 		t.Fatalf("User-Agent after no-op override = %q, want %q", got, wantUA)
+	}
+}
+
+func TestApplyModelHeaderOverridesMigratesLegacyCodexIdentity(t *testing.T) {
+	reg := registry.GetGlobalRegistry()
+	clientID := "test-legacy-codex-identity"
+	reg.RegisterClient(clientID, "codex", []*registry.ModelInfo{{
+		ID: "test-legacy-codex-model",
+		Config: &registry.ModelConfig{
+			OverrideHeader: map[string]string{
+				"user-agent":    "codex-tui/0.153.3 (Mac OS 26.5.1; arm64) iTerm.app/3.6.11 (codex-tui; 0.153.3)",
+				"originator":    "codex-tui",
+				"x-test-header": "preserved-value",
+			},
+		},
+	}})
+	t.Cleanup(func() { reg.UnregisterClient(clientID) })
+
+	headers := http.Header{}
+	headers.Set("Version", "0.100.0")
+	headers.Set("Session_id", "existing-session")
+	applyModelHeaderOverrides(headers, "test-legacy-codex-model")
+
+	for key, want := range map[string]string{
+		"User-Agent":    "codex_cli_rs/0.153.4 (Linux 7.0.0-28; x86_64) rust",
+		"Originator":    "codex_cli_rs",
+		"Version":       "0.153.4",
+		"Session_id":    "existing-session",
+		"X-Test-Header": "preserved-value",
+	} {
+		if got := headers.Get(key); got != want {
+			t.Fatalf("%s = %q, want %q", key, got, want)
+		}
+	}
+	if got := registry.ModelOverrideHeaders("test-legacy-codex-model")["originator"]; got != "codex-tui" {
+		t.Fatalf("registry originator = %q, want unchanged catalog value codex-tui", got)
 	}
 }
 

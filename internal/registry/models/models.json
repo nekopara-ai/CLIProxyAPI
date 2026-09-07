@@ -2459,8 +2459,9 @@
       },
       "config": {
         "override_header": {
-          "user-agent": "codex-tui/0.153.3 (Mac OS 26.5.1; arm64) iTerm.app/3.6.11 (codex-tui; 0.153.3)",
-          "originator": "codex-tui"
+          "user-agent": "codex_cli_rs/0.153.4 (Linux 7.0.0-28; x86_64) rust",
+          "originator": "codex_cli_rs",
+          "version": "0.153.4"
         }
       },
       "supportedInputModalities": [
@@ -2651,8 +2652,9 @@
       },
       "config": {
         "override_header": {
-          "user-agent": "codex-tui/0.153.3 (Mac OS 26.5.1; arm64) iTerm.app/3.6.11 (codex-tui; 0.153.3)",
-          "originator": "codex-tui"
+          "user-agent": "codex_cli_rs/0.153.4 (Linux 7.0.0-28; x86_64) rust",
+          "originator": "codex_cli_rs",
+          "version": "0.153.4"
         }
       },
       "supportedInputModalities": [
@@ -2872,8 +2874,9 @@
       },
       "config": {
         "override_header": {
-          "user-agent": "codex-tui/0.153.3 (Mac OS 26.5.1; arm64) iTerm.app/3.6.11 (codex-tui; 0.153.3)",
-          "originator": "codex-tui"
+          "user-agent": "codex_cli_rs/0.153.4 (Linux 7.0.0-28; x86_64) rust",
+          "originator": "codex_cli_rs",
+          "version": "0.153.4"
         }
       },
       "supportedInputModalities": [
@@ -3093,8 +3096,9 @@
       },
       "config": {
         "override_header": {
-          "user-agent": "codex-tui/0.153.3 (Mac OS 26.5.1; arm64) iTerm.app/3.6.11 (codex-tui; 0.153.3)",
-          "originator": "codex-tui"
+          "user-agent": "codex_cli_rs/0.153.4 (Linux 7.0.0-28; x86_64) rust",
+          "originator": "codex_cli_rs",
+          "version": "0.153.4"
         }
       },
       "supportedInputModalities": [
