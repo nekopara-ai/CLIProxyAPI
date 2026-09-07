@@ -31,6 +31,7 @@ import (
 
 	codexauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	sdkauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
@@ -42,9 +43,9 @@ import (
 const (
 	codexModelsBaseURL       = "https://chatgpt.com/backend-api/codex"
 	codexModelsPath          = "/models"
-	defaultClientVersion     = "0.153.4"
-	defaultCodexOriginator   = "codex_cli_rs"
-	defaultCodexUserAgent    = defaultCodexOriginator + "/" + defaultClientVersion + " (Linux 7.0.0-28; x86_64) rust"
+	defaultClientVersion     = constant.CodexClientVersion
+	defaultCodexOriginator   = constant.CodexOriginator
+	defaultCodexUserAgent    = constant.CodexUserAgent
 	accessTokenRefreshLeeway = 30 * time.Second
 )
 

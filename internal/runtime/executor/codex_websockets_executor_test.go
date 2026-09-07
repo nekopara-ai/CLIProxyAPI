@@ -1900,7 +1900,7 @@ func TestApplyModelHeaderOverridesMigratesLegacyCodexIdentity(t *testing.T) {
 			t.Fatalf("%s = %q, want %q", key, got, want)
 		}
 	}
-	if got := registry.ModelOverrideHeaders("test-legacy-codex-model")["originator"]; got != "codex-tui" {
+	if got := registry.LookupModelInfo("test-legacy-codex-model").Config.OverrideHeader["originator"]; got != "codex-tui" {
 		t.Fatalf("registry originator = %q, want unchanged catalog value codex-tui", got)
 	}
 }
