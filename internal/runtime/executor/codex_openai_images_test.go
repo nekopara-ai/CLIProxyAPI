@@ -96,8 +96,8 @@ func TestCodexExecutorDirectOpenAIImageGenerationUsesImagesEndpoint(t *testing.T
 	if gotUA != codexUserAgent {
 		t.Fatalf("User-Agent = %q, want codex default %q", gotUA, codexUserAgent)
 	}
-	if gotVersion != "0.135.0" {
-		t.Fatalf("Version = %q, want %q", gotVersion, "0.135.0")
+	if gotVersion != codexVersion {
+		t.Fatalf("Version = %q, want %q", gotVersion, codexVersion)
 	}
 	if gotTurnMetadata != `{"turn_id":"turn-1"}` {
 		t.Fatalf("X-Codex-Turn-Metadata = %q, want %q", gotTurnMetadata, `{"turn_id":"turn-1"}`)

@@ -10,13 +10,19 @@ func TestGetStaticModelDefinitionsByChannelSupportsGeminiInteractions(t *testing
 }
 
 func TestModelOverrideHeadersFromEmbeddedModels(t *testing.T) {
-	const wantUA = "codex-tui/0.153.3 (Mac OS 26.5.1; arm64) iTerm.app/3.6.11 (codex-tui; 0.153.3)"
+	const wantUA = "codex_cli_rs/0.153.4 (Linux 7.0.0-28; x86_64) rust"
 	got := ModelOverrideHeaders("gpt-5.6-luna")
 	if got == nil {
 		t.Fatal("ModelOverrideHeaders(gpt-5.6-luna) = nil, want headers")
 	}
 	if got["user-agent"] != wantUA {
 		t.Fatalf("user-agent = %q, want %q", got["user-agent"], wantUA)
+	}
+	if got["originator"] != "codex_cli_rs" {
+		t.Fatalf("originator = %q, want codex_cli_rs", got["originator"])
+	}
+	if got["version"] != "0.153.4" {
+		t.Fatalf("version = %q, want 0.153.4", got["version"])
 	}
 	if got := ModelOverrideHeaders("gpt-5.4"); got != nil {
 		t.Fatalf("ModelOverrideHeaders(gpt-5.4) = %#v, want nil", got)

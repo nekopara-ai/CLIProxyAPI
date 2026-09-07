@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
 	misc "github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 	log "github.com/sirupsen/logrus"
 )
@@ -220,7 +221,7 @@ func LookupModelInfo(modelID string, provider ...string) *ModelInfo {
 	return cloneModelInfo(LookupStaticModelInfo(modelID))
 }
 
-// ModelOverrideHeaders returns models.json config.override_header for the model, if any.
+// ModelOverrideHeaders returns model-specific headers, migrating the previous default Codex identity.
 // The returned map is a defensive copy and may be empty but never nil when overrides exist.
 func ModelOverrideHeaders(modelID string, provider ...string) map[string]string {
 	info := LookupModelInfo(modelID, provider...)
@@ -237,6 +238,14 @@ func ModelOverrideHeaders(modelID string, provider ...string) map[string]string 
 	}
 	if len(out) == 0 {
 		return nil
+	}
+	// Remote model catalogs may still contain the previous built-in Codex identity.
+	// Migrate that exact profile while preserving other model-specific overrides.
+	const legacyCodexUserAgent = "codex-tui/0.153.3 (Mac OS 26.5.1; arm64) iTerm.app/3.6.11 (codex-tui; 0.153.3)"
+	if out["user-agent"] == legacyCodexUserAgent && out["originator"] == "codex-tui" {
+		out["user-agent"] = constant.CodexUserAgent
+		out["originator"] = constant.CodexOriginator
+		out["version"] = constant.CodexClientVersion
 	}
 	return out
 }
