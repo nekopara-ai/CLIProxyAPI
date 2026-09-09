@@ -895,7 +895,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 									if cooldown < minQuotaCooldownFloor {
 										cooldown = minQuotaCooldownFloor
 									}
-									next = now.Add(cooldown)
+									next = now.Add(cooldown).Round(0)
 									forcedRetryAfter = next
 								} else {
 									forcedQuota := state.Quota
@@ -2238,7 +2238,7 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 					if cooldown < minQuotaCooldownFloor {
 						cooldown = minQuotaCooldownFloor
 					}
-					next = now.Add(cooldown)
+					next = now.Add(cooldown).Round(0)
 					forcedRetryAfter = next
 				} else {
 					forcedQuota := auth.Quota
@@ -2295,7 +2295,7 @@ func quotaCooldownAfterFailure(quota QuotaState, now time.Time) (time.Time, int)
 	cooldown, nextLevel := nextQuotaCooldown(quota.BackoffLevel, false)
 	var next time.Time
 	if cooldown > 0 {
-		next = now.Add(cooldown)
+		next = now.Add(cooldown).Round(0)
 	}
 	return next, nextLevel
 }
