@@ -561,6 +561,74 @@ func TestCodexClientModelsResponseDoesNotInheritUnsupportedReasoningLevels(t *te
 	}
 }
 
+func TestCodexClientModelsResponseDescribesDeepSeekV4ReasoningMapping(t *testing.T) {
+	thinking := registry.ThinkingSupport{
+		ZeroAllowed: true,
+		Levels:      []string{"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"},
+	}
+	resp := BuildResponseForClient([]map[string]any{{
+		"id":       "deepseek-v4.1-flash",
+		"thinking": &thinking,
+	}}, nil, false, "0.153.3")
+	models, ok := resp["models"].([]map[string]any)
+	if !ok || len(models) != 1 {
+		t.Fatalf("models = %#v, want one model", resp["models"])
+	}
+	model := models[0]
+	if got := stringModelValue(model, "default_reasoning_level"); got != "high" {
+		t.Fatalf("default_reasoning_level = %q, want high", got)
+	}
+	wantDescriptions := map[string]string{
+		"none":    "Disables DeepSeek thinking mode",
+		"minimal": "Mapped to DeepSeek low reasoning",
+		"medium":  "Mapped to DeepSeek high reasoning",
+		"xhigh":   "Mapped to DeepSeek high reasoning",
+		"ultra":   "Mapped to DeepSeek max reasoning",
+	}
+	levels, ok := model["supported_reasoning_levels"].([]any)
+	if !ok || len(levels) != len(thinking.Levels) {
+		t.Fatalf("supported_reasoning_levels = %#v", model["supported_reasoning_levels"])
+	}
+	for _, rawLevel := range levels {
+		level, okLevel := rawLevel.(map[string]any)
+		if !okLevel {
+			t.Fatalf("reasoning level = %#v", rawLevel)
+		}
+		effort := stringModelValue(level, "effort")
+		if want, exists := wantDescriptions[effort]; exists {
+			if got := stringModelValue(level, "description"); got != want {
+				t.Fatalf("description[%s] = %q, want %q", effort, got, want)
+			}
+		}
+	}
+}
+
+func TestCodexClientModelsResponseDescribesDeepSeekLatestAliasReasoningMapping(t *testing.T) {
+	thinking := registry.ThinkingSupport{
+		ZeroAllowed: true,
+		Levels:      []string{"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"},
+	}
+	resp := BuildResponseForClient([]map[string]any{{
+		"id":       "deepseek-latest-flash",
+		"thinking": &thinking,
+	}}, nil, false, "0.153.3")
+	models, ok := resp["models"].([]map[string]any)
+	if !ok || len(models) != 1 {
+		t.Fatalf("models = %#v, want one model", resp["models"])
+	}
+	model := models[0]
+	if got := stringModelValue(model, "default_reasoning_level"); got != "high" {
+		t.Fatalf("default_reasoning_level = %q, want high", got)
+	}
+	levels, ok := model["supported_reasoning_levels"].([]any)
+	if !ok || len(levels) != len(thinking.Levels) {
+		t.Fatalf("supported_reasoning_levels = %#v", model["supported_reasoning_levels"])
+	}
+	if got := stringModelValue(levels[0].(map[string]any), "description"); got != "Disables DeepSeek thinking mode" {
+		t.Fatalf("none description = %q", got)
+	}
+}
+
 func TestSanitizeCodexClientReasoningMetadataPreservesEmptyArray(t *testing.T) {
 	tests := []struct {
 		name    string
