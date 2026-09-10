@@ -22,7 +22,30 @@ jobs:
             internal/translator/**
       - name: Fail when restricted paths change
         if: steps.changed-files.outputs.any_changed == 'true'
+        env:
+          REPOSITORY: ${{ github.repository }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
         run: |
+          set -euo pipefail
+          # A release sync may import upstream files verbatim, never arbitrary edits.
+          if [[ "$REPOSITORY" == 'nekopara-ai/CLIProxyAPI' &&
+                "$HEAD_REPOSITORY" == "$REPOSITORY" &&
+                "$BASE_REF" == 'codex/cpa-transport-effective-tier' ]]; then
+            git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+            git merge-base --is-ancestor origin/main "$HEAD_SHA"
+            while IFS= read -r -d '' path; do
+              if ! git diff --quiet origin/main "$HEAD_SHA" -- "$path"; then
+                echo "::error file=$path::Translator changes must match synchronized main exactly"
+                exit 1
+              fi
+            done < <(git diff --name-only -z "$BASE_SHA" "$HEAD_SHA" -- internal/translator)
+            echo "Translator changes are verbatim upstream synchronization."
+            exit 0
+          fi
           echo "Changes under internal/translator are not allowed in pull requests."
           echo "You need to create an issue for our maintenance team to make the necessary changes."
           exit 1
