@@ -96,6 +96,7 @@ const (
 	MethodHostAuthGet            = "host.auth.get"
 	MethodHostAuthGetRuntime     = "host.auth.get_runtime"
 	MethodHostAuthSave           = "host.auth.save"
+	MethodHostAffinityLookup     = "host.affinity.lookup"
 )
 
 type Envelope struct {

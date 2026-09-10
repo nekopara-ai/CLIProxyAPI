@@ -62,6 +62,52 @@ func TestApplyThinkingWithModelInfoMapsOpenAICompatibilityHighIntent(t *testing.
 	}
 }
 
+func TestApplyThinkingWithModelInfoMapsDeepSeekV4ResponsesEfforts(t *testing.T) {
+	tests := []struct {
+		requestEffort string
+		wantType      string
+		wantEffort    string
+	}{
+		{requestEffort: "none", wantType: "disabled"},
+		{requestEffort: "minimal", wantType: "enabled", wantEffort: "low"},
+		{requestEffort: "low", wantType: "enabled", wantEffort: "low"},
+		{requestEffort: "medium", wantType: "enabled", wantEffort: "high"},
+		{requestEffort: "high", wantType: "enabled", wantEffort: "high"},
+		{requestEffort: "xhigh", wantType: "enabled", wantEffort: "high"},
+		{requestEffort: "max", wantType: "enabled", wantEffort: "max"},
+		{requestEffort: "ultra", wantType: "enabled", wantEffort: "max"},
+	}
+	modelInfo := &registry.ModelInfo{
+		ID:   "deepseek-flash",
+		Type: "openai-compatibility",
+		Thinking: &registry.ThinkingSupport{
+			ZeroAllowed: true,
+			Levels:      []string{"minimal", "low", "medium", "high", "xhigh", "max", "ultra"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.requestEffort, func(t *testing.T) {
+			body := []byte(`{"model":"deepseek-flash","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"` + test.requestEffort + `"}`)
+			source := []byte(`{"model":"deepseek-v4.1-flash","input":"hi","reasoning":{"effort":"` + test.requestEffort + `"}}`)
+			out, err := thinking.ApplyThinkingWithModelInfo(body, source, "deepseek-v4.1-flash", "openai-response", "openai", "openai-compatibility", modelInfo)
+			if err != nil {
+				t.Fatalf("ApplyThinkingWithModelInfo() error = %v; body=%s", err, out)
+			}
+			if got := gjson.GetBytes(out, "thinking.type").String(); got != test.wantType {
+				t.Fatalf("thinking.type = %q, want %q; body=%s", got, test.wantType, out)
+			}
+			effort := gjson.GetBytes(out, "reasoning_effort")
+			if test.wantEffort == "" {
+				if effort.Exists() {
+					t.Fatalf("reasoning_effort exists, want omitted; body=%s", out)
+				}
+			} else if effort.String() != test.wantEffort {
+				t.Fatalf("reasoning_effort = %q, want %q; body=%s", effort.String(), test.wantEffort, out)
+			}
+		})
+	}
+}
+
 func TestApplyThinkingWithModelInfoMapsResponsesToCodexHighIntent(t *testing.T) {
 	modelInfo := &registry.ModelInfo{
 		ID:       "codex-upstream",

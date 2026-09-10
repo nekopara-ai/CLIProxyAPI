@@ -50,6 +50,7 @@ const (
 	claudeExtendedCacheTTLBeta       = "extended-cache-ttl-2025-04-11"
 	claudeCacheDiagnosisBeta         = "cache-diagnosis-2026-04-07"
 	claudeRedactThinkingBeta         = "redact-thinking-2026-02-12"
+	claudeAFKModeBeta                = "afk-mode-2026-01-31"
 )
 
 // claudeCodeCLIConstantBetas are the betas Claude Code sends on every
@@ -156,8 +157,16 @@ func claudeCodeCLIBetas(body []byte, requested map[string]bool, oauthToken bool)
 	if claudeRequestUsesFastMode(body, requested) {
 		betas = append(betas, claudeFastModeBeta)
 	}
-	if oauthToken && !helps.IsClaudeSubagentRequest(nil, body) && !isProbeOrHelper {
-		betas = append(betas, claudeExtendedCacheTTLBeta)
+	if requested[claudeAFKModeBeta] {
+		betas = append(betas, claudeAFKModeBeta)
+	}
+	if !isProbeOrHelper {
+		includeExtended := (oauthToken && !helps.IsClaudeSubagentRequest(nil, body)) ||
+			requested[claudeExtendedCacheTTLBeta] ||
+			helps.ClaudePayloadHas1hTTL(body)
+		if includeExtended {
+			betas = append(betas, claudeExtendedCacheTTLBeta)
+		}
 	}
 	if diagnostics := gjson.GetBytes(body, "diagnostics"); diagnostics.IsObject() {
 		betas = append(betas, claudeCacheDiagnosisBeta)
@@ -331,6 +340,21 @@ func withoutClaudeBeta(betas, removeBeta string) string {
 	return strings.Join(res, ",")
 }
 
+func withClaudeExtendedCacheTTLBeta(betas string) string {
+	parts := make([]string, 0, 16)
+	seen := make(map[string]bool)
+	for _, beta := range strings.Split(betas, ",") {
+		if beta = strings.TrimSpace(beta); beta != "" && !seen[beta] {
+			parts = append(parts, beta)
+			seen[beta] = true
+		}
+	}
+	if !seen[claudeExtendedCacheTTLBeta] {
+		parts = append(parts, claudeExtendedCacheTTLBeta)
+	}
+	return strings.Join(parts, ",")
+}
+
 // withClaudeAdvisorToolBeta ensures advisor-tool-2026-03-01 is present when
 // the body declares an advisor server tool, placed at the observed wire position
 // before advanced-tool-use-2025-11-20 or effort-2025-11-24.
@@ -354,6 +378,7 @@ func withClaudeAdvisorToolBeta(betas string) string {
 			beta == claudeFallbackCreditBeta ||
 			beta == claudeStructuredOutputsBeta ||
 			beta == claudeFastModeBeta ||
+			beta == claudeAFKModeBeta ||
 			beta == claudeExtendedCacheTTLBeta ||
 			beta == claudeCacheDiagnosisBeta {
 			insertAt = index
@@ -869,7 +894,8 @@ func applyClaudeHeadersWithNativeProfile(
 			} else {
 				isSubagent := helps.IsClaudeSubagentRequest(incomingHeaders, body)
 				isProbe := helps.IsClaudeProbeOrHelperRequest(body)
-				includeExtendedCacheTTL := !isSubagent && !isProbe
+				subagent1h := isSubagent && helps.ClaudeSubagentRequests1h(incomingHeaders, body)
+				includeExtendedCacheTTL := (!isSubagent || subagent1h) && !isProbe
 				baseBetas = withClaudeOAuthCredentialBetas(baseBetas, includeExtendedCacheTTL)
 			}
 		}
@@ -937,8 +963,11 @@ func applyClaudeHeadersWithNativeProfile(
 		if reqThinkingType == "disabled" {
 			baseBetas = withoutClaudeBeta(baseBetas, claudeThinkingDisplayUpdatesBeta)
 		}
-		if helps.IsClaudeSubagentRequest(nil, body) {
+		if helps.IsClaudeSubagentRequest(incomingHeaders, body) && !helps.ClaudeSubagentRequests1h(incomingHeaders, body) {
 			baseBetas = withoutClaudeBeta(baseBetas, claudeExtendedCacheTTLBeta)
+		}
+		if !reqProbeOrHelper && !countTokens && helps.ClaudePayloadHas1hTTL(body) {
+			baseBetas = withClaudeExtendedCacheTTLBeta(baseBetas)
 		}
 		reqModel := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "model").String()))
 		if isClaudeHaikuModel(reqModel) && !gjson.GetBytes(body, "fallbacks").Exists() {

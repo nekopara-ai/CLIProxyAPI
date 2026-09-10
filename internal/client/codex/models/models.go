@@ -274,7 +274,7 @@ func applyCodexClientModelMetadata(entry map[string]any, id string, model map[st
 			thinkingSupport = info.Thinking
 		}
 	}
-	applyCodexClientThinkingMetadata(entry, thinkingSupport, clientVersion)
+	applyCodexClientThinkingMetadata(entry, id, thinkingSupport, clientVersion)
 
 	if maxContextWindow := intModelValue(model, "max_context_length"); maxContextWindow > 0 {
 		contextWindow = maxContextWindow
@@ -336,7 +336,7 @@ func codexClientThinkingSupport(model map[string]any) *registry.ThinkingSupport 
 
 func applyCodexClientVisibilityOverride(entry map[string]any, id string) {
 	switch strings.TrimSpace(id) {
-	case "grok-imagine-image-quality", "gpt-image-1.5", "gpt-image-2", "grok-imagine-image", "grok-imagine-image-2.0", "grok-imagine-video", "grok-imagine-video-1.5", "grok-imagine-video-1.5-preview":
+	case "grok-imagine-image-quality", "gpt-image-1.5", "gpt-image-2", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2.5", "grok-imagine-image", "grok-imagine-image-2.0", "grok-imagine-video", "grok-imagine-video-1.5", "grok-imagine-video-1.5-preview":
 		entry["visibility"] = "hide"
 	}
 }
@@ -373,7 +373,7 @@ func applyCodexClientInputModalitiesMetadata(entry map[string]any, modalities []
 	}
 }
 
-func applyCodexClientThinkingMetadata(entry map[string]any, thinking *registry.ThinkingSupport, clientVersion string) {
+func applyCodexClientThinkingMetadata(entry map[string]any, modelID string, thinking *registry.ThinkingSupport, clientVersion string) {
 	if thinking == nil {
 		return
 	}
@@ -394,7 +394,7 @@ func applyCodexClientThinkingMetadata(entry map[string]any, thinking *registry.T
 		}
 		levels = append(levels, map[string]any{
 			"effort":      level,
-			"description": codexClientReasoningDescription(level),
+			"description": codexClientReasoningDescriptionForModel(modelID, level),
 		})
 	}
 	if len(levels) == 0 {
@@ -405,9 +405,54 @@ func applyCodexClientThinkingMetadata(entry map[string]any, thinking *registry.T
 	if defaultLevel == "" {
 		defaultLevel = firstLevel
 	}
+	if isDeepSeekV4ClientModel(modelID) && hasCodexClientReasoningLevel(levels, "high") {
+		defaultLevel = "high"
+	}
 
 	entry["supported_reasoning_levels"] = levels
 	entry["default_reasoning_level"] = defaultLevel
+}
+
+func hasCodexClientReasoningLevel(levels []any, target string) bool {
+	for _, rawLevel := range levels {
+		level, ok := rawLevel.(map[string]any)
+		if ok && strings.EqualFold(stringModelValue(level, "effort"), target) {
+			return true
+		}
+	}
+	return false
+}
+
+func isDeepSeekV4ClientModel(modelID string) bool {
+	model := strings.ToLower(strings.TrimSpace(modelID))
+	return model == "deepseek-flash" ||
+		strings.Contains(model, "deepseek-latest") ||
+		strings.Contains(model, "deepseek-v4") ||
+		strings.Contains(model, "deepseek_v4")
+}
+
+func codexClientReasoningDescriptionForModel(modelID, level string) string {
+	if !isDeepSeekV4ClientModel(modelID) {
+		return codexClientReasoningDescription(level)
+	}
+	switch level {
+	case "none":
+		return "Disables DeepSeek thinking mode"
+	case "minimal":
+		return "Mapped to DeepSeek low reasoning"
+	case "low":
+		return "DeepSeek native low reasoning"
+	case "medium", "xhigh":
+		return "Mapped to DeepSeek high reasoning"
+	case "high":
+		return "DeepSeek native high reasoning"
+	case "max":
+		return "DeepSeek native max reasoning"
+	case "ultra":
+		return "Mapped to DeepSeek max reasoning"
+	default:
+		return level
+	}
 }
 
 func sanitizeCodexClientReasoningMetadata(entry map[string]any, clientVersion string) {

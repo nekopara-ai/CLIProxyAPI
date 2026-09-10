@@ -12,6 +12,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify patched release ancestry
+        if: github.base_ref == 'codex/cpa-transport-effective-tier'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor origin/main HEAD; then
+            echo "::error::Patched release PR must merge current origin/main before publication"
+            exit 1
+          fi
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -19,6 +31,9 @@ jobs:
           cache: true
       - name: Refresh models catalog
         run: bash .github/scripts/refresh-model-catalogs.sh
+      - name: Test patched release integration
+        if: github.base_ref == 'codex/cpa-transport-effective-tier'
+        run: go test ./... -count=1 -timeout=240s
       - name: Build
         run: |
           go build -o test-output ./cmd/server

@@ -6,6 +6,8 @@
 package openai
 
 import (
+	"strings"
+
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	"github.com/tidwall/gjson"
@@ -39,6 +41,9 @@ func init() {
 //	  "reasoning_effort": "high"
 //	}
 func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *registry.ModelInfo) ([]byte, error) {
+	if isDeepSeekV4Model(modelInfo) {
+		return applyDeepSeekV4(body, config)
+	}
 	if thinking.IsUserDefinedModel(modelInfo) {
 		return applyCompatibleOpenAI(body, config)
 	}
@@ -78,6 +83,56 @@ func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *
 	}
 
 	result, _ := sjson.SetBytes(body, "reasoning_effort", effort)
+	return result, nil
+}
+
+func isDeepSeekV4Model(modelInfo *registry.ModelInfo) bool {
+	if modelInfo == nil {
+		return false
+	}
+	model := strings.ToLower(strings.TrimSpace(modelInfo.ID))
+	return model == "deepseek-flash" ||
+		strings.Contains(model, "deepseek-latest") ||
+		strings.Contains(model, "deepseek-v4") ||
+		strings.Contains(model, "deepseek_v4")
+}
+
+func applyDeepSeekV4(body []byte, config thinking.ThinkingConfig) ([]byte, error) {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		body = []byte(`{}`)
+	}
+
+	if config.Mode == thinking.ModeNone {
+		result, _ := sjson.DeleteBytes(body, "reasoning_effort")
+		result, _ = sjson.SetBytes(result, "thinking.type", "disabled")
+		return result, nil
+	}
+
+	effort := ""
+	switch config.Mode {
+	case thinking.ModeLevel:
+		switch config.Level {
+		case thinking.LevelMinimal, thinking.LevelLow:
+			effort = string(thinking.LevelLow)
+		case thinking.LevelMedium, thinking.LevelHigh, thinking.LevelXHigh:
+			effort = string(thinking.LevelHigh)
+		case thinking.LevelMax, thinking.ThinkingLevel("ultra"):
+			effort = string(thinking.LevelMax)
+		}
+	case thinking.ModeAuto:
+		effort = string(thinking.LevelHigh)
+	case thinking.ModeBudget:
+		level, ok := thinking.ConvertBudgetToLevel(config.Budget)
+		if ok {
+			return applyDeepSeekV4(body, thinking.ThinkingConfig{Mode: thinking.ModeLevel, Level: thinking.ThinkingLevel(level)})
+		}
+	}
+	if effort == "" {
+		return body, nil
+	}
+
+	result, _ := sjson.SetBytes(body, "thinking.type", "enabled")
+	result, _ = sjson.SetBytes(result, "reasoning_effort", effort)
 	return result, nil
 }
 
