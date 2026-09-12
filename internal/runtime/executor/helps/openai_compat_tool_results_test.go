@@ -71,6 +71,39 @@ func TestNormalizeOpenAIToolResultsTextOnlyImageAndUnknownContent(t *testing.T) 
 	}
 }
 
+func TestNormalizeClaudeToolResultsTextOnlyPreservesUserContent(t *testing.T) {
+	input := []byte(`{"messages":[{"role":"user","content":[
+		{"type":"tool_result","tool_use_id":"call_1","is_error":false,"content":[
+			{"type":"text","text":"image inspected"},
+			{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AA=="}}
+		]},
+		{"type":"tool_result","tool_use_id":"call_2","content":{"type":"image","source":{"type":"url","url":"https://example.com/tool.png"}}},
+		{"type":"tool_result","tool_use_id":"call_3","content":"already text"},
+		{"type":"image","source":{"type":"url","url":"https://example.com/user.png"}},
+		{"type":"text","text":"please inspect"}
+	]}]}`)
+	original := string(input)
+	got := NormalizeClaudeToolResultsTextOnly(input)
+	if string(input) != original {
+		t.Fatal("normalization mutated the original request")
+	}
+	if content := gjson.GetBytes(got, "messages.0.content.0.content"); content.Type != gjson.String || content.String() != "image inspected\n\n"+openAIToolResultImageOmittedText {
+		t.Fatalf("mixed tool result = %s", content.Raw)
+	}
+	if content := gjson.GetBytes(got, "messages.0.content.1.content").String(); content != openAIToolResultImageOmittedText {
+		t.Fatalf("image-only tool result = %q", content)
+	}
+	for _, path := range []string{
+		"messages.0.content.0.tool_use_id", "messages.0.content.0.is_error",
+		"messages.0.content.1.tool_use_id", "messages.0.content.2",
+		"messages.0.content.3", "messages.0.content.4",
+	} {
+		if gjson.GetBytes(got, path).Raw != gjson.Get(original, path).Raw {
+			t.Fatalf("unexpected change to %s; body=%s", path, got)
+		}
+	}
+}
+
 func TestShouldNormalizeOpenAIToolResultsForModel(t *testing.T) {
 	compat := &config.OpenAICompatibility{Models: []config.OpenAICompatibilityModel{
 		{Name: "upstream-text", Alias: "alias-text", InputModalities: []string{"text"}},

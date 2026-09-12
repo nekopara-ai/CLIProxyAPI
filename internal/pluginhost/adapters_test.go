@@ -2337,6 +2337,32 @@ func TestUsageAdapterNormalizesOmittedGenerateToTrue(t *testing.T) {
 	}
 }
 
+func TestUsageAdapterPropagatesBaseURL(t *testing.T) {
+	var gotBaseURL string
+	plugin := usagePluginFunc(func(ctx context.Context, record pluginapi.UsageRecord) {
+		gotBaseURL = record.BaseURL
+	})
+	host := newHostWithRecords(capabilityRecord{
+		id: "usage-base-url",
+		plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{
+			UsagePlugin: plugin,
+		}},
+	})
+	adapter := &usageAdapter{
+		host:     host,
+		pluginID: "usage-base-url",
+	}
+
+	adapter.HandleUsage(context.Background(), coreusage.Record{
+		Provider: "provider",
+		Model:    "gpt-5.4",
+		BaseURL:  "https://custom-proxy.example.com/v1",
+	})
+	if gotBaseURL != "https://custom-proxy.example.com/v1" {
+		t.Fatalf("plugin BaseURL = %q, want https://custom-proxy.example.com/v1", gotBaseURL)
+	}
+}
+
 func TestUsageAdapterPreservesExplicitGenerateFalse(t *testing.T) {
 	var gotGenerate bool
 	plugin := usagePluginFunc(func(ctx context.Context, record pluginapi.UsageRecord) {
@@ -3677,6 +3703,7 @@ func TestUsageAdapterPreservesServiceTierStages(t *testing.T) {
 
 	adapter.HandleUsage(context.Background(), coreusage.Record{
 		Provider:             "openai",
+		BaseURL:              "https://custom.example/v1",
 		Model:                "gpt-5.4",
 		ServiceTier:          "auto",
 		EffectiveServiceTier: "priority",
@@ -3685,5 +3712,8 @@ func TestUsageAdapterPreservesServiceTierStages(t *testing.T) {
 
 	if got.ServiceTier != "auto" || got.EffectiveServiceTier != "priority" || got.ResponseServiceTier != "default" {
 		t.Fatalf("plugin tiers = requested:%q effective:%q response:%q", got.ServiceTier, got.EffectiveServiceTier, got.ResponseServiceTier)
+	}
+	if got.BaseURL != "https://custom.example/v1" {
+		t.Fatalf("plugin base URL = %q, want https://custom.example/v1", got.BaseURL)
 	}
 }

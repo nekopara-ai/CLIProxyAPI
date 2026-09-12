@@ -1,6 +1,11 @@
 package registry
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+)
 
 func TestGetStaticModelDefinitionsByChannelSupportsGeminiInteractions(t *testing.T) {
 	models := GetStaticModelDefinitionsByChannel("gemini-interactions")
@@ -26,6 +31,52 @@ func TestModelOverrideHeadersFromEmbeddedModels(t *testing.T) {
 	}
 	if got := ModelOverrideHeaders("gpt-5.4"); got != nil {
 		t.Fatalf("ModelOverrideHeaders(gpt-5.4) = %#v, want nil", got)
+	}
+}
+
+func TestModelOverrideHeadersPreservesForkIdentityAfterCatalogRefresh(t *testing.T) {
+	const upstreamUA = "codex-tui/0.154.0 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.154.0)"
+	for _, tt := range []struct {
+		name       string
+		userAgent  string
+		originator string
+		migrate    bool
+	}{
+		{"legacy catalog", "codex-tui/0.153.3 (Mac OS 26.5.1; arm64) iTerm.app/3.6.11 (codex-tui; 0.153.3)", "codex-tui", true},
+		{"current catalog", upstreamUA, "codex-tui", true},
+		{"custom user agent", "custom-client/1.0", "codex-tui", false},
+		{"custom originator", upstreamUA, "custom-client", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			registryRef := GetGlobalRegistry()
+			const clientID = "test-catalog-refresh-identity"
+			const modelID = "test-catalog-refresh-model"
+			headers := map[string]string{
+				"user-agent": tt.userAgent,
+				"originator": tt.originator,
+				"version":    "0.154.0",
+				"x-custom":   "preserved",
+			}
+			registryRef.RegisterClient(clientID, "codex", []*ModelInfo{{
+				ID: modelID, Config: &ModelConfig{OverrideHeader: headers},
+			}})
+			t.Cleanup(func() { registryRef.UnregisterClient(clientID) })
+			want := make(map[string]string, len(headers))
+			for key, value := range headers {
+				want[key] = value
+			}
+			if tt.migrate {
+				want["user-agent"] = constant.CodexUserAgent
+				want["originator"] = constant.CodexOriginator
+				want["version"] = constant.CodexClientVersion
+			}
+			if got := ModelOverrideHeaders(modelID, "codex"); !reflect.DeepEqual(got, want) {
+				t.Fatalf("headers = %#v, want %#v", got, want)
+			}
+			if stored := registryRef.GetModelInfo(modelID, "codex").Config.OverrideHeader; !reflect.DeepEqual(stored, headers) {
+				t.Fatalf("stored headers changed: %#v, want %#v", stored, headers)
+			}
+		})
 	}
 }
 

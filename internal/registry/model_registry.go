@@ -28,6 +28,13 @@ const (
 type ModelInfo struct {
 	// ID is the unique identifier for the model
 	ID string `json:"id"`
+	// MetadataModelID identifies the canonical model used to resolve client metadata.
+	// It is internal and must not be exposed in model-list responses.
+	MetadataModelID string `json:"-"`
+	// ExplicitThinking indicates thinking/reasoning configuration was explicitly configured for this model.
+	ExplicitThinking bool `json:"-"`
+	// ExplicitInputModalities indicates input modalities were explicitly configured for this model.
+	ExplicitInputModalities bool `json:"-"`
 	// Object type for the model (typically "model")
 	Object string `json:"object"`
 	// Created timestamp when the model was created
@@ -221,7 +228,7 @@ func LookupModelInfo(modelID string, provider ...string) *ModelInfo {
 	return cloneModelInfo(LookupStaticModelInfo(modelID))
 }
 
-// ModelOverrideHeaders returns model-specific headers, migrating the previous default Codex identity.
+// ModelOverrideHeaders returns model-specific headers, migrating known upstream Codex identities.
 // The returned map is a defensive copy and may be empty but never nil when overrides exist.
 func ModelOverrideHeaders(modelID string, provider ...string) map[string]string {
 	info := LookupModelInfo(modelID, provider...)
@@ -239,10 +246,11 @@ func ModelOverrideHeaders(modelID string, provider ...string) map[string]string 
 	if len(out) == 0 {
 		return nil
 	}
-	// Remote model catalogs may still contain the previous built-in Codex identity.
-	// Migrate that exact profile while preserving other model-specific overrides.
+	// Remote catalogs can replace the embedded profile during release or runtime refresh.
+	// Migrate only known upstream defaults, preserving custom model-specific overrides.
 	const legacyCodexUserAgent = "codex-tui/0.153.3 (Mac OS 26.5.1; arm64) iTerm.app/3.6.11 (codex-tui; 0.153.3)"
-	if out["user-agent"] == legacyCodexUserAgent && out["originator"] == "codex-tui" {
+	const upstreamCodexUserAgent = "codex-tui/0.154.0 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.154.0)"
+	if (out["user-agent"] == legacyCodexUserAgent || out["user-agent"] == upstreamCodexUserAgent) && out["originator"] == "codex-tui" {
 		out["user-agent"] = constant.CodexUserAgent
 		out["originator"] = constant.CodexOriginator
 		out["version"] = constant.CodexClientVersion

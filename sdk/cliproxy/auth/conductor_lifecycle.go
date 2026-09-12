@@ -215,9 +215,24 @@ func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode upd
 	} else {
 		auth.Generation++
 	}
+	cooldownStateChanged := false
 	if !existing.Disabled && existing.Status != StatusDisabled && !auth.Disabled && auth.Status != StatusDisabled {
 		if mode != updateModeRefresh && len(auth.ModelStates) == 0 && len(existing.ModelStates) > 0 {
 			auth.ModelStates = existing.ModelStates
+		}
+		// Refresh already reconciles cooldowns through MergeRefreshedAuth.
+		// Apply credential replacement recovery only to other update paths.
+		if mode != updateModeRefresh && CredentialsChanged(existing, auth) {
+			if hasUnauthorizedAuthFailure(existing) || (auth.LastError != nil && isUnauthorizedError(auth.LastError)) {
+				auth.Unavailable = false
+				auth.LastError = nil
+				auth.StatusMessage = ""
+				auth.Status = StatusActive
+			}
+			resumed := clearUnauthorizedModelStates(auth, time.Now())
+			if len(resumed) > 0 {
+				cooldownStateChanged = true
+			}
 		}
 		if existing.Quota.Exceeded && existing.Quota.Reason == "credential_quota" && existing.Quota.NextRecoverAt.After(time.Now()) {
 			auth.Unavailable = existing.Unavailable
@@ -230,7 +245,7 @@ func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode upd
 	}
 	now := time.Now()
 	auth.UpdatedAt = now
-	cooldownStateChanged := normalizeModelStates(auth)
+	cooldownStateChanged = normalizeModelStates(auth) || cooldownStateChanged
 	if mode == updateModeReplace && !existing.Disabled && existing.Status != StatusDisabled && !auth.Disabled && auth.Status != StatusDisabled {
 		cooldownStateChanged = preserveForcedCooldownsOnReplacement(auth, existing, now) || cooldownStateChanged
 	}
