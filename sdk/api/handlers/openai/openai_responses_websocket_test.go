@@ -691,6 +691,7 @@ type websocketBootstrapFallbackExecutor struct {
 type websocketDirectCaptureExecutor struct {
 	mu                        sync.Mutex
 	provider                  string
+	streamItems               bool
 	failStatus                int
 	failCall                  int
 	replayRequiredCall        int
@@ -832,7 +833,12 @@ func (e *websocketDirectCaptureExecutor) ExecuteStream(ctx context.Context, auth
 		return &coreexecutor.StreamResult{Chunks: chunks}, nil
 	}
 	responseID := fmt.Sprintf("resp-%d", count)
-	chunks <- coreexecutor.StreamChunk{Payload: []byte(fmt.Sprintf(`{"type":"response.completed","response":{"id":%q,"output":[{"type":"message","id":"out-%d"}]}}`, responseID, count))}
+	output := fmt.Sprintf(`[{"type":"message","id":"out-%d"}]`, count)
+	if e.streamItems {
+		chunks <- coreexecutor.StreamChunk{Payload: []byte(fmt.Sprintf(`{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"out-%d"}}`, count))}
+		output = "[]"
+	}
+	chunks <- coreexecutor.StreamChunk{Payload: []byte(fmt.Sprintf(`{"type":"response.completed","response":{"id":%q,"output":%s}}`, responseID, output))}
 	close(chunks)
 	if count >= 2 && e.done != nil {
 		e.doneOnce.Do(func() {
@@ -2575,6 +2581,15 @@ func TestRecordResponsesWebsocketCustomToolCallsFromOutputItemDoneWithCache(t *t
 }
 
 func TestForwardResponsesWebsocketRestoresAndForwardsCompletedOutput(t *testing.T) {
+	for _, preserve := range []bool{false, true} {
+		t.Run(fmt.Sprintf("preserve=%t", preserve), func(t *testing.T) {
+			testForwardResponsesWebsocketCompletedOutput(t, preserve)
+		})
+	}
+}
+
+func testForwardResponsesWebsocketCompletedOutput(t *testing.T, preserve bool) {
+	t.Helper()
 	gin.SetMode(gin.TestMode)
 
 	serverErrCh := make(chan error, 1)
@@ -2610,6 +2625,7 @@ func TestForwardResponsesWebsocketRestoresAndForwardsCompletedOutput(t *testing.
 			errCh,
 			timelineLog,
 			"session-1",
+			responsesWebsocketForwardOptions{preserveCompletionOutput: func() bool { return preserve }},
 		)
 		if err != nil {
 			serverErrCh <- err
@@ -2669,7 +2685,11 @@ func TestForwardResponsesWebsocketRestoresAndForwardsCompletedOutput(t *testing.
 	if strings.Contains(string(payload), "response.done") {
 		t.Fatalf("payload unexpectedly rewrote completed event: %s", payload)
 	}
-	if got := gjson.GetBytes(payload, "response.output.0.id").String(); got != "call-1" {
+	if preserve {
+		if string(payload) != `{"type":"response.completed","response":{"id":"resp-1","output":[]}}` {
+			t.Fatalf("native completion changed: %s", payload)
+		}
+	} else if got := gjson.GetBytes(payload, "response.output.0.id").String(); got != "call-1" {
 		t.Fatalf("downstream completion output id = %q, want call-1; payload=%s", got, payload)
 	}
 
@@ -3710,17 +3730,28 @@ func TestResponsesWebsocketXAIWebsocketPassthroughKeepsNativeIncrementalRequest(
 }
 
 func TestResponsesWebsocketReplaysTypedTransportFailureOverHTTPOnSameAuth(t *testing.T) {
+	for _, provider := range []string{"xai", "codex"} {
+		for _, native := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/native=%t", provider, native), func(t *testing.T) {
+				testResponsesWebsocketHTTPReplayOnSameAuth(t, provider, native)
+			})
+		}
+	}
+}
+
+func testResponsesWebsocketHTTPReplayOnSameAuth(t *testing.T, provider string, native bool) {
+	t.Helper()
 	gin.SetMode(gin.TestMode)
 
-	modelName := "xai-websocket-http-replay-model"
+	modelName := provider + "-websocket-http-replay-model"
 	selector := &orderedWebsocketSelector{order: []string{"auth-a", "auth-b"}}
-	executor := &websocketDirectCaptureExecutor{provider: "xai", replayRequiredCall: 2}
+	executor := &websocketDirectCaptureExecutor{provider: provider, replayRequiredCall: 2, streamItems: true}
 	manager := coreauth.NewManager(nil, selector, nil)
 	manager.RegisterExecutor(executor)
 	for _, authID := range []string{"auth-a", "auth-b"} {
 		auth := &coreauth.Auth{
 			ID:         authID,
-			Provider:   "xai",
+			Provider:   provider,
 			Status:     coreauth.StatusActive,
 			Attributes: map[string]string{"websockets": "true"},
 		}
@@ -3739,7 +3770,11 @@ func TestResponsesWebsocketReplaysTypedTransportFailureOverHTTPOnSameAuth(t *tes
 	defer server.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses/ws"
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	headers := http.Header{}
+	if native {
+		headers.Set("X-OpenAI-Internal-Codex-Responses-Lite", "true")
+	}
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, headers)
 	if err != nil {
 		t.Fatalf("dial websocket: %v", err)
 	}
@@ -3749,21 +3784,30 @@ func TestResponsesWebsocketReplaysTypedTransportFailureOverHTTPOnSameAuth(t *tes
 	if errWrite := conn.WriteMessage(websocket.TextMessage, firstRequest); errWrite != nil {
 		t.Fatalf("write first request: %v", errWrite)
 	}
-	if _, payload, errRead := conn.ReadMessage(); errRead != nil || gjson.GetBytes(payload, "type").String() != wsEventTypeCompleted {
-		t.Fatalf("first response = %s, err=%v", payload, errRead)
+	readCompletion := func(wantOutputID string) {
+		t.Helper()
+		if _, payload, errRead := conn.ReadMessage(); errRead != nil || gjson.GetBytes(payload, "type").String() != "response.output_item.done" {
+			t.Fatalf("output item = %s, err=%v", payload, errRead)
+		}
+		_, payload, errRead := conn.ReadMessage()
+		if errRead != nil || gjson.GetBytes(payload, "type").String() != wsEventTypeCompleted {
+			t.Fatalf("completion = %s, err=%v", payload, errRead)
+		}
+		if native && provider == "codex" {
+			if got := gjson.GetBytes(payload, "response.output").Raw; got != "[]" {
+				t.Fatalf("native completion output = %s, want []", payload)
+			}
+		} else if got := gjson.GetBytes(payload, "response.output.0.id").String(); got != wantOutputID {
+			t.Fatalf("completion output id = %q, want %q: %s", got, wantOutputID, payload)
+		}
 	}
+	readCompletion("out-1")
 
 	secondRequest := []byte(`{"type":"response.create","previous_response_id":"resp-1","input":[{"type":"message","id":"msg-2"}]}`)
 	if errWrite := conn.WriteMessage(websocket.TextMessage, secondRequest); errWrite != nil {
 		t.Fatalf("write second request: %v", errWrite)
 	}
-	_, replayResponse, errRead := conn.ReadMessage()
-	if errRead != nil {
-		t.Fatalf("read replay response: %v", errRead)
-	}
-	if got := gjson.GetBytes(replayResponse, "type").String(); got != wsEventTypeCompleted {
-		t.Fatalf("replay response type = %q, want %q: %s", got, wsEventTypeCompleted, replayResponse)
-	}
+	readCompletion("out-3")
 
 	if got := executor.AuthIDs(); len(got) != 3 || got[0] != "auth-a" || got[1] != "auth-a" || got[2] != "auth-a" {
 		t.Fatalf("replay selected auth IDs = %v, want [auth-a auth-a auth-a]", got)
@@ -3959,8 +4003,8 @@ func TestResponsesWebsocketFullRequestCanRouteFromNativeWebsocketToBuiltInProvid
 
 	const sourceModel = "codex-provider-route-source"
 	const targetModel = "claude-provider-route-target"
-	codexExecutor := &websocketDirectCaptureExecutor{provider: "codex"}
-	claudeExecutor := &websocketDirectCaptureExecutor{provider: "claude"}
+	codexExecutor := &websocketDirectCaptureExecutor{provider: "codex", streamItems: true}
+	claudeExecutor := &websocketDirectCaptureExecutor{provider: "claude", streamItems: true}
 	manager := coreauth.NewManager(nil, nil, nil)
 	manager.RegisterExecutor(codexExecutor)
 	manager.RegisterExecutor(claudeExecutor)
@@ -4002,17 +4046,24 @@ func TestResponsesWebsocketFullRequestCanRouteFromNativeWebsocketToBuiltInProvid
 	}
 	defer func() { _ = conn.Close() }()
 
-	firstRequest := []byte(fmt.Sprintf(`{"type":"response.create","model":%q,"input":[{"type":"message","id":"msg-1"}]}`, sourceModel))
+	firstRequest := []byte(fmt.Sprintf(`{"type":"response.create","model":%q,"input":[{"type":"message","id":"msg-1"}],"client_metadata":{"ws_request_header_x_openai_internal_codex_responses_lite":"true"}}`, sourceModel))
 	if errWrite := conn.WriteMessage(websocket.TextMessage, firstRequest); errWrite != nil {
 		t.Fatalf("write first websocket message: %v", errWrite)
 	}
 	if _, _, errRead := conn.ReadMessage(); errRead != nil {
 		t.Fatalf("read first websocket response: %v", errRead)
 	}
+	_, nativeResponse, errRead := conn.ReadMessage()
+	if errRead != nil || gjson.GetBytes(nativeResponse, "response.output").Raw != "[]" {
+		t.Fatalf("native completion = %s, error = %v", nativeResponse, errRead)
+	}
 
-	routedRequest := []byte(fmt.Sprintf(`{"type":"response.create","model":%q,"route_to_claude":true,"input":[{"type":"message","id":"msg-routed"}]}`, sourceModel))
+	routedRequest := []byte(fmt.Sprintf(`{"type":"response.create","model":%q,"route_to_claude":true,"input":[{"type":"message","id":"msg-routed"}],"client_metadata":{"ws_request_header_x_openai_internal_codex_responses_lite":"true"}}`, sourceModel))
 	if errWrite := conn.WriteMessage(websocket.TextMessage, routedRequest); errWrite != nil {
 		t.Fatalf("write routed websocket message: %v", errWrite)
+	}
+	if _, _, errRead := conn.ReadMessage(); errRead != nil {
+		t.Fatalf("read routed output item: %v", errRead)
 	}
 	_, response, errRead := conn.ReadMessage()
 	if errRead != nil {
@@ -4020,6 +4071,10 @@ func TestResponsesWebsocketFullRequestCanRouteFromNativeWebsocketToBuiltInProvid
 	}
 	if got := gjson.GetBytes(response, "type").String(); got != wsEventTypeCompleted {
 		t.Fatalf("routed response type = %q, want %q: %s", got, wsEventTypeCompleted, response)
+	}
+	t.Logf("native completion: %s; routed completion: %s", nativeResponse, response)
+	if got := gjson.GetBytes(response, "response.output.0.id").String(); got != "out-1" {
+		t.Fatalf("cross-provider output repair lost: %s", response)
 	}
 	if got := len(codexExecutor.Payloads()); got != 1 {
 		t.Fatalf("codex payload count = %d, want 1", got)

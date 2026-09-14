@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -657,6 +658,7 @@ requestLoop:
 		attemptNativeWebsocket := nativeWebsocketPassthrough
 		forceHTTPReplay := false
 		replayPinnedAuthID := strings.TrimSpace(pinnedAuthID)
+		nativeRequest := util.IsCodexResponsesLiteRequest(payload, c.Request.Header)
 
 	attemptLoop:
 		for {
@@ -664,6 +666,7 @@ requestLoop:
 			lastAttemptedAuthID := replayPinnedAuthID
 			attemptedUpstreamMode := responsesWebsocketUpstreamModeUnknown
 			selectedAuthObserved := false
+			var preserveNativeOutput atomic.Bool
 			pinnedAuthAttempted := false
 			cliCtx, cliCancel := h.GetContextWithCancel(h, c, executionParent)
 			if !forceHTTPReplay {
@@ -674,6 +677,7 @@ requestLoop:
 			}
 			cliCtx = handlers.WithExecutionSessionID(cliCtx, passthroughSessionID)
 			cliCtx = handlers.WithSelectedAuthIDCallback(cliCtx, func(authID string) {
+				preserveNativeOutput.Store(false)
 				authID = strings.TrimSpace(authID)
 				if authID == "" || h == nil || h.AuthManager == nil {
 					return
@@ -681,12 +685,13 @@ requestLoop:
 				lastAttemptedAuthID = authID
 				selectedAuthObserved = true
 				pinnedAuthAttempted = pinnedAuthAttempted || (replayPinnedAuthID != "" && authID == replayPinnedAuthID)
-				if forceHTTPReplay {
-					attemptedUpstreamMode = responsesWebsocketUpstreamModeHTTP
-					return
-				}
 				selectedAuth, ok := sessionAuthByID(authID)
 				if !ok || selectedAuth == nil {
+					return
+				}
+				preserveNativeOutput.Store(nativeRequest && strings.EqualFold(strings.TrimSpace(selectedAuth.Provider), "codex"))
+				if forceHTTPReplay {
+					attemptedUpstreamMode = responsesWebsocketUpstreamModeHTTP
 					return
 				}
 				attemptedUpstreamMode = upstreamModeForAuth(selectedAuth)
@@ -729,8 +734,9 @@ requestLoop:
 				attemptTimeline,
 				passthroughSessionID,
 				responsesWebsocketForwardOptions{
-					toolCacheTurn: attemptToolCacheTurn,
-					suppressError: suppressReplayableError,
+					preserveCompletionOutput: preserveNativeOutput.Load,
+					toolCacheTurn:            attemptToolCacheTurn,
+					suppressError:            suppressReplayableError,
 				},
 			)
 			if errForward != nil {
