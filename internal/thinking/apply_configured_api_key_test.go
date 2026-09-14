@@ -73,7 +73,7 @@ func TestApplyThinkingWithModelInfoMapsDeepSeekV4ResponsesEfforts(t *testing.T) 
 		{requestEffort: "low", wantType: "enabled", wantEffort: "low"},
 		{requestEffort: "medium", wantType: "enabled", wantEffort: "high"},
 		{requestEffort: "high", wantType: "enabled", wantEffort: "high"},
-		{requestEffort: "xhigh", wantType: "enabled", wantEffort: "high"},
+		{requestEffort: "xhigh", wantType: "enabled", wantEffort: "xhigh"},
 		{requestEffort: "max", wantType: "enabled", wantEffort: "max"},
 		{requestEffort: "ultra", wantType: "enabled", wantEffort: "max"},
 	}

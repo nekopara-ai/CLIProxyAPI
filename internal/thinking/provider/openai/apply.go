@@ -42,7 +42,7 @@ func init() {
 //	}
 func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *registry.ModelInfo) ([]byte, error) {
 	if isDeepSeekV4Model(modelInfo) {
-		return applyDeepSeekV4(body, config)
+		return applyDeepSeekV4(body, config, isDeepSeekV41Model(modelInfo))
 	}
 	if thinking.IsUserDefinedModel(modelInfo) {
 		return applyCompatibleOpenAI(body, config)
@@ -97,7 +97,21 @@ func isDeepSeekV4Model(modelInfo *registry.ModelInfo) bool {
 		strings.Contains(model, "deepseek_v4")
 }
 
-func applyDeepSeekV4(body []byte, config thinking.ThinkingConfig) ([]byte, error) {
+// isDeepSeekV41Model uses the resolved upstream identity, not a public alias
+// which may also select an older V4 deployment. OpenCode serves V4.1 as
+// deepseek-flash; explicit V4 names retain their existing effort mapping.
+func isDeepSeekV41Model(modelInfo *registry.ModelInfo) bool {
+	if modelInfo == nil {
+		return false
+	}
+	model := strings.ToLower(strings.TrimSpace(modelInfo.ID))
+	model = model[strings.LastIndex(model, "/")+1:]
+	return model == "deepseek-flash" || model == "deepseek-v4.1" ||
+		strings.HasPrefix(model, "deepseek-v4.1-") ||
+		model == "deepseek_v4.1" || strings.HasPrefix(model, "deepseek_v4.1_")
+}
+
+func applyDeepSeekV4(body []byte, config thinking.ThinkingConfig, preserveXHigh bool) ([]byte, error) {
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		body = []byte(`{}`)
 	}
@@ -114,8 +128,13 @@ func applyDeepSeekV4(body []byte, config thinking.ThinkingConfig) ([]byte, error
 		switch config.Level {
 		case thinking.LevelMinimal, thinking.LevelLow:
 			effort = string(thinking.LevelLow)
-		case thinking.LevelMedium, thinking.LevelHigh, thinking.LevelXHigh:
+		case thinking.LevelMedium, thinking.LevelHigh:
 			effort = string(thinking.LevelHigh)
+		case thinking.LevelXHigh:
+			effort = string(thinking.LevelHigh)
+			if preserveXHigh {
+				effort = string(thinking.LevelXHigh)
+			}
 		case thinking.LevelMax, thinking.ThinkingLevel("ultra"):
 			effort = string(thinking.LevelMax)
 		}
@@ -124,7 +143,7 @@ func applyDeepSeekV4(body []byte, config thinking.ThinkingConfig) ([]byte, error
 	case thinking.ModeBudget:
 		level, ok := thinking.ConvertBudgetToLevel(config.Budget)
 		if ok {
-			return applyDeepSeekV4(body, thinking.ThinkingConfig{Mode: thinking.ModeLevel, Level: thinking.ThinkingLevel(level)})
+			return applyDeepSeekV4(body, thinking.ThinkingConfig{Mode: thinking.ModeLevel, Level: thinking.ThinkingLevel(level)}, preserveXHigh)
 		}
 	}
 	if effort == "" {

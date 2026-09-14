@@ -20,7 +20,7 @@ func TestApplyDeepSeekV4ReasoningEffort(t *testing.T) {
 		{name: "low", config: thinking.ThinkingConfig{Mode: thinking.ModeLevel, Level: thinking.LevelLow}, wantType: "enabled", wantEffort: "low"},
 		{name: "medium", config: thinking.ThinkingConfig{Mode: thinking.ModeLevel, Level: thinking.LevelMedium}, wantType: "enabled", wantEffort: "high"},
 		{name: "high", config: thinking.ThinkingConfig{Mode: thinking.ModeLevel, Level: thinking.LevelHigh}, wantType: "enabled", wantEffort: "high"},
-		{name: "xhigh", config: thinking.ThinkingConfig{Mode: thinking.ModeLevel, Level: thinking.LevelXHigh}, wantType: "enabled", wantEffort: "high"},
+		{name: "xhigh", config: thinking.ThinkingConfig{Mode: thinking.ModeLevel, Level: thinking.LevelXHigh}, wantType: "enabled", wantEffort: "xhigh"},
 		{name: "max", config: thinking.ThinkingConfig{Mode: thinking.ModeLevel, Level: thinking.LevelMax}, wantType: "enabled", wantEffort: "max"},
 	}
 
@@ -86,5 +86,27 @@ func TestApplyNonDeepSeekOpenAIModelUnchanged(t *testing.T) {
 	}
 	if gjson.GetBytes(out, "thinking").Exists() {
 		t.Fatalf("generic model gained DeepSeek thinking field: %s", out)
+	}
+}
+
+func TestDeepSeekV41XHighUsesResolvedVersion(t *testing.T) {
+	for _, tc := range []struct{ model, want string }{
+		{"deepseek-flash", "xhigh"},
+		{"deepseek-v4.1-flash", "xhigh"},
+		{"deepseek-ai/DeepSeek-V4.1-Flash", "xhigh"},
+		{"deepseek_v4.1_flash", "xhigh"},
+		{"deepseek-v4-flash", "high"},
+		{"deepseek-ai/DeepSeek-V4-Flash-0731", "high"},
+		{"deepseek-latest-flash", "high"},
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			out, err := NewApplier().Apply([]byte(`{}`), thinking.ThinkingConfig{Mode: thinking.ModeLevel, Level: thinking.LevelXHigh}, &registry.ModelInfo{ID: tc.model})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := gjson.GetBytes(out, "reasoning_effort").String(); got != tc.want {
+				t.Fatalf("effort=%q, want %q", got, tc.want)
+			}
+		})
 	}
 }
