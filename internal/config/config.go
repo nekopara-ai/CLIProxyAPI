@@ -174,4 +174,10 @@ type Config struct {
 
 	// Payload defines default and override rules for provider payload parameters.
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
+
+	// TimezoneOverride is an optional IANA timezone applied to Codex and Claude
+	// upstream request bodies. Empty keeps the client-supplied timezone/date.
+	// When set, CPA rewrites environment_context timezone/current_date tags,
+	// Claude currentDate reminders, and web_search user_location.timezone.
+	TimezoneOverride string `yaml:"timezone-override,omitempty" json:"timezone-override,omitempty"`
 }

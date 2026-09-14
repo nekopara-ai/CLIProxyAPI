@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -119,5 +120,43 @@ func TestCodexExecutorCountTokensTreatsNullInstructionsAsEmpty(t *testing.T) {
 
 	if string(nullResp.Payload) != string(emptyResp.Payload) {
 		t.Fatalf("token count payload mismatch:\nnull=%s\nempty=%s", string(nullResp.Payload), string(emptyResp.Payload))
+	}
+}
+
+func TestCodexExecutorExecuteAppliesTimezoneOverride(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":0,\"status\":\"completed\",\"background\":false,\"error\":null}}\n\n"))
+	}))
+	defer server.Close()
+
+	executor := NewCodexExecutor(&config.Config{TimezoneOverride: "America/New_York"})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL,
+		"api_key":  "test",
+	}}
+	payload := []byte(`{"model":"gpt-5.4","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\n  <current_date>2026-07-27</current_date>\n  <timezone>Etc/UTC</timezone>\n</environment_context>"}]}],"tools":[{"type":"web_search","user_location":{"type":"approximate","timezone":"Etc/UTC"}}]}`)
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-5.4",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Stream:       false,
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	env := gjson.GetBytes(gotBody, "input.0.content.0.text").String()
+	if !gjson.GetBytes(gotBody, "input.0.content.0.text").Exists() {
+		t.Fatalf("missing environment text in upstream body: %s", gotBody)
+	}
+	if got := gjson.GetBytes(gotBody, "tools.0.user_location.timezone").String(); got != "America/New_York" {
+		t.Fatalf("tools timezone = %q, want America/New_York; body=%s", got, gotBody)
+	}
+	if !strings.Contains(env, "<timezone>America/New_York</timezone>") {
+		t.Fatalf("environment timezone not rewritten: %q body=%s", env, gotBody)
 	}
 }

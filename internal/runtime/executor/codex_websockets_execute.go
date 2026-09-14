@@ -71,6 +71,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	if errReplay != nil {
 		return resp, errReplay
 	}
+	body = helps.ApplyTimezoneOverride(e.cfg, body)
 
 	httpURL := strings.TrimSuffix(baseURL, "/") + "/responses"
 	wsURL, err := buildCodexResponsesWebsocketURL(httpURL)

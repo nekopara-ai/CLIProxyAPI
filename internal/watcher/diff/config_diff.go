@@ -185,6 +185,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if !reflect.DeepEqual(oldCfg.Payload, newCfg.Payload) {
 		changes = appendPayloadConfigChanges(changes, oldCfg.Payload, newCfg.Payload)
 	}
+	if strings.TrimSpace(oldCfg.TimezoneOverride) != strings.TrimSpace(newCfg.TimezoneOverride) {
+		changes = append(changes, fmt.Sprintf("timezone-override: %s -> %s", strings.TrimSpace(oldCfg.TimezoneOverride), strings.TrimSpace(newCfg.TimezoneOverride)))
+	}
 
 	// API keys (redacted) and counts
 	if len(oldCfg.APIKeys) != len(newCfg.APIKeys) {

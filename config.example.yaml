@@ -826,6 +826,14 @@ nonstream-keepalive-interval: 0
 #         - "max_tokens_exceeded"
 #       action: "stop"
 
+# Optional IANA timezone rewrite for Codex and Claude upstream request bodies.
+# Empty (default) leaves the client timezone and date unchanged.
+# When set, CPA rewrites:
+#   - <timezone> and <current_date> inside <environment_context>
+#   - Claude currentDate reminders ("Today's date is YYYY-MM-DD.")
+#   - tools user_location.timezone, including nested additional_tools
+# timezone-override: "America/New_York"
+
 # Optional payload configuration
 # payload:
 #   default: # Default rules only set parameters when they are missing in the payload.

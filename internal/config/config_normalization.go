@@ -58,6 +58,14 @@ func (cfg *Config) SanitizeClaudeHeaderDefaults() {
 	cfg.ClaudeHeaderDefaults.Timezone = strings.TrimSpace(cfg.ClaudeHeaderDefaults.Timezone)
 }
 
+// SanitizeTimezoneOverride trims the optional request-body timezone rewrite.
+func (cfg *Config) SanitizeTimezoneOverride() {
+	if cfg == nil {
+		return
+	}
+	cfg.TimezoneOverride = strings.TrimSpace(cfg.TimezoneOverride)
+}
+
 // SanitizeOAuthModelAlias normalizes and deduplicates global OAuth model name aliases.
 // It trims whitespace, normalizes channel keys to lower-case, drops empty entries,
 // allows multiple aliases per upstream name, and ensures aliases are unique within each channel.

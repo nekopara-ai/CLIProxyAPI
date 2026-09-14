@@ -167,6 +167,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Sanitize Claude header defaults.
 	cfg.SanitizeClaudeHeaderDefaults()
+	cfg.SanitizeTimezoneOverride()
 
 	// Sanitize Claude key headers
 	cfg.SanitizeClaudeKeys()

@@ -3939,6 +3939,21 @@ func TestClaudeCodeTimezoneUsesCredentialThenConfiguredProfile(t *testing.T) {
 	}
 }
 
+func TestClaudeCodeTimezoneOverrideWinsOverCredential(t *testing.T) {
+	instant := time.Date(2026, time.August, 2, 1, 30, 0, 0, time.UTC)
+	cfg := &config.Config{
+		TimezoneOverride:     "America/New_York",
+		ClaudeHeaderDefaults: config.ClaudeHeaderDefaults{Timezone: "Asia/Tokyo"},
+	}
+	auth := &cliproxyauth.Auth{Metadata: map[string]any{"timezone": "Pacific/Honolulu"}}
+	if got := claudeCodeTimezone(cfg, auth).String(); got != "America/New_York" {
+		t.Fatalf("override timezone = %q, want America/New_York", got)
+	}
+	if got := claudeCodeLocalDate(instant.In(claudeCodeTimezone(cfg, auth))); got != "2026-08-01" {
+		t.Fatalf("override currentDate = %q, want 2026-08-01", got)
+	}
+}
+
 func TestInjectClaudeCodeCurrentDateIsIdempotentAndAlignsFirstUserCache(t *testing.T) {
 	fixed := time.Date(2026, time.August, 1, 9, 0, 0, 0, time.FixedZone("UTC+8", 8*60*60))
 	payload := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral","ttl":"1h"}}]}]}`)
