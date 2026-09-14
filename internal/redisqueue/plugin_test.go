@@ -118,6 +118,21 @@ func TestUsageQueuePluginNormalizesDirectSDKUsageByProvider(t *testing.T) {
 	}
 }
 
+func TestUsageQueuePluginPreservesCodexFilteredTierMetadata(t *testing.T) {
+	withEnabledQueue(t, func() {
+		(&usageQueuePlugin{}).HandleUsage(context.Background(), coreusage.Record{
+			Provider: "codex", ExecutorType: "CodexExecutor", Model: "gpt-6-astra",
+			ServiceTier: "priority", EffectiveServiceTier: coreusage.AutoServiceTier,
+			ResponseServiceTier: "default", RequestedAt: time.Now(),
+			Detail: coreusage.Detail{InputTokens: 1, OutputTokens: 1, TotalTokens: 2},
+		})
+		payload := popSinglePayload(t)
+		requireStringField(t, payload, "service_tier", "priority")
+		requireStringField(t, payload, "effective_service_tier", "auto")
+		requireStringField(t, payload, "response_service_tier", "default")
+	})
+}
+
 func TestUsageQueuePluginPayloadIncludesGenerateFalse(t *testing.T) {
 	withEnabledQueue(t, func() {
 		ctx := internallogging.WithResponseStatusHolder(context.Background())

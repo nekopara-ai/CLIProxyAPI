@@ -920,6 +920,45 @@ func TestUsageReporterCapturesEffectiveServiceTierAfterPayloadOverride(t *testin
 	}
 }
 
+func TestUsageReporterCodexOmittedTierIsAutoOnlyForCheckedObjects(t *testing.T) {
+	for _, tt := range []struct {
+		name, provider, format, payload, want string
+	}{
+		{"omitted", "codex", "codex", `{"model":"gpt-6-astra"}`, "auto"},
+		{"empty object", "codex", "codex", `{}`, "auto"},
+		{"priority", "codex", "codex", `{"service_tier":"priority"}`, "priority"},
+		{"default", "codex", "codex", `{"service_tier":"default"}`, "default"},
+		{"auto", "codex", "codex", `{"service_tier":"auto"}`, "auto"},
+		{"null field", "codex", "codex", `{"service_tier":null}`, ""},
+		{"blank field", "codex", "codex", `{"service_tier":"  "}`, ""},
+		{"numeric field", "codex", "codex", `{"service_tier":42}`, "42"},
+		{"empty payload", "codex", "codex", ``, ""},
+		{"invalid json", "codex", "codex", `{"model":`, ""},
+		{"null object", "codex", "codex", `null`, ""},
+		{"array", "codex", "codex", `[]`, ""},
+		{"string", "codex", "codex", `"text"`, ""},
+		{"other provider", "openai", "codex", `{"model":"gpt-6-astra"}`, ""},
+		{"other format", "codex", "openai", `{"model":"gpt-6-astra"}`, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := usage.WithServiceTier(context.Background(), "priority")
+			reporter := NewUsageReporter(ctx, tt.provider, "gpt-6-astra", nil)
+			if got := reporter.buildRecord(usage.Detail{}, true).EffectiveServiceTier; got != "" {
+				t.Fatalf("effective tier before final request = %q, want unknown", got)
+			}
+			payload := []byte(tt.payload)
+			reporter.SetTranslatedRequestMetadata(payload, tt.format)
+			record := reporter.buildRecord(usage.Detail{ResponseServiceTier: "default"}, false)
+			if record.ServiceTier != "priority" || record.EffectiveServiceTier != tt.want || record.ResponseServiceTier != "default" {
+				t.Fatalf("tiers = %q/%q/%q, want priority/%q/default", record.ServiceTier, record.EffectiveServiceTier, record.ResponseServiceTier, tt.want)
+			}
+			if string(payload) != tt.payload {
+				t.Fatal("metadata capture modified outbound payload")
+			}
+		})
+	}
+}
+
 func TestUsageReporterSetTranslatedReasoningEffortCodexConfigurationUpdate(t *testing.T) {
 	ctx := context.Background()
 	reporter := NewUsageReporter(ctx, "codex", "gpt-6-astra", nil)

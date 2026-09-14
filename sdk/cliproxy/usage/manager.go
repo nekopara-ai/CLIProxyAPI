@@ -41,7 +41,9 @@ type Record struct {
 	// ServiceTier stores the client-requested service tier.
 	ServiceTier string
 	// EffectiveServiceTier stores the tier in the final outbound request after
-	// protocol translation and payload defaults or overrides.
+	// protocol translation and payload defaults, overrides, or filters. For a
+	// checked Codex request, an omitted tier is reported as AutoServiceTier;
+	// an empty value means no effective tier could be determined.
 	EffectiveServiceTier string
 	// RequestServiceTier is a deprecated input-only alias retained for existing
 	// plugin callers. It is normalized into ServiceTier and never emitted.

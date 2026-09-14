@@ -207,6 +207,15 @@ func (r *UsageReporter) SetTranslatedRequestMetadata(payload []byte, format stri
 	}
 	r.reasoning = thinking.ExtractTranslatedReasoningEffort(payload, format)
 	r.effectiveServiceTier = extractEffectiveServiceTier(payload)
+	if r.provider == "codex" && format == "codex" && gjson.ValidBytes(payload) {
+		request := gjson.ParseBytes(payload)
+		if request.IsObject() && !request.Get("service_tier").Exists() {
+			// A checked Codex request with no tier uses auto. Reporting it explicitly
+			// keeps usage consumers from falling back to the client's pre-filter tier.
+			// This is metadata only; do not add the field to the upstream payload.
+			r.effectiveServiceTier = usage.AutoServiceTier
+		}
+	}
 }
 
 // SetTranslatedReasoningEffort is retained for existing executor call sites.
