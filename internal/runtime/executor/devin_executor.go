@@ -379,6 +379,10 @@ func (e *DevinExecutor) prepareDevinHTTPRequest(ctx context.Context, auth *clipr
 	if !isInteractionsSource {
 		payload = sdktranslator.TranslateRequest(opts.SourceFormat, sdktranslator.FormatInteractions, req.Model, payload, opts.Stream)
 	}
+	// Devin serializes the interactions payload into a protobuf request instead of
+	// forwarding JSON, so the shared payload funnel (and its timezone rewrite) does
+	// not run for this provider. Apply the rewrite to the intermediate payload here.
+	payload = helps.ApplyTimezoneOverride(e.cfg, payload)
 	systemPrompt, prompts, tools, temp, maxTokens, sessionID, cascadeID, thinkingLevel, budgetTokens := parseInteractionsPayload(payload, opts.OriginalRequest)
 	sessionID, cascadeID = resolveDevinSessionAndCascadeIDs(ctx, sessionID, cascadeID, opts)
 

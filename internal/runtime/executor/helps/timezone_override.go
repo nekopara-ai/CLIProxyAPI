@@ -1,6 +1,7 @@
 package helps
 
 import (
+	"bytes"
 	"strconv"
 	"strings"
 	"time"
@@ -51,7 +52,21 @@ func ApplyTimezoneOverrideAt(cfg *config.Config, payload []byte, now time.Time) 
 	}
 	timezone := strings.TrimSpace(cfg.TimezoneOverride)
 	date := now.In(location).Format("2006-01-02")
+	if !payloadHasTimezoneSurface(payload) {
+		return payload
+	}
 	return rewriteTimezoneJSON(payload, timezone, date)
+}
+
+// payloadHasTimezoneSurface is a byte-level pre-filter for the JSON walk. The
+// rewrite can only change three surfaces, so a body containing none of their
+// markers is returned untouched. The markers are matched without their angle
+// brackets because encoding/json may emit "\u003c" escapes; the bare names
+// appear in both the literal and escaped encodings.
+func payloadHasTimezoneSurface(payload []byte) bool {
+	return bytes.Contains(payload, []byte("environment_context")) ||
+		bytes.Contains(payload, []byte("user_location")) ||
+		bytes.Contains(payload, []byte(claudeCurrentDateMarker))
 }
 
 func rewriteTimezoneJSON(payload []byte, timezone, date string) []byte {

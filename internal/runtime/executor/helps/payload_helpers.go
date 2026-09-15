@@ -34,6 +34,9 @@ func ApplyPayloadConfigWithRequest(cfg *config.Config, model, protocol, fromProt
 // an applied rule targeted trackedPath or one of its descendants.
 // ApplyPayloadConfigWithTrackedPaths applies payload config and reports which
 // tracked paths (or their descendants) were targeted by an applied rule.
+// The configured timezone-override rewrite is applied last, so every executor
+// that funnels its outbound body through this helper shares one rewrite point and
+// payload rules cannot leave stale timezone/current-date fields behind.
 func ApplyPayloadConfigWithTrackedPaths(cfg *config.Config, model, protocol, fromProtocol, root string, payload, original []byte, requestedModel string, requestPath string, headers http.Header, trackedPaths ...string) ([]byte, map[string]bool) {
 	touched := make(map[string]bool)
 	if cfg == nil || len(payload) == 0 {
@@ -198,6 +201,12 @@ func ApplyPayloadConfigWithTrackedPaths(cfg *config.Config, model, protocol, fro
 			}
 		}
 	}
+	// Apply the request timezone rewrite as the final mutation. Executors that
+	// previously called ApplyTimezoneOverride explicitly still do so, which is
+	// idempotent; providers that never called it (openai-compatibility, xAI,
+	// Kimi, Gemini/AIStudio, Antigravity) are covered here instead of needing a
+	// per-executor call site.
+	out = ApplyTimezoneOverride(cfg, out)
 	return out, touched
 }
 

@@ -19,6 +19,7 @@ import (
 	codexmodels "github.com/router-for-me/CLIProxyAPI/v7/internal/client/codex/models"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/client/grokbuild"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
@@ -289,6 +290,14 @@ func sanitizeCodexAlphaSearchBody(body []byte) []byte {
 	return sanitizedBody
 }
 
+// prepareCodexAlphaSearchUpstreamBody sanitizes the standalone search body and
+// then applies the configured timezone rewrite. Alpha Search forwards its body
+// directly, so it never reaches the executor payload funnel that carries the
+// timezone-override for the regular Codex/Claude routes.
+func prepareCodexAlphaSearchUpstreamBody(cfg *config.Config, body []byte) []byte {
+	return helps.ApplyTimezoneOverride(cfg, sanitizeCodexAlphaSearchBody(body))
+}
+
 // rewriteCodexAlphaSearchModel replaces the top-level model field with the
 // credential-resolved upstream model before the request is forwarded.
 func rewriteCodexAlphaSearchModel(body []byte, upstreamModel string) []byte {
@@ -348,7 +357,7 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 		Model string `json:"model"`
 	}
 	_ = json.Unmarshal(body, &routing)
-	upstreamRequestBody := sanitizeCodexAlphaSearchBody(body)
+	upstreamRequestBody := prepareCodexAlphaSearchUpstreamBody(s.cfg, body)
 
 	selectionHeaders := c.Request.Header.Clone()
 	if sessionID := strings.TrimSpace(routing.ID); sessionID != "" {

@@ -903,6 +903,9 @@ nonstream-keepalive-interval: 0
 #   - <timezone> and <current_date> inside <environment_context>
 #   - Claude currentDate reminders ("Today's date is YYYY-MM-DD.")
 #   - tools user_location.timezone, including nested additional_tools
+# The rewrite runs on every upstream route, including OpenAI-compatible, xAI,
+# Kimi, Gemini/AIStudio, Antigravity, Devin, and the direct /v1/alpha/search
+# forward, so provider-specific executors cannot silently skip it.
 # timezone-override: "America/New_York"
 
 # Optional payload configuration
