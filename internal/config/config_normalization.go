@@ -64,6 +64,9 @@ func (cfg *Config) SanitizeTimezoneOverride() {
 		return
 	}
 	cfg.TimezoneOverride = strings.TrimSpace(cfg.TimezoneOverride)
+	cfg.TimezoneOverrideCountry = strings.TrimSpace(cfg.TimezoneOverrideCountry)
+	cfg.TimezoneOverrideRegion = strings.TrimSpace(cfg.TimezoneOverrideRegion)
+	cfg.TimezoneOverrideCity = strings.TrimSpace(cfg.TimezoneOverrideCity)
 }
 
 // SanitizeOAuthModelAlias normalizes and deduplicates global OAuth model name aliases.

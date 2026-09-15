@@ -184,4 +184,14 @@ type Config struct {
 	// and web_search user_location.timezone on every upstream route, including
 	// providers that do not use the Codex or Claude executors.
 	TimezoneOverride string `yaml:"timezone-override,omitempty" json:"timezone-override,omitempty"`
+
+	// TimezoneOverrideCountry, TimezoneOverrideRegion, and TimezoneOverrideCity
+	// optionally replace the client-supplied web_search user_location fields so the
+	// claimed location stays self-consistent with TimezoneOverride instead of
+	// contradicting it. Each field is rewritten only when it already exists in the
+	// upstream body, so a client that never claimed a location never gains one. All
+	// three are ignored unless TimezoneOverride resolves to a valid IANA location.
+	TimezoneOverrideCountry string `yaml:"timezone-override-country,omitempty" json:"timezone-override-country,omitempty"`
+	TimezoneOverrideRegion  string `yaml:"timezone-override-region,omitempty" json:"timezone-override-region,omitempty"`
+	TimezoneOverrideCity    string `yaml:"timezone-override-city,omitempty" json:"timezone-override-city,omitempty"`
 }

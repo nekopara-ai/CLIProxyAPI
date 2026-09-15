@@ -907,6 +907,16 @@ nonstream-keepalive-interval: 0
 # Kimi, Gemini/AIStudio, Antigravity, Devin, and the direct /v1/alpha/search
 # forward, so provider-specific executors cannot silently skip it.
 # timezone-override: "America/New_York"
+#
+# Optional web_search user_location fields applied together with the timezone
+# above. A body claiming country=CN, city=Shanghai, and timezone=America/New_York
+# is internally inconsistent, and that inconsistency is itself a tell that a
+# proxy rewrote the request. When set, each field replaces the client value only
+# if the client already sent that field, so a client that never claimed a
+# location never gains one. Leave all three empty to keep client values as-is.
+# timezone-override-country: "US"
+# timezone-override-region: "New York"
+# timezone-override-city: "New York"
 
 # Optional payload configuration
 # payload:

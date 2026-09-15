@@ -50,12 +50,28 @@ func ApplyTimezoneOverrideAt(cfg *config.Config, payload []byte, now time.Time) 
 	if location == nil {
 		return payload
 	}
-	timezone := strings.TrimSpace(cfg.TimezoneOverride)
-	date := now.In(location).Format("2006-01-02")
 	if !payloadHasTimezoneSurface(payload) {
 		return payload
 	}
-	return rewriteTimezoneJSON(payload, timezone, date)
+	target := timezoneOverrideTarget{
+		timezone: strings.TrimSpace(cfg.TimezoneOverride),
+		date:     now.In(location).Format("2006-01-02"),
+		country:  strings.TrimSpace(cfg.TimezoneOverrideCountry),
+		region:   strings.TrimSpace(cfg.TimezoneOverrideRegion),
+		city:     strings.TrimSpace(cfg.TimezoneOverrideCity),
+	}
+	return rewriteTimezoneJSON(payload, target)
+}
+
+// timezoneOverrideTarget carries the replacement timezone and local date plus
+// the optional location triple that keeps web_search user_location consistent
+// with the timezone instead of contradicting it.
+type timezoneOverrideTarget struct {
+	timezone string
+	date     string
+	country  string
+	region   string
+	city     string
 }
 
 // payloadHasTimezoneSurface is a byte-level pre-filter for the JSON walk. The
@@ -69,39 +85,66 @@ func payloadHasTimezoneSurface(payload []byte) bool {
 		bytes.Contains(payload, []byte(claudeCurrentDateMarker))
 }
 
-func rewriteTimezoneJSON(payload []byte, timezone, date string) []byte {
-	return rewriteTimezoneValue(payload, "", gjson.ParseBytes(payload), timezone, date)
+func rewriteTimezoneJSON(payload []byte, target timezoneOverrideTarget) []byte {
+	return rewriteTimezoneValue(payload, "", gjson.ParseBytes(payload), target)
 }
 
-func rewriteTimezoneValue(out []byte, path string, value gjson.Result, timezone, date string) []byte {
+func rewriteTimezoneValue(out []byte, path string, value gjson.Result, target timezoneOverrideTarget) []byte {
 	switch {
 	case value.IsArray():
 		items := value.Array()
 		for i := range items {
-			out = rewriteTimezoneValue(out, joinJSONPath(path, strconv.Itoa(i)), items[i], timezone, date)
+			out = rewriteTimezoneValue(out, joinJSONPath(path, strconv.Itoa(i)), items[i], target)
 		}
 	case value.IsObject():
 		value.ForEach(func(key, child gjson.Result) bool {
 			childPath := joinJSONPath(path, key.String())
 			if key.String() == "user_location" && child.IsObject() {
-				current := child.Get("timezone")
-				if !current.Exists() || current.Type != gjson.String || current.String() != timezone {
-					updated, errSet := sjson.SetBytes(out, joinJSONPath(childPath, "timezone"), timezone)
-					if errSet == nil {
-						out = updated
-					}
-				}
+				out = rewriteUserLocation(out, childPath, child, target)
 			}
-			out = rewriteTimezoneValue(out, childPath, child, timezone, date)
+			out = rewriteTimezoneValue(out, childPath, child, target)
 			return true
 		})
 	case value.Type == gjson.String:
-		rewritten, changed := rewriteTimezoneText(value.String(), timezone, date)
+		rewritten, changed := rewriteTimezoneText(value.String(), target.timezone, target.date)
 		if changed {
 			updated, errSet := sjson.SetBytes(out, path, rewritten)
 			if errSet == nil {
 				out = updated
 			}
+		}
+	}
+	return out
+}
+
+// rewriteUserLocation rewrites user_location.timezone and, when configured,
+// country/region/city. Location fields are only replaced when the client already
+// sent that field: a client that never claimed a location must not gain one,
+// otherwise the rewrite itself becomes the anomaly.
+func rewriteUserLocation(out []byte, childPath string, child gjson.Result, target timezoneOverrideTarget) []byte {
+	current := child.Get("timezone")
+	if !current.Exists() || current.Type != gjson.String || current.String() != target.timezone {
+		updated, errSet := sjson.SetBytes(out, joinJSONPath(childPath, "timezone"), target.timezone)
+		if errSet == nil {
+			out = updated
+		}
+	}
+	replacements := [...]struct{ field, value string }{
+		{"country", target.country},
+		{"region", target.region},
+		{"city", target.city},
+	}
+	for _, replacement := range replacements {
+		if replacement.value == "" {
+			continue
+		}
+		existing := child.Get(replacement.field)
+		if !existing.Exists() || existing.Type != gjson.String || existing.String() == replacement.value {
+			continue
+		}
+		updated, errSet := sjson.SetBytes(out, joinJSONPath(childPath, replacement.field), replacement.value)
+		if errSet == nil {
+			out = updated
 		}
 	}
 	return out

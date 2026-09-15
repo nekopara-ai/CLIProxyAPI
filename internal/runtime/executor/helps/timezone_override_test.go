@@ -91,6 +91,71 @@ func TestApplyTimezoneOverrideInsertsMissingEnvironmentTags(t *testing.T) {
 	}
 }
 
+func TestApplyTimezoneOverrideRewritesConfiguredUserLocationTriple(t *testing.T) {
+	now := time.Date(2026, 9, 15, 1, 0, 0, 0, time.UTC)
+	cfg := &config.Config{
+		TimezoneOverride:        "America/New_York",
+		TimezoneOverrideCountry: "US",
+		TimezoneOverrideRegion:  "New York",
+		TimezoneOverrideCity:    "New York",
+	}
+	// tools.1 models a client that only ever sent a timezone: the rewrite must not
+	// invent a country/region for it, because a claimed location is itself a signal.
+	payload := []byte(`{
+		"tools": [
+			{"type": "web_search", "user_location": {"type": "approximate", "country": "CN", "region": "Shanghai", "city": "Shanghai", "timezone": "Asia/Shanghai"}},
+			{"type": "web_search", "user_location": {"type": "approximate", "timezone": "Etc/UTC"}},
+			{"type": "function", "name": "get_time", "parameters": {"properties": {"city": {"type": "string"}}}}
+		],
+		"input": [
+			{"type": "additional_tools", "tools": [{"type": "web_search", "user_location": {"type": "approximate", "country": "CN", "city": "Beijing", "timezone": "Asia/Shanghai"}}]}
+		]
+	}`)
+
+	out := ApplyTimezoneOverrideAt(cfg, payload, now)
+	for _, tc := range []struct{ path, want string }{
+		{"tools.0.user_location.timezone", "America/New_York"},
+		{"tools.0.user_location.country", "US"},
+		{"tools.0.user_location.region", "New York"},
+		{"tools.0.user_location.city", "New York"},
+		{"input.0.tools.0.user_location.timezone", "America/New_York"},
+		{"input.0.tools.0.user_location.country", "US"},
+		{"input.0.tools.0.user_location.city", "New York"},
+	} {
+		if got := gjson.GetBytes(out, tc.path).String(); got != tc.want {
+			t.Fatalf("%s = %q, want %q; body=%s", tc.path, got, tc.want, out)
+		}
+	}
+	for _, path := range []string{
+		"tools.1.user_location.country",
+		"tools.1.user_location.region",
+		"tools.1.user_location.city",
+		"input.0.tools.0.user_location.region",
+	} {
+		if gjson.GetBytes(out, path).Exists() {
+			t.Fatalf("%s was invented by the rewrite; body=%s", path, out)
+		}
+	}
+	if got := gjson.GetBytes(out, "tools.2.parameters.properties.city.type").String(); got != "string" {
+		t.Fatalf("tool schema city property was rewritten: %s", out)
+	}
+	if again := ApplyTimezoneOverrideAt(cfg, out, now); string(again) != string(out) {
+		t.Fatalf("second pass changed the body:\nfirst=%s\nsecond=%s", out, again)
+	}
+}
+
+func TestApplyTimezoneOverrideLocationNeedsValidTimezone(t *testing.T) {
+	cfg := &config.Config{TimezoneOverrideCountry: "US", TimezoneOverrideCity: "New York"}
+	payload := []byte(`{"tools":[{"type":"web_search","user_location":{"type":"approximate","country":"CN","city":"Shanghai"}}]}`)
+	if got := string(ApplyTimezoneOverride(cfg, payload)); got != string(payload) {
+		t.Fatalf("location rewrite without a valid timezone changed payload: %s", got)
+	}
+	invalid := &config.Config{TimezoneOverride: "not/a-timezone", TimezoneOverrideCountry: "US", TimezoneOverrideCity: "New York"}
+	if got := string(ApplyTimezoneOverride(invalid, payload)); got != string(payload) {
+		t.Fatalf("location rewrite with an invalid timezone changed payload: %s", got)
+	}
+}
+
 func extractXMLTag(text, name string) string {
 	open := "<" + name + ">"
 	close := "</" + name + ">"

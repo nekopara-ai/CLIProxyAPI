@@ -191,6 +191,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if strings.TrimSpace(oldCfg.TimezoneOverride) != strings.TrimSpace(newCfg.TimezoneOverride) {
 		changes = append(changes, fmt.Sprintf("timezone-override: %s -> %s", strings.TrimSpace(oldCfg.TimezoneOverride), strings.TrimSpace(newCfg.TimezoneOverride)))
 	}
+	if timezoneLocationTriple(oldCfg) != timezoneLocationTriple(newCfg) {
+		changes = append(changes, fmt.Sprintf("timezone-override-location: %s -> %s", timezoneLocationTriple(oldCfg), timezoneLocationTriple(newCfg)))
+	}
 
 	// API keys (redacted) and counts
 	if len(oldCfg.APIKeys) != len(newCfg.APIKeys) {
@@ -499,6 +502,19 @@ func trimStrings(in []string) []string {
 		out[i] = strings.TrimSpace(in[i])
 	}
 	return out
+}
+
+// timezoneLocationTriple renders the optional user_location rewrite as one
+// comparable string so a config reload reports a single readable change line.
+func timezoneLocationTriple(cfg *config.Config) string {
+	if cfg == nil {
+		return "//"
+	}
+	return strings.Join([]string{
+		strings.TrimSpace(cfg.TimezoneOverrideCountry),
+		strings.TrimSpace(cfg.TimezoneOverrideRegion),
+		strings.TrimSpace(cfg.TimezoneOverrideCity),
+	}, "/")
 }
 
 func appendPayloadConfigChanges(changes []string, oldPayload, newPayload config.PayloadConfig) []string {
