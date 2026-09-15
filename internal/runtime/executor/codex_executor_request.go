@@ -426,10 +426,10 @@ func applyCodexHeadersFromSources(r *http.Request, auth *cliproxyauth.Auth, toke
 		r.Header.Del("Authorization")
 	}
 
+	misc.EnsureHeader(r.Header, ginHeaders, "Version", "")
 	if ginHeaders != nil && ginHeaders.Get("X-Codex-Beta-Features") != "" {
 		r.Header.Set("X-Codex-Beta-Features", ginHeaders.Get("X-Codex-Beta-Features"))
 	}
-	misc.EnsureHeader(r.Header, ginHeaders, "Version", "")
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Codex-Turn-Metadata", "")
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Codex-Turn-State", "")
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Client-Request-Id", "")
@@ -446,7 +446,6 @@ func applyCodexHeadersFromSources(r *http.Request, auth *cliproxyauth.Auth, toke
 	} else {
 		r.Header.Set("Accept", "application/json")
 	}
-	r.Header.Set("Connection", "Keep-Alive")
 
 	isAPIKey := codexAuthUsesAPIKey(auth)
 	if originator := strings.TrimSpace(ginHeaders.Get("Originator")); originator != "" {
@@ -466,7 +465,29 @@ func applyCodexHeadersFromSources(r *http.Request, auth *cliproxyauth.Auth, toke
 		attrs = auth.Attributes
 	}
 	util.ApplyCustomHeadersFromAttrs(r, attrs, ginHeaders)
+	stripConnectionSpecificUpstreamHeaders(r.Header)
 	applyCodexCloakingHeaders(r.Header, cfg)
+}
+
+// connectionSpecificUpstreamHeaders are forbidden on HTTP/2 (RFC 9113 §8.2.2)
+// and no native client sends them. Go's HTTP/2 stack forwards "Connection"
+// instead of dropping it, so a request that advertises "Connection: Keep-Alive"
+// over an HTTP/2 connection is both a protocol violation and a cheap way for an
+// upstream to tell the request apart from a real client.
+var connectionSpecificUpstreamHeaders = []string{
+	"Connection",
+	"Keep-Alive",
+	"Proxy-Connection",
+	"Transfer-Encoding",
+}
+
+func stripConnectionSpecificUpstreamHeaders(headers http.Header) {
+	if headers == nil {
+		return
+	}
+	for _, name := range connectionSpecificUpstreamHeaders {
+		headers.Del(name)
+	}
 }
 
 func applyCodexCloakingHeaders(headers http.Header, cfg *config.Config) {

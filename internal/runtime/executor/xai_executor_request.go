@@ -303,7 +303,6 @@ func applyXAIDefaultHeaders(r *http.Request, token string, stream bool, sessionI
 	} else {
 		r.Header.Set("Accept", "application/json")
 	}
-	r.Header.Set("Connection", "Keep-Alive")
 	if sessionID != "" {
 		r.Header.Set("x-grok-conv-id", sessionID)
 	}
