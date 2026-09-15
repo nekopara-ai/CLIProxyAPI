@@ -2,7 +2,6 @@ package helps
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -23,24 +22,53 @@ import (
 )
 
 // utlsRoundTripper implements http.RoundTripper using a Chrome fingerprint for
-// providers that require a browser-like TLS and HTTP/2 transport. Each request
-// gets a dedicated connection that is closed with the response body.
+// providers that require a browser-like TLS and HTTP/2 transport.
+//
+// It keeps the TLS session cache and the HTTP/2 connection between requests.
+// A client that renegotiates from scratch for every request never resumes a
+// session and never reuses a connection, which no browser does and which the
+// upstream can observe directly.
 type utlsRoundTripper struct {
 	dialer              proxy.Dialer
 	dialTimeout         time.Duration
 	tlsHandshakeTimeout time.Duration
+	sessions            tls.ClientSessionCache
+	mu                  sync.Mutex
+	connections         map[string]*utlsConnection
+}
+
+// utlsConnection is one pooled Chrome-profile HTTP/2 connection. Pooled
+// connections may serve several requests at once, exactly like a browser
+// multiplexing streams, so a connection is closed only once the last in-flight
+// request has released it.
+type utlsConnection struct {
+	client    *http2.ClientConn
+	addr      string
+	inFlight  int
+	idleSince time.Time
+	unpooled  bool
 }
 
 const (
 	utlsDialTimeout         = 30 * time.Second
 	utlsTLSHandshakeTimeout = 10 * time.Second
+	// utlsIdleConnectionTTL bounds how long an unused connection is kept, so a
+	// connection silently dropped by an upstream is not reused forever.
+	utlsIdleConnectionTTL = 90 * time.Second
+	// utlsSessionCacheCapacity bounds the per-transport TLS session cache. The
+	// cache is scoped to a single proxy, which is also the unit the round
+	// tripper cache is keyed by.
+	utlsSessionCacheCapacity = 32
 )
 
-type closeConnectionBody struct {
+// releaseConnectionBody returns the pooled connection to the round tripper once
+// the caller is done with the response body, so the next request reuses the
+// handshake instead of starting a new one.
+type releaseConnectionBody struct {
 	io.ReadCloser
-	closeConnection func() error
-	once            sync.Once
-	err             error
+	release func()
+	once    sync.Once
+	err     error
 }
 
 type onceCloseConn struct {
@@ -61,20 +89,17 @@ func (c *onceCloseConn) Close() error {
 	return c.err
 }
 
-func (b *closeConnectionBody) Close() error {
+func (b *releaseConnectionBody) Close() error {
 	if b == nil {
 		return nil
 	}
 	b.once.Do(func() {
-		var errConnection error
-		if b.closeConnection != nil {
-			errConnection = b.closeConnection()
+		if b.release != nil {
+			b.release()
 		}
-		var errBody error
 		if b.ReadCloser != nil {
-			errBody = b.ReadCloser.Close()
+			b.err = b.ReadCloser.Close()
 		}
-		b.err = errors.Join(errBody, errConnection)
 	})
 	return b.err
 }
@@ -93,6 +118,8 @@ func newUtlsRoundTripper(proxyURL string) *utlsRoundTripper {
 		dialer:              dialer,
 		dialTimeout:         utlsDialTimeout,
 		tlsHandshakeTimeout: utlsTLSHandshakeTimeout,
+		sessions:            tls.NewLRUClientSessionCache(utlsSessionCacheCapacity),
+		connections:         make(map[string]*utlsConnection),
 	}
 }
 
@@ -186,8 +213,14 @@ func (t *utlsRoundTripper) createConnection(ctx context.Context, host, addr stri
 		return nil, errDial
 	}
 
-	tlsConfig := &tls.Config{ServerName: host}
-	tlsConn := tls.UClient(conn, tlsConfig, tls.HelloChrome_Auto)
+	spec, errSpec := chromeTLSClientHelloSpec()
+	if errSpec != nil {
+		return nil, closeUtlsConnection(conn, "build Chrome ClientHello", errSpec)
+	}
+	tlsConn := tls.UClient(conn, newChromeTLSConfig(host, t.sessions), tls.HelloCustom)
+	if errPreset := tlsConn.ApplyPreset(spec); errPreset != nil {
+		return nil, closeUtlsConnection(conn, "apply Chrome ClientHello", errPreset)
+	}
 
 	errHandshake := runUtlsConnectionStage(ctx, conn, t.tlsHandshakeTimeout, tlsConn.HandshakeContext)
 	if errHandshake != nil {
@@ -206,6 +239,98 @@ func (t *utlsRoundTripper) createConnection(ctx context.Context, host, addr stri
 	return h2Conn, nil
 }
 
+// canServeRequest reports whether a pooled connection may take another request.
+// A connection with work in flight is always eligible, because HTTP/2 streams
+// are multiplexed; an idle connection must still be able to open a stream and
+// must not have outlived the idle TTL.
+func (c *utlsConnection) canServeRequest() bool {
+	if c == nil || c.unpooled || c.client == nil {
+		return false
+	}
+	if !c.client.CanTakeNewRequest() {
+		return false
+	}
+	if c.inFlight == 0 && time.Since(c.idleSince) > utlsIdleConnectionTTL {
+		return false
+	}
+	return true
+}
+
+func (c *utlsConnection) close() {
+	if c == nil || c.client == nil {
+		return
+	}
+	if errClose := c.client.Close(); errClose != nil {
+		log.Debugf("utls: close pooled connection: %v", errClose)
+	}
+}
+
+// acquireConnection returns a live connection for addr, reusing a pooled one
+// when possible and dialling a new one otherwise.
+func (t *utlsRoundTripper) acquireConnection(ctx context.Context, host, addr string) (*utlsConnection, error) {
+	t.mu.Lock()
+	if pooled := t.connections[addr]; pooled.canServeRequest() {
+		pooled.inFlight++
+		t.mu.Unlock()
+		return pooled, nil
+	}
+	t.mu.Unlock()
+
+	client, err := t.createConnection(ctx, host, addr)
+	if err != nil {
+		return nil, err
+	}
+	created := &utlsConnection{client: client, addr: addr, inFlight: 1}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if existing := t.connections[addr]; existing == nil || (existing.canServeRequest() == false && existing.inFlight == 0) {
+		existing.close()
+		t.connections[addr] = created
+		return created, nil
+	}
+	// Another request already published a usable connection. Keep it for the
+	// next request and close this one as soon as its stream finishes.
+	created.unpooled = true
+	return created, nil
+}
+
+// releaseConnection returns a connection to the pool, or closes it when it is
+// no longer usable.
+func (t *utlsRoundTripper) releaseConnection(conn *utlsConnection) {
+	if conn == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if conn.inFlight > 0 {
+		conn.inFlight--
+	}
+	conn.idleSince = time.Now()
+	if conn.unpooled || t.connections[conn.addr] != conn {
+		conn.close()
+		return
+	}
+	if !conn.client.CanTakeNewRequest() {
+		delete(t.connections, conn.addr)
+		conn.close()
+	}
+}
+
+// CloseIdleConnections closes every pooled connection that has no work in
+// flight. It satisfies the cache eviction hook used for round trippers.
+func (t *utlsRoundTripper) CloseIdleConnections() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for addr, conn := range t.connections {
+		if conn.inFlight > 0 {
+			continue
+		}
+		delete(t.connections, addr)
+		conn.close()
+	}
+}
+
 func (t *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	hostname := req.URL.Hostname()
 	port := req.URL.Port()
@@ -214,30 +339,26 @@ func (t *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 	}
 	addr := net.JoinHostPort(hostname, port)
 
-	h2Conn, err := t.createConnection(req.Context(), hostname, addr)
+	conn, err := t.acquireConnection(req.Context(), hostname, addr)
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := h2Conn.RoundTrip(req)
+	resp, err := conn.client.RoundTrip(req)
 	if err != nil {
-		if errClose := h2Conn.Close(); errClose != nil {
-			log.Debugf("utls: close connection after round trip failure: %v", errClose)
-		}
+		t.releaseConnection(conn)
 		return nil, err
 	}
 	if resp == nil {
-		if errClose := h2Conn.Close(); errClose != nil {
-			log.Debugf("utls: close connection after empty response: %v", errClose)
-		}
+		t.releaseConnection(conn)
 		return nil, fmt.Errorf("utls: upstream returned an empty response")
 	}
 	if resp.Body == nil {
 		resp.Body = http.NoBody
 	}
-	resp.Body = &closeConnectionBody{
-		ReadCloser:      resp.Body,
-		closeConnection: h2Conn.Close,
+	resp.Body = &releaseConnectionBody{
+		ReadCloser: resp.Body,
+		release:    func() { t.releaseConnection(conn) },
 	}
 	return resp, nil
 }
@@ -319,6 +440,37 @@ func claudeCodeTLSClientHelloSpec() *tls.ClientHelloSpec {
 	}
 }
 
+// newChromeTLSConfig builds the uTLS config for one browser-profile dial.
+//
+// OmitEmptyPsk keeps the pre_shared_key extension silent until a session is
+// cached, so a first ClientHello stays byte-identical to a fresh Chrome
+// handshake. PreferSkipResumptionOnNilExtension turns uTLS's "resume without
+// the matching extension" panic into a skipped resumption.
+func newChromeTLSConfig(host string, sessionCache tls.ClientSessionCache) *tls.Config {
+	return &tls.Config{
+		ServerName:                         host,
+		ClientSessionCache:                 sessionCache,
+		OmitEmptyPsk:                       true,
+		PreferSkipResumptionOnNilExtension: true,
+	}
+}
+
+// chromeTLSClientHelloSpec returns the ClientHello the Chrome profile sends.
+//
+// It is uTLS's stock Chrome parrot with one correction: the parrot carries no
+// pre_shared_key extension, so a cached TLS session could never be resumed and
+// every request would pay for a full handshake. The extension is appended last,
+// which is where RFC 8446 requires it and where Chrome sends it, and it
+// contributes zero bytes until a session exists.
+func chromeTLSClientHelloSpec() (*tls.ClientHelloSpec, error) {
+	spec, errSpec := tls.UTLSIdToSpec(tls.HelloChrome_Auto)
+	if errSpec != nil {
+		return nil, fmt.Errorf("utls: resolve Chrome ClientHello: %w", errSpec)
+	}
+	spec.Extensions = append(spec.Extensions, &tls.UtlsPreSharedKeyExtension{})
+	return &spec, nil
+}
+
 const claudeCodeRoundTripperCacheCapacity = 64
 
 var claudeCodeRoundTripperCache = internalcache.NewBoundedLRU[string, http.RoundTripper](
@@ -329,6 +481,27 @@ var claudeCodeRoundTripperCache = internalcache.NewBoundedLRU[string, http.Round
 		}
 	},
 )
+
+const chromeRoundTripperCacheCapacity = 64
+
+var chromeRoundTripperCache = internalcache.NewBoundedLRU[string, http.RoundTripper](
+	chromeRoundTripperCacheCapacity,
+	func(_ string, roundTripper http.RoundTripper) {
+		if transport, ok := roundTripper.(interface{ CloseIdleConnections() }); ok {
+			transport.CloseIdleConnections()
+		}
+	},
+)
+
+// cachedChromeRoundTripper keeps one browser-profile transport per proxy. Both
+// the TLS session cache and the pooled HTTP/2 connection live on that
+// transport, so without the cache every request would still start from an
+// empty handshake.
+func cachedChromeRoundTripper(proxyURL string) http.RoundTripper {
+	return chromeRoundTripperCache.GetOrAdd(proxyURL, func() http.RoundTripper {
+		return newUtlsRoundTripper(proxyURL)
+	})
+}
 
 var claudeCodeMessagesHeaderOrder = []string{
 	"Accept",
@@ -484,7 +657,7 @@ func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyau
 		ctxRoundTripper, _ = ctx.Value("cliproxy.roundtripper").(http.RoundTripper)
 	}
 
-	var chromeRT http.RoundTripper = newUtlsRoundTripper(proxyURL)
+	var chromeRT http.RoundTripper = cachedChromeRoundTripper(proxyURL)
 	var anthropicRT http.RoundTripper = cachedClaudeCodeRoundTripper(proxyURL)
 	var standardTransport http.RoundTripper = http.DefaultTransport
 	if proxyURL != "" {

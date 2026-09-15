@@ -64,9 +64,8 @@ func (c *trackedNetConn) Close() error {
 	return c.Conn.Close()
 }
 
-func TestCloseConnectionBodyClosesConnectionBeforeBodyOnce(t *testing.T) {
+func TestReleaseConnectionBodyReleasesConnectionBeforeBodyOnce(t *testing.T) {
 	bodyErr := errors.New("body close failed")
-	connectionErr := errors.New("connection close failed")
 	var closeOrder []string
 	body := &trackedReadCloser{
 		Reader:   strings.NewReader("response"),
@@ -75,13 +74,12 @@ func TestCloseConnectionBodyClosesConnectionBeforeBodyOnce(t *testing.T) {
 			closeOrder = append(closeOrder, "body")
 		},
 	}
-	connectionCloseCount := 0
-	wrapped := &closeConnectionBody{
+	releaseCount := 0
+	wrapped := &releaseConnectionBody{
 		ReadCloser: body,
-		closeConnection: func() error {
-			connectionCloseCount++
-			closeOrder = append(closeOrder, "connection")
-			return connectionErr
+		release: func() {
+			releaseCount++
+			closeOrder = append(closeOrder, "release")
 		},
 	}
 
@@ -97,19 +95,16 @@ func TestCloseConnectionBodyClosesConnectionBeforeBodyOnce(t *testing.T) {
 	if !errors.Is(errClose, bodyErr) {
 		t.Fatalf("close error = %v, want body close error", errClose)
 	}
-	if !errors.Is(errClose, connectionErr) {
-		t.Fatalf("close error = %v, want connection close error", errClose)
-	}
 	if errCloseAgain := wrapped.Close(); errCloseAgain != errClose {
 		t.Fatalf("second close error = %v, want %v", errCloseAgain, errClose)
 	}
 	if body.closeCount != 1 {
 		t.Fatalf("body close count = %d, want 1", body.closeCount)
 	}
-	if connectionCloseCount != 1 {
-		t.Fatalf("connection close count = %d, want 1", connectionCloseCount)
+	if releaseCount != 1 {
+		t.Fatalf("release count = %d, want 1", releaseCount)
 	}
-	if want := []string{"connection", "body"}; !reflect.DeepEqual(closeOrder, want) {
+	if want := []string{"release", "body"}; !reflect.DeepEqual(closeOrder, want) {
 		t.Fatalf("close order = %v, want %v", closeOrder, want)
 	}
 }
