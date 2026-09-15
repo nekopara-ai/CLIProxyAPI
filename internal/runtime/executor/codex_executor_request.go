@@ -90,13 +90,25 @@ type codexIdentityConfuseState struct {
 	authID                 string
 	originalPromptCacheKey string
 	promptCacheKey         string
-	turnIDs                []codexIdentityReplacement
+	identities             []codexIdentityReplacement
 }
 
 type codexIdentityReplacement struct {
 	original string
 	confused string
 }
+
+// Codex turn metadata carries one entry per client identifier. Native clients
+// keep every entry consistent with the request headers and with the body's
+// client_metadata block, so leaving any of them untranslated reintroduces the
+// real machine identity and the self-contradiction the confusion layer exists
+// to remove.
+const (
+	codexIdentityPrefixPromptCache = "prompt-cache"
+	codexIdentityPrefixInstall     = "installation"
+	codexIdentityPrefixTurn        = "turn"
+	codexIdentityPrefixContextWin  = "context-window"
+)
 
 func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Format, url string, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, userPayload []byte, rawJSON []byte, headerSets ...http.Header) (*http.Request, []byte, codexIdentityConfuseState, error) {
 	var headers http.Header
@@ -168,22 +180,46 @@ func applyCodexIdentityConfuseBody(cfg *config.Config, auth *cliproxyauth.Auth, 
 	state := codexIdentityConfuseState{enabled: true, authID: strings.TrimSpace(auth.ID)}
 	if promptCacheKey := strings.TrimSpace(gjson.GetBytes(userPayload, "prompt_cache_key").String()); promptCacheKey != "" {
 		state.originalPromptCacheKey = promptCacheKey
-		state.promptCacheKey = codexIdentityConfuseUUID(auth.ID, "prompt-cache", promptCacheKey)
+		state.promptCacheKey = state.confuseIdentity(codexIdentityPrefixPromptCache, promptCacheKey)
 		rawJSON = helps.SetStringIfDifferent(rawJSON, "prompt_cache_key", state.promptCacheKey)
 	}
 	if installationID := strings.TrimSpace(gjson.GetBytes(userPayload, "client_metadata.x-codex-installation-id").String()); installationID != "" {
-		rawJSON, _ = sjson.SetBytes(rawJSON, "client_metadata.x-codex-installation-id", codexIdentityConfuseUUID(auth.ID, "installation", installationID))
+		rawJSON, _ = sjson.SetBytes(rawJSON, "client_metadata.x-codex-installation-id", state.confuseIdentity(codexIdentityPrefixInstall, installationID))
 	}
 	if turnMetadata := strings.TrimSpace(gjson.GetBytes(rawJSON, "client_metadata.x-codex-turn-metadata").String()); turnMetadata != "" {
 		rawJSON, _ = sjson.SetBytes(rawJSON, "client_metadata.x-codex-turn-metadata", applyCodexTurnMetadataIdentityConfuse(turnMetadata, &state))
 	}
-	if state.promptCacheKey != "" {
-		if windowID := strings.TrimSpace(gjson.GetBytes(rawJSON, "client_metadata.x-codex-window-id").String()); windowID != "" {
-			rawJSON, _ = sjson.SetBytes(rawJSON, "client_metadata.x-codex-window-id", state.promptCacheKey+":0")
-		}
-	}
+	rawJSON = applyCodexClientMetadataIdentityConfuse(rawJSON, &state)
 
 	return rawJSON, state
+}
+
+// applyCodexClientMetadataIdentityConfuse rewrites the session, thread and turn
+// identifiers the native client mirrors into client_metadata. The request
+// headers and the turn metadata carry the same values, so confusing only one
+// surface makes the upstream request contradict itself.
+func applyCodexClientMetadataIdentityConfuse(rawJSON []byte, state *codexIdentityConfuseState) []byte {
+	if state == nil || !state.enabled || len(rawJSON) == 0 {
+		return rawJSON
+	}
+	sessionFields := []string{"session_id", "thread_id"}
+	turnFields := []string{"turn_id", "root_turn_id"}
+	for _, field := range sessionFields {
+		path := "client_metadata." + field
+		if value := strings.TrimSpace(gjson.GetBytes(rawJSON, path).String()); value != "" {
+			rawJSON, _ = sjson.SetBytes(rawJSON, path, state.confuseIdentity(codexIdentityPrefixPromptCache, value))
+		}
+	}
+	for _, field := range turnFields {
+		path := "client_metadata." + field
+		if value := strings.TrimSpace(gjson.GetBytes(rawJSON, path).String()); value != "" {
+			rawJSON, _ = sjson.SetBytes(rawJSON, path, state.confuseIdentity(codexIdentityPrefixTurn, value))
+		}
+	}
+	if windowID := strings.TrimSpace(gjson.GetBytes(rawJSON, "client_metadata.x-codex-window-id").String()); windowID != "" {
+		rawJSON, _ = sjson.SetBytes(rawJSON, "client_metadata.x-codex-window-id", state.confuseWindowID(windowID))
+	}
+	return rawJSON
 }
 
 func applyCodexIdentityConfuseHeaders(headers http.Header, state *codexIdentityConfuseState) {
@@ -207,7 +243,13 @@ func applyCodexIdentityConfuseHeaders(headers http.Header, state *codexIdentityC
 	}
 	headers.Set("X-Client-Request-Id", state.promptCacheKey)
 	headers.Set("Thread-Id", state.promptCacheKey)
-	headers.Set("X-Codex-Window-Id", state.promptCacheKey+":0")
+	windowID := strings.TrimSpace(headerValueCaseInsensitive(headers, "X-Codex-Window-Id"))
+	if windowID == "" {
+		windowID = state.promptCacheKey + ":0"
+	} else {
+		windowID = state.confuseWindowID(windowID)
+	}
+	setHeaderCasePreserved(headers, "X-Codex-Window-Id", windowID)
 }
 
 func applyCodexTurnMetadataIdentityConfuse(rawTurnMetadata string, state *codexIdentityConfuseState) string {
@@ -220,44 +262,97 @@ func applyCodexTurnMetadataIdentityConfuse(rawTurnMetadata string, state *codexI
 	} else if state.promptCacheKey != "" && state.originalPromptCacheKey != "" {
 		updatedTurnMetadata = strings.ReplaceAll(updatedTurnMetadata, state.originalPromptCacheKey, state.promptCacheKey)
 	}
-	if turnID := strings.TrimSpace(gjson.Get(rawTurnMetadata, "turn_id").String()); turnID != "" {
-		updatedTurnMetadata, _ = sjson.Set(updatedTurnMetadata, "turn_id", state.confuseTurnID(turnID))
-	}
-	if state.promptCacheKey != "" && gjson.Get(rawTurnMetadata, "window_id").Exists() {
-		updatedTurnMetadata, _ = sjson.Set(updatedTurnMetadata, "window_id", state.promptCacheKey+":0")
+	for _, field := range codexTurnMetadataIdentityFields {
+		value := strings.TrimSpace(gjson.Get(rawTurnMetadata, field).String())
+		if value == "" {
+			continue
+		}
+		updatedTurnMetadata, _ = sjson.Set(updatedTurnMetadata, field, state.confuseTurnMetadataField(field, value))
 	}
 	return updatedTurnMetadata
 }
 
+// codexTurnMetadataIdentityFields lists every per-client identifier the Codex
+// turn metadata carries. Every entry maps to exactly one confusion kind so the
+// mapping stays deterministic regardless of which surface is rewritten first.
+var codexTurnMetadataIdentityFields = []string{
+	"installation_id",
+	"session_id",
+	"thread_id",
+	"turn_id",
+	"root_turn_id",
+	"context_window_id",
+	"window_id",
+}
+
+func (state *codexIdentityConfuseState) confuseTurnMetadataField(field string, value string) string {
+	switch field {
+	case "installation_id":
+		return state.confuseIdentity(codexIdentityPrefixInstall, value)
+	case "turn_id", "root_turn_id":
+		return state.confuseIdentity(codexIdentityPrefixTurn, value)
+	case "context_window_id":
+		return state.confuseIdentity(codexIdentityPrefixContextWin, value)
+	case "window_id":
+		return state.confuseWindowID(value)
+	default:
+		return state.confuseIdentity(codexIdentityPrefixPromptCache, value)
+	}
+}
+
 func applyCodexIdentityConfuseResponsePayload(payload []byte, state codexIdentityConfuseState) []byte {
 	payload = replaceCodexIdentityResponsePayload(payload, state.originalPromptCacheKey, state.promptCacheKey)
-	for _, turnID := range state.turnIDs {
-		payload = replaceCodexIdentityResponsePayload(payload, turnID.original, turnID.confused)
+	for _, identity := range state.identities {
+		payload = replaceCodexIdentityResponsePayload(payload, identity.original, identity.confused)
 	}
 	return payload
 }
 
 func applyCodexIdentityExposeResponsePayload(payload []byte, state codexIdentityConfuseState) []byte {
 	payload = replaceCodexIdentityResponsePayload(payload, state.promptCacheKey, state.originalPromptCacheKey)
-	for _, turnID := range state.turnIDs {
-		payload = replaceCodexIdentityResponsePayload(payload, turnID.confused, turnID.original)
+	for _, identity := range state.identities {
+		payload = replaceCodexIdentityResponsePayload(payload, identity.confused, identity.original)
 	}
 	return payload
 }
 
 func (state *codexIdentityConfuseState) confuseTurnID(turnID string) string {
-	turnID = strings.TrimSpace(turnID)
-	if state == nil || !state.enabled || strings.TrimSpace(state.authID) == "" || turnID == "" {
-		return turnID
+	return state.confuseIdentity(codexIdentityPrefixTurn, turnID)
+}
+
+// confuseIdentity maps one client identifier onto its per-auth replacement. The
+// replacement is memoized by value, so the same identifier always resolves to
+// the same confused value whichever surface -- headers, client_metadata or turn
+// metadata -- mentions it first. Re-running the rewrite on an already confused
+// value returns it unchanged, which keeps repeated passes idempotent.
+func (state *codexIdentityConfuseState) confuseIdentity(kind string, value string) string {
+	value = strings.TrimSpace(value)
+	if state == nil || !state.enabled || strings.TrimSpace(state.authID) == "" || value == "" {
+		return value
 	}
-	for _, replacement := range state.turnIDs {
-		if replacement.original == turnID || replacement.confused == turnID {
+	for _, replacement := range state.identities {
+		if replacement.original == value || replacement.confused == value {
 			return replacement.confused
 		}
 	}
-	confusedTurnID := codexIdentityConfuseUUID(state.authID, "turn", turnID)
-	state.turnIDs = append(state.turnIDs, codexIdentityReplacement{original: turnID, confused: confusedTurnID})
-	return confusedTurnID
+	confused := codexIdentityConfuseUUID(state.authID, kind, value)
+	state.identities = append(state.identities, codexIdentityReplacement{original: value, confused: confused})
+	return confused
+}
+
+// confuseWindowID rewrites the session identifier embedded in a Codex window id
+// ("<session-id>:<window-number>") while preserving the window number.
+func (state *codexIdentityConfuseState) confuseWindowID(windowID string) string {
+	windowID = strings.TrimSpace(windowID)
+	if state == nil || !state.enabled || windowID == "" {
+		return windowID
+	}
+	prefix, suffix, found := strings.Cut(windowID, ":")
+	confused := state.confuseIdentity(codexIdentityPrefixPromptCache, strings.TrimSpace(prefix))
+	if !found {
+		return confused + ":0"
+	}
+	return confused + ":" + suffix
 }
 
 func replaceCodexIdentityResponsePayload(payload []byte, from string, to string) []byte {
