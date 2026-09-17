@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1992,9 +1993,13 @@ func TestXAIWebsockets_KeepalivePingDuringUpload_WithSession(t *testing.T) {
 	serverPongCh := make(chan string, 1)
 	inWriteHook := make(chan struct{})
 	pongDeliveredDuringWrite := make(chan struct{})
+	var inWriteHookOnce sync.Once
 
 	testWebsocketWritePayloadHook = func(conn *websocket.Conn) {
-		close(inWriteHook)
+		// The executor may re-enter the hook when a send is retried or a
+		// follow-up payload is written; only the first entry signals the
+		// server so the hook stays safe to call more than once.
+		inWriteHookOnce.Do(func() { close(inWriteHook) })
 		select {
 		case <-pongDeliveredDuringWrite:
 		case <-time.After(2 * time.Second):
@@ -2016,10 +2021,16 @@ func TestXAIWebsockets_KeepalivePingDuringUpload_WithSession(t *testing.T) {
 			return nil
 		})
 
+		requestReadCh := make(chan struct{})
 		go func() {
+			first := true
 			for {
 				if _, _, errReadLoop := conn.ReadMessage(); errReadLoop != nil {
 					return
+				}
+				if first {
+					first = false
+					close(requestReadCh)
 				}
 			}
 		}()
@@ -2041,6 +2052,16 @@ func TestXAIWebsockets_KeepalivePingDuringUpload_WithSession(t *testing.T) {
 			close(pongDeliveredDuringWrite)
 		case <-time.After(2 * time.Second):
 			t.Errorf("pong was not received while payload write was in progress")
+			return
+		}
+
+		// Wait for the in-flight request payload before answering. Closing the
+		// socket while the client is still writing makes the kernel reset the
+		// connection and turns a valid completion into a 1006 read error.
+		select {
+		case <-requestReadCh:
+		case <-time.After(2 * time.Second):
+			t.Errorf("timed out waiting for the client request payload")
 			return
 		}
 
@@ -2088,9 +2109,13 @@ func TestXAIWebsockets_KeepalivePingDuringUpload_Sessionless(t *testing.T) {
 	serverPongCh := make(chan string, 1)
 	inWriteHook := make(chan struct{})
 	pongDeliveredDuringWrite := make(chan struct{})
+	var inWriteHookOnce sync.Once
 
 	testWebsocketWritePayloadHook = func(conn *websocket.Conn) {
-		close(inWriteHook)
+		// The executor may re-enter the hook when a send is retried or a
+		// follow-up payload is written; only the first entry signals the
+		// server so the hook stays safe to call more than once.
+		inWriteHookOnce.Do(func() { close(inWriteHook) })
 		select {
 		case <-pongDeliveredDuringWrite:
 		case <-time.After(2 * time.Second):
@@ -2112,10 +2137,16 @@ func TestXAIWebsockets_KeepalivePingDuringUpload_Sessionless(t *testing.T) {
 			return nil
 		})
 
+		requestReadCh := make(chan struct{})
 		go func() {
+			first := true
 			for {
 				if _, _, errReadLoop := conn.ReadMessage(); errReadLoop != nil {
 					return
+				}
+				if first {
+					first = false
+					close(requestReadCh)
 				}
 			}
 		}()
@@ -2137,6 +2168,16 @@ func TestXAIWebsockets_KeepalivePingDuringUpload_Sessionless(t *testing.T) {
 			close(pongDeliveredDuringWrite)
 		case <-time.After(2 * time.Second):
 			t.Errorf("pong was not received while payload write was in progress on sessionless connection")
+			return
+		}
+
+		// Wait for the in-flight request payload before answering. Closing the
+		// socket while the client is still writing makes the kernel reset the
+		// connection and turns a valid completion into a 1006 read error.
+		select {
+		case <-requestReadCh:
+		case <-time.After(2 * time.Second):
+			t.Errorf("timed out waiting for the client request payload")
 			return
 		}
 

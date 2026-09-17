@@ -237,15 +237,13 @@ func TestWebsocketRetryBindFailureClearsActiveSessionState(t *testing.T) {
 					t.Errorf("upgrade websocket: %v", errUpgrade)
 					return
 				}
-				connection := connections.Add(1)
+				connections.Add(1)
 				defer func() { _ = conn.Close() }()
-				if connection == 1 {
-					_, _, _ = conn.ReadMessage()
-					return
-				}
-				if connection == 2 {
-					return
-				}
+				// Handler goroutines can be scheduled out of dial order, so the
+				// server must not infer the caller's intent from the counter
+				// value. The primed connection and the retry connection rejected
+				// by the lifecycle never receive a request payload; whichever
+				// connection actually carries the request answers it.
 				if _, _, errRead := conn.ReadMessage(); errRead != nil {
 					return
 				}
