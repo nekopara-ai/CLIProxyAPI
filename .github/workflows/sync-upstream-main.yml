@@ -107,12 +107,31 @@ jobs:
             exit 0
           fi
 
-          if ! git merge --no-edit origin/main; then
+          # Same workflow-ownership rule as above: the bot cannot push
+          # .github/workflows changes, so this merge keeps the patched
+          # branch's own workflow files. The merge commit is still created so
+          # ${PATCH_BRANCH} records origin/main as an ancestor.
+          if ! git merge --no-ff --no-commit origin/main; then
+            if ! git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+              echo "Merge of origin/main into ${PATCH_BRANCH} failed before a merge state existed" >&2
+              exit 1
+            fi
+          fi
+
+          if [[ -n "$(git diff --cached --name-only -- .github/workflows)" ]]; then
+            echo "Keeping ${PATCH_BRANCH} workflow files (drift from origin/main):" >&2
+            git diff --cached --name-only -- .github/workflows >&2
+          fi
+          git restore --source=HEAD --staged --worktree -- .github/workflows
+
+          if [[ -n "$(git diff --name-only --diff-filter=U)" ]]; then
             echo "Automatic merge into ${PATCH_BRANCH} has conflicts:" >&2
-            git diff --name-only --diff-filter=U >&2 || true
+            git diff --name-only --diff-filter=U >&2
             git merge --abort || true
             exit 1
           fi
+
+          git commit --no-edit
 
           git push origin "HEAD:refs/heads/${PATCH_BRANCH}"
           echo "changed=true" >> "$GITHUB_OUTPUT"
