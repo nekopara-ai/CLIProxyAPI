@@ -41,21 +41,44 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git fetch --no-tags --force \
-            "https://github.com/${UPSTREAM_REPOSITORY}.git" \
-            "refs/heads/main:refs/remotes/upstream/main"
+          git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
+          git fetch --no-tags --force upstream \
+            "+refs/heads/main:refs/remotes/upstream/main"
 
-          fork_head="$(git rev-parse HEAD)"
           upstream_head="$(git rev-parse refs/remotes/upstream/main)"
-          if git merge-base --is-ancestor "$upstream_head" "$fork_head"; then
+          if git merge-base --is-ancestor "$upstream_head" HEAD; then
             echo "Fork main already contains upstream ${upstream_head}"
             exit 0
           fi
 
-          if ! git merge --no-edit "$upstream_head"; then
+          # The default GITHUB_TOKEN can push source changes but cannot create
+          # or update files under .github/workflows. Merge upstream with the
+          # workflow tree pinned to this branch so the merge commit the bot
+          # pushes never introduces a workflow change. Upstream workflow
+          # updates are adopted separately by a maintainer with the
+          # `workflows` permission.
+          if ! git merge --no-ff --no-commit "$upstream_head"; then
+            if ! git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+              echo "Merge with ${UPSTREAM_REPOSITORY}:main failed before a merge state existed" >&2
+              exit 1
+            fi
+          fi
+
+          git restore --source=HEAD --staged --worktree -- .github/workflows
+
+          if [[ -n "$(git diff --name-only --diff-filter=U)" ]]; then
             echo "Automatic merge from ${UPSTREAM_REPOSITORY}:main has conflicts:" >&2
-            git diff --name-only --diff-filter=U >&2 || true
+            git diff --name-only --diff-filter=U >&2
             git merge --abort || true
+            exit 1
+          fi
+
+          git diff --cached --exit-code HEAD -- .github/workflows
+          git commit --no-edit
+
+          git fetch --no-tags origin "+refs/heads/main:refs/remotes/origin/main"
+          if ! git merge-base --is-ancestor refs/remotes/origin/main HEAD; then
+            echo "Fork main advanced during synchronization; refusing to push" >&2
             exit 1
           fi
 
