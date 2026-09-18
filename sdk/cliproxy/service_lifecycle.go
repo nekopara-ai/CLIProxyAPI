@@ -91,6 +91,7 @@ func (s *Service) Run(ctx context.Context) error {
 			includeBaseline: true,
 			auths:           s.coreManager.List(),
 		})
+		s.startCodexTurnTicketHarvester(ctx)
 		interval := 15 * time.Minute
 		s.coreManager.StartAutoRefresh(ctx, interval)
 		log.Infof("core auth auto-refresh started (interval=%s)", interval)
@@ -295,6 +296,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		if s.coreManager != nil {
 			s.coreManager.StopAutoRefresh()
 		}
+		s.stopCodexTurnTicketHarvester()
 		if s.watcher != nil {
 			if err := s.watcher.Stop(); err != nil {
 				log.Errorf("failed to stop file watcher: %v", err)

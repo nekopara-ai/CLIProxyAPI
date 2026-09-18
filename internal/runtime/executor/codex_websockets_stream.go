@@ -100,6 +100,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	reporter.SetTranslatedReasoningEffort(clientBody, to.String())
 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg, preserveNativeOutput, opts.Headers)
 	applyModelHeaderOverrides(wsHeaders, baseModel)
+	applyCodexTurnTicket(wsHeaders, auth, baseModel)
 	applyCodexIdentityConfuseHeaders(wsHeaders, &identityState)
 
 	var authID, authLabel, authType, authValue string
@@ -159,6 +160,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	var upstreamHeaders http.Header
 	if respHS != nil {
 		upstreamHeaders = respHS.Header.Clone()
+		harvestCodexTurnTicket(respHS.Header, auth, baseModel)
 	}
 	if errDial != nil {
 		bodyErr := websocketHandshakeBody(respHS)

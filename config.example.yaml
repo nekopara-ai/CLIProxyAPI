@@ -375,6 +375,45 @@ codex:
     #       - "turn:turn.example.com:3478?transport=udp"
     #     username: "user"
     #     credential: "secret"
+  # Harvest and replay upstream-minted X-Codex-Turn-State tokens.
+  # The upstream mints a healthy token (292 characters, gAAAAA prefix) for credentials and
+  # models that are not degraded, and a longer degraded variant under capacity pressure.
+  # Replaying a harvested healthy token lets a credential skip the degraded state, so the
+  # harvester probes each eligible credential out of band and only stores healthy tokens.
+  # Guard rails: a ticket is keyed by credential + model and is never replayed across either
+  # boundary; its lifetime is measured from the issue timestamp inside the Fernet token, not
+  # from capture time; injection leaves the client-supplied header untouched when no ticket
+  # exists for the bucket; and synthetic probes are rate limited per bucket.
+  turn-ticket:
+    # Disabled by default. When false the wiring is inert: injection and passive capture
+    # both check this flag, so nothing is stored or replayed until an operator opts in.
+    # When true, injection still requires a captured ticket, so enabling it is safe before
+    # the first healthy token is harvested.
+    enabled: false
+    # Token length treated as healthy. A longer token is the degraded variant.
+    target-length: 292
+    # How long a captured token may be replayed, measured from the token's own issue time.
+    ttl-seconds: 3600
+    # Probe again when a ticket is this close to expiry.
+    refresh-before-seconds: 600
+    # Delay between harvest cycles.
+    probe-interval-seconds: 60
+    # Bound on one synthetic probe request.
+    probe-timeout-seconds: 25
+    # Minimum spacing between probes of the same credential + model bucket. Kept just under
+    # the bucket's one-hour lifetime so a renewal is not blocked by its own cooldown.
+    probe-cooldown-seconds: 3300
+    # How long a bucket stops being probed after 429, 401, or 403.
+    reject-backoff-seconds: 600
+    # Dedicated egress for synthetic probes. Harvesting stays disabled until this is set:
+    # probes must not share the client-traffic path.
+    harvest-proxy-url: ""
+    # Buckets to harvest and inject for. Omit to use the built-in Codex model list.
+    # models:
+    #   - gpt-5.6-sol
+    # Optional restriction to specific credential ids.
+    # auth-ids:
+    #   - ""
 
 # Antigravity provider behavior.
 # antigravity:

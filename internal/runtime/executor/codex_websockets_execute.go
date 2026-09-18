@@ -92,6 +92,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	reporter.SetTranslatedReasoningEffort(clientBody, to.String())
 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg, nativeRequest, opts.Headers)
 	applyModelHeaderOverrides(wsHeaders, baseModel)
+	applyCodexTurnTicket(wsHeaders, auth, baseModel)
 	applyCodexIdentityConfuseHeaders(wsHeaders, &identityState)
 
 	var authID, authLabel, authType, authValue string
@@ -178,6 +179,9 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		return resp, errBind
 	}
 	recordAPIWebsocketHandshake(ctx, e.cfg, respHS)
+	if respHS != nil {
+		harvestCodexTurnTicket(respHS.Header, auth, baseModel)
+	}
 	reporter.StartResponseTTFT()
 	if isEphemeralSession {
 		defer func() {

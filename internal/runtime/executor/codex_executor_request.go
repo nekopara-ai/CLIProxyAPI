@@ -387,6 +387,26 @@ func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, s
 	applyCodexHeadersFromSources(r, auth, token, stream, cfg, ginHeaders)
 }
 
+// applyCodexTurnTicket replaces the turn-state header with a harvested healthy ticket
+// for this (auth, model) bucket, when one is available.
+//
+// The call site passes the outbound model, not the client's requested model, because the
+// harvester buckets tickets by the model it probed. Injection runs after every other
+// header source has been considered, including the client-supplied value: a stale or
+// degraded turn-state from the client would otherwise keep the account in the state this
+// feature exists to escape. A no-op when no ticket is available leaves pass-through
+// behaviour intact.
+func applyCodexTurnTicket(headers http.Header, auth *cliproxyauth.Auth, model string) {
+	helps.ApplyCodexTurnTicket(auth, model, headers)
+}
+
+// harvestCodexTurnTicket records a healthy turn-state the upstream minted for live
+// traffic. Passive capture costs no extra quota and keeps the bucket fresh without
+// waiting for the next synthetic probe cycle.
+func harvestCodexTurnTicket(headers http.Header, auth *cliproxyauth.Auth, model string) {
+	helps.HarvestCodexTurnStateOnResponse(auth, model, headers)
+}
+
 // applyModelHeaderOverrides forces models.json config.override_header onto upstream headers.
 func applyModelHeaderOverrides(headers http.Header, modelName string) {
 	if headers == nil {

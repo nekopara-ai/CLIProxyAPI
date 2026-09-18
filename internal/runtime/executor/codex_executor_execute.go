@@ -84,6 +84,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	}
 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg, opts.Headers)
 	applyModelHeaderOverrides(httpReq.Header, baseModel)
+	applyCodexTurnTicket(httpReq.Header, auth, baseModel)
 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
@@ -115,6 +116,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		}
 	}()
 	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+	harvestCodexTurnTicket(httpResp.Header, auth, baseModel)
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		b, _ := io.ReadAll(httpResp.Body)
 		b = applyCodexIdentityConfuseResponsePayload(b, identityState)
@@ -256,6 +258,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	}
 	applyCodexHeaders(httpReq, auth, apiKey, false, e.cfg, opts.Headers)
 	applyModelHeaderOverrides(httpReq.Header, baseModel)
+	applyCodexTurnTicket(httpReq.Header, auth, baseModel)
 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
@@ -287,6 +290,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 		}
 	}()
 	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+	harvestCodexTurnTicket(httpResp.Header, auth, baseModel)
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		b, _ := io.ReadAll(httpResp.Body)
 		b = applyCodexIdentityConfuseResponsePayload(b, identityState)

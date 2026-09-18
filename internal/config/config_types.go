@@ -217,6 +217,53 @@ type CodexConfig struct {
 	ModelLevelCooling bool `yaml:"model-level-cooling" json:"model-level-cooling"`
 	// LiveMediaRelay terminates and relays Codex Live WebRTC media in this process.
 	LiveMediaRelay CodexLiveMediaRelayConfig `yaml:"live-media-relay" json:"live-media-relay"`
+	// TurnTicket harvests upstream-minted X-Codex-Turn-State tokens so Codex requests can
+	// replay a healthy token instead of the degraded state the upstream would otherwise
+	// assign. Disabled by default.
+	TurnTicket CodexTurnTicketSettings `yaml:"turn-ticket" json:"turn-ticket"`
+}
+
+// CodexTurnTicketSettings configures the Codex turn-state ticket harvester.
+//
+// The upstream mints a healthy X-Codex-Turn-State token (normally 292 characters,
+// prefixed gAAAAA) for credentials and models that are not currently degraded, and a
+// longer degraded variant under capacity pressure. Replaying a harvested healthy token
+// lets an account skip the degraded state, so this feature probes each eligible
+// credential out of band through its own egress and keeps only healthy tokens.
+type CodexTurnTicketSettings struct {
+	// Enabled turns the harvester on. Injection also requires a captured ticket; requests
+	// for buckets without one keep the client-supplied header untouched.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// TargetLength is the token length treated as healthy. Defaults to 292.
+	TargetLength int `yaml:"target-length,omitempty" json:"target-length,omitempty"`
+	// TTLSeconds bounds how long a captured token is replayed, measured from the issue
+	// timestamp encoded in the token itself. Defaults to 3600.
+	TTLSeconds int `yaml:"ttl-seconds,omitempty" json:"ttl-seconds,omitempty"`
+	// RefreshBeforeSeconds is how close to expiry a ticket may get before the harvester
+	// probes again. Defaults to 600.
+	RefreshBeforeSeconds int `yaml:"refresh-before-seconds,omitempty" json:"refresh-before-seconds,omitempty"`
+	// ProbeIntervalSeconds is the delay between harvest cycles. Defaults to 60.
+	ProbeIntervalSeconds int `yaml:"probe-interval-seconds,omitempty" json:"probe-interval-seconds,omitempty"`
+	// ProbeTimeoutSeconds bounds one synthetic probe request. Defaults to 25.
+	ProbeTimeoutSeconds int `yaml:"probe-timeout-seconds,omitempty" json:"probe-timeout-seconds,omitempty"`
+	// ProbeCooldownSeconds is the minimum spacing between synthetic probes of the same
+	// (credential, model) bucket. Defaults to 3300 (55 minutes), deliberately just under the
+	// bucket's one-hour lifetime so a renewal is not blocked by its own cooldown.
+	ProbeCooldownSeconds int `yaml:"probe-cooldown-seconds,omitempty" json:"probe-cooldown-seconds,omitempty"`
+	// RejectBackoffSeconds is how long a bucket stops being probed after the upstream
+	// rejects it with 429, 401, or 403. Defaults to 600. A rejection means "you are asking
+	// too often" or "this credential is unusable", and trying another egress only makes
+	// both worse, so the bucket backs off instead of retrying.
+	RejectBackoffSeconds int `yaml:"reject-backoff-seconds,omitempty" json:"reject-backoff-seconds,omitempty"`
+	// HarvestProxyURL is the dedicated egress used only by synthetic probes. Harvesting
+	// stays disabled until it is set: probes must not share the client-traffic path.
+	HarvestProxyURL string `yaml:"harvest-proxy-url,omitempty" json:"harvest-proxy-url,omitempty"`
+	// Models lists the buckets to harvest and inject for. Defaults to the Codex models the
+	// upstream mints tickets for.
+	Models []string `yaml:"models,omitempty" json:"models,omitempty"`
+	// AuthIDs optionally restricts harvesting to specific credentials. Empty harvests
+	// every eligible Codex OAuth credential.
+	AuthIDs []string `yaml:"auth-ids,omitempty" json:"auth-ids,omitempty"`
 }
 
 // DefaultCodexStreamBootstrapTimeout is the default maximum duration to buffer bootstrap events.
