@@ -258,9 +258,10 @@ type CodexTurnTicketSettings struct {
 	// too often" or "this credential is unusable", and trying another egress only makes
 	// both worse, so the bucket backs off instead of retrying.
 	RejectBackoffSeconds int `yaml:"reject-backoff-seconds,omitempty" json:"reject-backoff-seconds,omitempty"`
-	// HarvestProxyURLs lists the dedicated egress choices used only by synthetic probes.
+	// HarvestProxyURLs lists fallback egress choices used only by synthetic probes.
 	// Each entry may be a concrete proxy URL or "direct", which explicitly bypasses process
-	// environment proxies. One entry is selected randomly for every probe. Harvesting stays
+	// environment proxies. Background probes try the business egress first and select one
+	// random fallback only after an HTTP 200 with a 312 turn state. Harvesting stays
 	// disabled while this list is empty.
 	HarvestProxyURLs []string `yaml:"harvest-proxy-urls,omitempty" json:"harvest-proxy-urls,omitempty"`
 	// Models lists the buckets to harvest and inject for. Defaults to the Codex models the

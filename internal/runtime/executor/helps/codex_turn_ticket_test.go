@@ -485,6 +485,7 @@ func TestCodexTurnTicketActiveProbeLogsDetailedRedactedOutcome(t *testing.T) {
 
 	cfg := turnTicketTestConfig()
 	cfg.Codex.TurnTicket.HarvestProxyURLs = []string{parsedProxy.String()}
+	cfg.ProxyURL = parsedProxy.String()
 	auth := turnTicketTestAuth("sensitive-auth-id")
 	auth.Attributes = map[string]string{"base_url": upstream.URL}
 	auth.Metadata["email"] = "kaycee.rempel@mail.com"
@@ -564,6 +565,7 @@ func TestCodexTurnTicketActiveProbeLogsRetryAndBackoffOutcomes(t *testing.T) {
 
 			cfg := turnTicketTestConfig()
 			cfg.Codex.TurnTicket.HarvestProxyURLs = []string{"direct"}
+			cfg.ProxyURL = "direct"
 			auth := turnTicketTestAuth("auth-a")
 			auth.Attributes = map[string]string{"base_url": upstream.URL}
 			harvester := NewCodexTurnTicketHarvester(NewCodexTurnTicketStore(), turnTicketTestConfigProvider(cfg), func() []*cliproxyauth.Auth {
@@ -780,8 +782,8 @@ func TestCodexTurnTicketHarvesterRetriesDegradedMissNextCycle(t *testing.T) {
 
 	harvester.probeAll(context.Background())
 	harvester.probeAll(context.Background())
-	if got := calls.Load(); got != 2 {
-		t.Fatalf("degraded miss made %d probes across two cycles, want 2", got)
+	if got := calls.Load(); got != 4 {
+		t.Fatalf("degraded miss made %d probes across two cycles, want 4 (business + harvest)", got)
 	}
 	observation := harvester.observation("auth-a", "gpt-5.5")
 	if observation.StatusCode != http.StatusOK || observation.StateLength != 312 || observation.Healthy {

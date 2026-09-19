@@ -19,8 +19,8 @@ var codexTurnTicketLifecycleMu sync.Mutex
 // capture both check the live config on every call, so the feature costs nothing until an
 // operator opts in. Once enabled, passive capture from live traffic records any healthy
 // token the upstream mints for a real request at no extra quota; only the synthetic probe
-// loop, which spends quota through a dedicated egress, additionally needs one or more
-// explicit proxy URLs and/or the "direct" setting.
+// loop additionally needs one or more explicit fallback proxy URLs and/or the "direct"
+// setting. It tries the business egress first, falling back only on a 312 turn state.
 //
 // The harvester is always started when the wiring is installed. Its loop re-reads the live
 // config every cycle, so an operator can enable the feature through a config reload and the
