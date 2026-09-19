@@ -376,14 +376,12 @@ codex:
     #     username: "user"
     #     credential: "secret"
   # Harvest and replay upstream-minted X-Codex-Turn-State tokens.
-  # The upstream mints a healthy token (292 characters, gAAAAA prefix) for credentials and
-  # models that are not degraded, and a longer degraded variant under capacity pressure.
-  # Replaying a harvested healthy token lets a credential skip the degraded state, so the
-  # harvester probes each eligible credential out of band and only stores healthy tokens.
-  # Guard rails: a ticket is keyed by credential + model and is never replayed across either
-  # boundary; its lifetime is measured from the issue timestamp inside the Fernet token, not
-  # from capture time; healthy tickets are atomically persisted under auth-dir and restored
-  # after restart; and a missing ticket is fail-closed by default.
+  # Experimental turn-state routing: personal accounts use 292, Team/Business use 332.
+  # Per-auth JSON codex_turn_ticket_plan: auto|pro|team overrides token plan hints;
+  # imported opaque access tokens can select team without ID/refresh tokens. Auto uses
+  # only claims matching account_id, otherwise target-length below remains the fallback.
+  # Length is not a model-quality guarantee. Tickets remain isolated by auth and model.
+  # Manual policy changes through PATCH auth-files/fields invalidate cached tickets.
   turn-ticket:
     # Disabled by default. When false the wiring is inert: injection and passive capture
     # both check this flag, so nothing is stored or replayed until an operator opts in.
@@ -393,7 +391,7 @@ codex:
     # healthy ticket for that exact model. Defaults to true. Set false only to restore the
     # old pass-through behavior, which may allow a 312 degraded turn state onto live traffic.
     fail-closed: true
-    # Token length treated as healthy. A longer token is the degraded variant.
+    # Fallback length for accounts without an explicit policy or matching token hint.
     target-length: 292
     # How long a captured token may be replayed, measured from the token's own issue time.
     ttl-seconds: 3600
@@ -411,7 +409,7 @@ codex:
     reject-backoff-seconds: 600
     # Fallback egress pool for synthetic probes. Each cycle first uses the credential
     # proxy, then the global proxy, or the environment when neither is set. Only an
-    # HTTP 200 with a 312 turn state triggers one random fallback from this pool.
+    # HTTP 200 with a 312 personal / 356 Team state triggers one random pool fallback.
     # Entries may be concrete http/https/socks5 proxy URLs, or "direct" to explicitly
     # bypass HTTP_PROXY/HTTPS_PROXY. Harvesting stays disabled while this list is empty.
     harvest-proxy-urls: []

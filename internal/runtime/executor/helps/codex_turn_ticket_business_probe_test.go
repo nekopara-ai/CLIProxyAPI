@@ -17,7 +17,11 @@ func TestCodexTurnTicketBusinessFirst(t *testing.T) {
 		status, length             int
 		authProxy, direct, invalid bool
 		fallback                   bool
+		team                       bool
 	}{
+		{name: "team business healthy", status: 200, length: 332, team: true},
+		{name: "team degraded fallback", status: 200, length: 356, team: true, fallback: true},
+		{name: "team rejects personal", status: 200, length: 292, team: true},
 		{name: "credential proxy healthy", status: 200, length: 292, authProxy: true},
 		{name: "global proxy healthy", status: 200, length: 292},
 		{name: "credential proxy degraded", status: 200, length: 312, authProxy: true, fallback: true},
@@ -33,6 +37,10 @@ func TestCodexTurnTicketBusinessFirst(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var businessHits, harvestHits, globalHits atomic.Int64
+			target := 292
+			if tc.team {
+				target = 332
+			}
 			business := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				businessHits.Add(1)
 				if r.Header.Get(CodexTurnStateHeader) != "" {
@@ -49,7 +57,7 @@ func TestCodexTurnTicketBusinessFirst(t *testing.T) {
 					t.Error("harvest must follow the business probe")
 				}
 				harvestHits.Add(1)
-				w.Header().Set(CodexTurnStateHeader, testTurnState(t, time.Now().Unix(), 292))
+				w.Header().Set(CodexTurnStateHeader, testTurnState(t, time.Now().Unix(), target))
 			}))
 			defer harvest.Close()
 			global := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -61,6 +69,9 @@ func TestCodexTurnTicketBusinessFirst(t *testing.T) {
 			cfg.ProxyURL = business.URL
 			cfg.Codex.TurnTicket.HarvestProxyURLs = []string{harvest.URL}
 			auth := turnTicketTestAuth("auth-a")
+			if tc.team {
+				auth.Metadata[CodexTurnTicketPlanField] = "team"
+			}
 			auth.Attributes = map[string]string{"base_url": business.URL}
 			if tc.authProxy {
 				auth.ProxyURL, cfg.ProxyURL = business.URL, global.URL
@@ -72,7 +83,7 @@ func TestCodexTurnTicketBusinessFirst(t *testing.T) {
 				auth.ProxyURL = "ftp://invalid.example"
 			}
 			store := NewCodexTurnTicketStore()
-			old := NewCodexTurnTicket(testTurnState(t, time.Now().Add(-55*time.Minute).Unix(), 292), time.Now(), time.Hour)
+			old := NewCodexTurnTicket(testTurnState(t, time.Now().Add(-55*time.Minute).Unix(), target), time.Now(), time.Hour)
 			store.Store(auth.ID, "gpt-5.5", old)
 			h := NewCodexTurnTicketHarvester(store, turnTicketTestConfigProvider(cfg), func() []*cliproxyauth.Auth { return []*cliproxyauth.Auth{auth} })
 			h.probeAll(context.Background())
@@ -91,7 +102,7 @@ func TestCodexTurnTicketBusinessFirst(t *testing.T) {
 				t.Fatal("probe counter must count both attempts")
 			}
 			ticket := store.Lookup(auth.ID, "gpt-5.5")
-			healthy := tc.fallback || (tc.status == 200 && tc.length == 292)
+			healthy := tc.fallback || (tc.status == 200 && tc.length == target)
 			if healthy && ticket.State == old.State {
 				t.Fatal("healthy result did not replace the expiring ticket")
 			}
