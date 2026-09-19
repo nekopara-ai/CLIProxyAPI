@@ -396,8 +396,8 @@ func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, s
 // degraded turn-state from the client would otherwise keep the account in the state this
 // feature exists to escape. A no-op when no ticket is available leaves pass-through
 // behaviour intact.
-func applyCodexTurnTicket(headers http.Header, auth *cliproxyauth.Auth, model string) {
-	helps.ApplyCodexTurnTicket(auth, model, headers)
+func applyCodexTurnTicket(headers http.Header, auth *cliproxyauth.Auth, model string) bool {
+	return helps.ApplyCodexTurnTicket(auth, model, headers)
 }
 
 // harvestCodexTurnTicket records a healthy turn-state the upstream minted for live

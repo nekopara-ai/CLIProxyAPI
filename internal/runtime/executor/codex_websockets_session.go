@@ -10,8 +10,10 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 )
@@ -56,6 +58,8 @@ type codexWebsocketSession struct {
 	connMu                    sync.Mutex
 	conn                      *websocket.Conn
 	connCloser                *websocketConnectionCloser
+	ticketConn                *websocket.Conn
+	ticketObservation         *usage.CodexTurnStateObservation
 	wsURL                     string
 	authID                    string
 	multiAgentV2OptimizedConn *websocket.Conn
@@ -89,6 +93,35 @@ type codexWebsocketRead struct {
 	msgType int
 	payload []byte
 	err     error
+}
+
+// recordCodexWebsocketTurnState binds ticket provenance to the physical handshake.
+// Reused sockets do not send the headers constructed for the new request, so a
+// refreshed cache must never overwrite the observation for an existing socket.
+func recordCodexWebsocketTurnState(reporter *helps.UsageReporter, sess *codexWebsocketSession, conn *websocket.Conn, response *http.Response, headers http.Header, injected bool) {
+	var observation *usage.CodexTurnStateObservation
+	if response != nil {
+		observation = helps.CodexRequestTurnState(headers, injected)
+		if observation != nil {
+			observation.RequestScope = "websocket_handshake"
+		}
+		if sess != nil && conn != nil {
+			sess.connMu.Lock()
+			if sess.conn == conn {
+				sess.ticketConn = conn
+				sess.ticketObservation = observation
+			}
+			sess.connMu.Unlock()
+		}
+	} else if sess != nil && conn != nil {
+		sess.connMu.Lock()
+		if sess.conn == conn && sess.ticketConn == conn && sess.ticketObservation != nil {
+			copied := *sess.ticketObservation
+			observation = &copied
+		}
+		sess.connMu.Unlock()
+	}
+	reporter.SetCodexTurnState(observation)
 }
 
 func (s *codexWebsocketSession) setActive(conn *websocket.Conn, ch chan codexWebsocketRead) {

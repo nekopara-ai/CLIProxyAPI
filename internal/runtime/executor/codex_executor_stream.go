@@ -93,8 +93,9 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	}
 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg, opts.Headers)
 	applyModelHeaderOverrides(httpReq.Header, baseModel)
-	applyCodexTurnTicket(httpReq.Header, auth, baseModel)
+	ticketInjected := applyCodexTurnTicket(httpReq.Header, auth, baseModel)
 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
+	reporter.SetCodexTurnState(helps.CodexRequestTurnState(httpReq.Header, ticketInjected))
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
 		authID = auth.ID
