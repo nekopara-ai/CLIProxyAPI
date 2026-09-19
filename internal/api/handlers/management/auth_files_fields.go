@@ -18,6 +18,7 @@ import (
 	claudeauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/credentialweight"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/synthesizer"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -327,6 +328,7 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 		return
 	}
 	coreauth.NormalizeCredentialMetadata(targetAuth.Metadata)
+	oldTicketPlan := helps.ResolveCodexTurnTicketPlan(targetAuth, 292)
 
 	changed := false
 	touchedRoots := make(map[string]struct{}, len(req))
@@ -401,6 +403,9 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update auth: %v", err)})
 		return
 	}
+	if oldTicketPlan != helps.ResolveCodexTurnTicketPlan(targetAuth, 292) {
+		helps.InvalidateCodexTurnTicketsForAuth(targetAuth.ID)
+	}
 	if h.postAuthPersistHook != nil {
 		hookAuth := updatedAuth
 		if hookAuth == nil {
@@ -442,6 +447,19 @@ func normalizeAuthFilePatchFields(fields map[string]json.RawMessage) (map[string
 		originalRoot := parts[0]
 		parts[0] = coreauth.CanonicalCredentialMetadataKey(originalRoot)
 		canonicalPath := strings.Join(parts, ".")
+		if parts[0] == helps.CodexTurnTicketPlanField {
+			var mode string
+			if len(parts) != 1 || (string(value) != "null" && json.Unmarshal(value, &mode) != nil) {
+				return nil, fmt.Errorf("codex_turn_ticket_plan must be auto, pro, team, or null")
+			}
+			mode = strings.ToLower(strings.TrimSpace(mode))
+			if mode != "" && mode != "auto" && mode != "pro" && mode != "team" {
+				return nil, fmt.Errorf("codex_turn_ticket_plan must be auto, pro, team, or null")
+			}
+			if string(value) != "null" {
+				value, _ = json.Marshal(mode)
+			}
+		}
 		if original, exists := originalNames[canonicalPath]; exists {
 			currentCanonical := originalRoot == parts[0]
 			if canonicalNames[canonicalPath] != currentCanonical {

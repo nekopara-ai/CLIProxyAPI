@@ -160,3 +160,59 @@ func TestCodexExecutorStreamLeavesTurnStateAloneWhenDisabled(t *testing.T) {
 		t.Fatalf("a stored ticket was injected while the feature was disabled")
 	}
 }
+
+func TestCodexExecutorStreamInjectsImportedTeamTicket(t *testing.T) {
+	healthy := integrationTurnState(t, time.Now().Unix(), 332)
+	degraded := integrationTurnState(t, time.Now().Unix(), 356)
+	fresh := integrationTurnState(t, time.Now().Unix(), 332)
+
+	var seen atomic.Value
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen.Store(r.Header.Get(helps.CodexTurnStateHeader))
+		w.Header().Set(helps.CodexTurnStateHeader, fresh)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"status\":\"completed\",\"output\":[]}}\n\n"))
+	}))
+	defer server.Close()
+
+	cfg := turnTicketIntegrationConfig("gpt-5.5")
+	process := helps.ConfigureCodexTurnTickets(func() *config.Config { return cfg }, nil)
+	defer helps.ConfigureCodexTurnTickets(nil, nil)
+	process.Store.Store("integration-auth", "gpt-5.5", helps.NewCodexTurnTicket(healthy, time.Now(), time.Hour))
+
+	auth := &cliproxyauth.Auth{ID: "integration-auth", Provider: "codex", Attributes: map[string]string{
+		"base_url": server.URL,
+	}}
+	auth.Metadata = map[string]any{"access_token": "opaque-imported-fixture", "account_id": "workspace-fixture", "codex_turn_ticket_plan": "team"}
+	clientHeaders := http.Header{}
+	clientHeaders.Set(helps.CodexTurnStateHeader, degraded)
+
+	executor := NewCodexExecutor(&config.Config{})
+	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-5.5",
+		Payload: []byte(`{"model":"gpt-5.5","input":"hello"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Stream:       true,
+		Headers:      clientHeaders,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream error: %v", chunk.Err)
+		}
+	}
+
+	got, _ := seen.Load().(string)
+	if got != healthy {
+		t.Fatalf("upstream saw turn-state length %d, want the harvested %d-character ticket", len(got), len(healthy))
+	}
+	if got == degraded {
+		t.Fatal("the client-supplied degraded turn-state reached the upstream")
+	}
+	if captured := process.Store.Lookup("integration-auth", "gpt-5.5"); captured == nil || captured.State != fresh {
+		t.Fatalf("passive harvest did not refresh the bucket: %#v", captured)
+	}
+}

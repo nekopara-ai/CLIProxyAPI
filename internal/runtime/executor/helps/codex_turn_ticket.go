@@ -33,10 +33,9 @@ import (
 
 // Codex turn-state tickets
 //
-// The upstream mints a healthy X-Codex-Turn-State token (normally 292 characters,
-// prefixed gAAAAA) for accounts and models that are not currently degraded. Under
-// capacity pressure it mints a longer degraded variant (commonly 312). Replaying a
-// healthy token on a request lets the account skip the degraded state.
+// Ticket shape is an experimental routing policy, not a model-quality guarantee.
+// Personal subscriptions use 292 characters; Team/Business use 332. Imported
+// credentials can explicitly select a policy without OAuth ID/refresh tokens.
 //
 // The store below is deliberately narrow: it never fabricates a value, it only
 // reads and writes the single X-Codex-Turn-State header, and it buckets strictly by
@@ -253,7 +252,7 @@ func (s *CodexTurnTicketStore) load(targetLength int, ttl time.Duration) error {
 			capturedAt = now
 		}
 		restored := NewCodexTurnTicket(record.State, capturedAt, ttl)
-		if restored == nil || !restored.valid(now, targetLength) {
+		if restored == nil || (!restored.valid(now, targetLength) && !restored.valid(now, 292) && !restored.valid(now, 332)) {
 			continue
 		}
 		s.tickets[codexTurnTicketKey(authID, model)] = restored
@@ -609,7 +608,7 @@ func (i *CodexTurnTicketInjector) Apply(auth *cliproxyauth.Auth, model string, h
 		return false
 	}
 	ticket := i.store.Lookup(auth.ID, model)
-	if !ticket.validForExecution(time.Now(), effective.TargetLength) {
+	if !ticket.validForExecution(time.Now(), codexTurnTicketTargetLength(auth, effective)) {
 		return false
 	}
 	// Overwrite rather than merge: the request must carry exactly one turn-state, and a
@@ -757,7 +756,7 @@ func (h *CodexTurnTicketHarvester) probeAll(ctx context.Context) {
 			}
 		}
 		for _, model := range effective.Models {
-			if ticket := h.store.Lookup(auth.ID, model); ticket.valid(now, effective.TargetLength) && !ticket.needsRefresh(now, refreshBefore) {
+			if ticket := h.store.Lookup(auth.ID, model); ticket.valid(now, codexTurnTicketTargetLength(auth, effective)) && !ticket.needsRefresh(now, refreshBefore) {
 				continue
 			}
 			h.probeOne(ctx, auth, model, effective)
@@ -807,6 +806,19 @@ func (h *CodexTurnTicketHarvester) probeOne(ctx context.Context, auth *cliproxya
 	// Serialize probes per bucket so a slow attempt cannot pile up behind the interval.
 	h.probeInFlight.Lock()
 	defer h.probeInFlight.Unlock()
+	if h.listAuths != nil {
+		var current *cliproxyauth.Auth
+		for _, candidate := range h.listAuths() {
+			if candidate != nil && candidate.ID == auth.ID {
+				current = candidate
+				break
+			}
+		}
+		if current == nil || current.Disabled || current.Status != cliproxyauth.StatusActive || !isCodexOAuthAuth(current) {
+			return
+		}
+		auth = current
+	}
 	if ctx != nil && ctx.Err() != nil {
 		return
 	}
@@ -828,14 +840,15 @@ func (h *CodexTurnTicketHarvester) probeOne(ctx context.Context, auth *cliproxya
 		startedAt := time.Now()
 		state, status, errProbe = probeCodexTurnStateWithTimeout(ctx, auth, model, effective, egress)
 		logFields = log.Fields{
-			"auth_hint":  codexTurnTicketAuthHint(auth),
-			"model":      strings.TrimSpace(model),
-			"egress":     codexTurnTicketHarvestEgressLabel(egress),
-			"phase":      phase,
-			"elapsed_ms": time.Since(startedAt).Milliseconds(),
+			"auth_hint":     codexTurnTicketAuthHint(auth),
+			"model":         strings.TrimSpace(model),
+			"target_length": codexTurnTicketTargetLength(auth, effective),
+			"egress":        codexTurnTicketHarvestEgressLabel(egress),
+			"phase":         phase,
+			"elapsed_ms":    time.Since(startedAt).Milliseconds(),
 		}
 		if phase != "business" || errProbe != nil || status != http.StatusOK ||
-			len(strings.TrimSpace(state)) != 312 || IsHealthyCodexTurnState(state, effective.TargetLength) {
+			len(strings.TrimSpace(state)) != codexTurnTicketDegradedLength(codexTurnTicketTargetLength(auth, effective)) || IsHealthyCodexTurnState(state, codexTurnTicketTargetLength(auth, effective)) {
 			break
 		}
 		fallback := chooseCodexTurnTicketHarvestEgress(effective.HarvestProxyURLs)
@@ -843,7 +856,7 @@ func (h *CodexTurnTicketHarvester) probeOne(ctx context.Context, auth *cliproxya
 			break
 		}
 		logFields["http_status"] = status
-		logFields["state_length"] = 312
+		logFields["state_length"] = len(strings.TrimSpace(state))
 		logFields["healthy"] = false
 		logFields["result"] = "unhealthy_ticket"
 		logFields["next_action"] = "harvest_fallback"
@@ -860,7 +873,7 @@ func (h *CodexTurnTicketHarvester) probeOne(ctx context.Context, auth *cliproxya
 		return
 	}
 	trimmedState := strings.TrimSpace(state)
-	healthy := IsHealthyCodexTurnState(trimmedState, effective.TargetLength)
+	healthy := IsHealthyCodexTurnState(trimmedState, codexTurnTicketTargetLength(auth, effective))
 	logFields["http_status"] = status
 	logFields["state_length"] = len(trimmedState)
 	logFields["healthy"] = healthy
@@ -886,7 +899,7 @@ func (h *CodexTurnTicketHarvester) probeOne(ctx context.Context, auth *cliproxya
 		return
 	}
 	ticket := NewCodexTurnTicket(state, time.Now(), time.Duration(effective.TTLSeconds)*time.Second)
-	if ticket == nil || !ticket.valid(time.Now(), effective.TargetLength) {
+	if status != http.StatusOK || ticket == nil || !ticket.valid(time.Now(), codexTurnTicketTargetLength(auth, effective)) {
 		switch {
 		case status != http.StatusOK:
 			logFields["result"] = "http_error"
@@ -1268,12 +1281,12 @@ func (h *CodexTurnTicketHarvester) HarvestCodexTurnStatePassively(auth *cliproxy
 		return
 	}
 	state := ExtractCodexTurnState(header)
-	if !IsHealthyCodexTurnState(state, effective.TargetLength) {
+	if !IsHealthyCodexTurnState(state, codexTurnTicketTargetLength(auth, effective)) {
 		return
 	}
 	now := time.Now()
 	ticket := NewCodexTurnTicket(state, now, time.Duration(effective.TTLSeconds)*time.Second)
-	if ticket == nil || !ticket.valid(now, effective.TargetLength) {
+	if ticket == nil || !ticket.valid(now, codexTurnTicketTargetLength(auth, effective)) {
 		return
 	}
 	h.store.Store(auth.ID, model, ticket)
@@ -1406,7 +1419,7 @@ func CodexTurnTicketAllowsExecution(auth *cliproxyauth.Auth, model string) bool 
 		!codexTurnTicketModelGated(effective, model) || !codexTurnTicketAuthScoped(effective, auth.ID) {
 		return true
 	}
-	return process.Store.Lookup(auth.ID, model).validForExecution(time.Now(), effective.TargetLength)
+	return process.Store.Lookup(auth.ID, model).validForExecution(time.Now(), codexTurnTicketTargetLength(auth, effective))
 }
 
 // HarvestCodexTurnStateOnResponse records a passively observed ticket when wired.
@@ -1447,6 +1460,8 @@ type CodexTurnTicketSnapshot struct {
 // CodexTurnTicketBucketSnapshot is a credential-safe per-model view. AuthHint is either
 // a masked OAuth email or a short one-way hash; raw IDs and ticket material are omitted.
 type CodexTurnTicketBucketSnapshot struct {
+	TargetLength        int       `json:"target_length"`
+	Plan                string    `json:"plan"`
 	AuthHint            string    `json:"auth_hint"`
 	Model               string    `json:"model"`
 	TicketState         string    `json:"ticket_state"`
@@ -1464,6 +1479,8 @@ type CodexTurnTicketBucketSnapshot struct {
 // response because it contains no ticket material; the surrounding auth-file entry
 // already carries the credential ID used for the association.
 type CodexTurnTicketCredentialSnapshot struct {
+	Plan              string                         `json:"plan"`
+	PlanSource        string                         `json:"plan_source"`
 	Configured        bool                           `json:"configured"`
 	Enabled           bool                           `json:"enabled"`
 	HarvesterActive   bool                           `json:"harvester_active"`
@@ -1524,6 +1541,7 @@ func SnapshotCodexTurnTickets() CodexTurnTicketSnapshot {
 	snapshot.Buckets = stats.Buckets
 	snapshot.HealthyTickets = stats.Healthy
 	snapshot.BucketStates = harvester.bucketSnapshots(effective)
+	snapshot.HealthyTickets = harvester.policyHealthyCount(effective)
 	return snapshot
 }
 
@@ -1544,7 +1562,9 @@ func SnapshotCodexTurnTicketForAuth(auth *cliproxyauth.Auth) *CodexTurnTicketCre
 		Configured:      true,
 		Enabled:         effective.Enabled,
 		HarvesterActive: harvester.Running(),
-		TargetLength:    effective.TargetLength,
+		TargetLength:    codexTurnTicketTargetLength(auth, effective),
+		Plan:            ResolveCodexTurnTicketPlan(auth, effective.TargetLength).Plan,
+		PlanSource:      ResolveCodexTurnTicketPlan(auth, effective.TargetLength).Source,
 		State:           "missing",
 	}
 	if !effective.Enabled {
@@ -1631,7 +1651,7 @@ func (h *CodexTurnTicketHarvester) bucketSnapshot(auth *cliproxyauth.Auth, model
 }
 
 func (h *CodexTurnTicketHarvester) bucketSnapshotAt(auth *cliproxyauth.Auth, model string, effective CodexTurnTicketConfig, now time.Time) CodexTurnTicketBucketSnapshot {
-	entry := CodexTurnTicketBucketSnapshot{AuthHint: codexTurnTicketAuthHint(auth), Model: model, TicketState: "missing"}
+	entry := CodexTurnTicketBucketSnapshot{TargetLength: codexTurnTicketTargetLength(auth, effective), Plan: ResolveCodexTurnTicketPlan(auth, effective.TargetLength).Plan, AuthHint: codexTurnTicketAuthHint(auth), Model: model, TicketState: "missing"}
 	if h == nil || h.store == nil || auth == nil {
 		return entry
 	}
@@ -1639,9 +1659,9 @@ func (h *CodexTurnTicketHarvester) bucketSnapshotAt(auth *cliproxyauth.Auth, mod
 		entry.TicketLength = ticket.Length
 		entry.ExpiresAt = ticket.ExpiresAt
 		switch {
-		case ticket.validForExecution(now, effective.TargetLength):
+		case ticket.validForExecution(now, codexTurnTicketTargetLength(auth, effective)):
 			entry.TicketState = "healthy"
-		case !ticket.valid(now, effective.TargetLength):
+		case !ticket.valid(now, codexTurnTicketTargetLength(auth, effective)):
 			entry.TicketState = "expired_or_invalid"
 		default:
 			entry.TicketState = "expiring"
