@@ -1419,6 +1419,36 @@ type CodexTurnTicketBucketSnapshot struct {
 	LastResult          string    `json:"last_result,omitempty"`
 }
 
+// CodexTurnTicketCredentialSnapshot is the management-facing ticket state for one
+// concrete credential. It is safe to attach to the already privileged auth-files
+// response because it contains no ticket material; the surrounding auth-file entry
+// already carries the credential ID used for the association.
+type CodexTurnTicketCredentialSnapshot struct {
+	Configured        bool                           `json:"configured"`
+	Enabled           bool                           `json:"enabled"`
+	HarvesterActive   bool                           `json:"harvester_active"`
+	TargetLength      int                            `json:"target_length"`
+	State             string                         `json:"state"`
+	HealthyModels     int                            `json:"healthy_models"`
+	TotalModels       int                            `json:"total_models"`
+	EarliestExpiresAt time.Time                      `json:"earliest_expires_at,omitempty"`
+	ModelStates       []CodexTurnTicketModelSnapshot `json:"models,omitempty"`
+}
+
+// CodexTurnTicketModelSnapshot describes one model bucket without repeating the
+// credential hint used by the global redacted snapshot.
+type CodexTurnTicketModelSnapshot struct {
+	Model               string    `json:"model"`
+	TicketState         string    `json:"ticket_state"`
+	TicketLength        int       `json:"ticket_length,omitempty"`
+	ExpiresAt           time.Time `json:"expires_at,omitempty"`
+	LastObservedAt      time.Time `json:"last_observed_at,omitempty"`
+	LastHTTPStatus      int       `json:"last_http_status,omitempty"`
+	LastObservedLength  int       `json:"last_observed_length,omitempty"`
+	LastObservedHealthy bool      `json:"last_observed_healthy"`
+	LastResult          string    `json:"last_result,omitempty"`
+}
+
 // SnapshotCodexTurnTickets renders the current turn-ticket state for the management API.
 func SnapshotCodexTurnTickets() CodexTurnTicketSnapshot {
 	process := CurrentCodexTurnTickets()
@@ -1457,6 +1487,82 @@ func SnapshotCodexTurnTickets() CodexTurnTicketSnapshot {
 	return snapshot
 }
 
+// SnapshotCodexTurnTicketForAuth returns the current cache/probe state for one Codex
+// OAuth credential. Non-Codex and API-key credentials return nil so unrelated auth-file
+// entries remain unchanged.
+func SnapshotCodexTurnTicketForAuth(auth *cliproxyauth.Auth) *CodexTurnTicketCredentialSnapshot {
+	if !isCodexOAuthCredential(auth) {
+		return nil
+	}
+	process := CurrentCodexTurnTickets()
+	if process == nil || process.Harvester == nil || process.Store == nil {
+		return &CodexTurnTicketCredentialSnapshot{State: "unavailable"}
+	}
+	harvester := process.Harvester
+	effective := codexTurnTicketEffectiveConfig(harvester.cfgProvider)
+	snapshot := &CodexTurnTicketCredentialSnapshot{
+		Configured:      true,
+		Enabled:         effective.Enabled,
+		HarvesterActive: harvester.Running(),
+		TargetLength:    effective.TargetLength,
+		State:           "missing",
+	}
+	if !effective.Enabled {
+		snapshot.State = "disabled"
+		return snapshot
+	}
+	if !codexTurnTicketAuthScoped(effective, auth.ID) {
+		snapshot.State = "not_scoped"
+		return snapshot
+	}
+
+	var expiringModels, invalidModels int
+	for _, model := range effective.Models {
+		bucket := harvester.bucketSnapshot(auth, model, effective)
+		modelState := CodexTurnTicketModelSnapshot{
+			Model:               bucket.Model,
+			TicketState:         bucket.TicketState,
+			TicketLength:        bucket.TicketLength,
+			ExpiresAt:           bucket.ExpiresAt,
+			LastObservedAt:      bucket.LastObservedAt,
+			LastHTTPStatus:      bucket.LastHTTPStatus,
+			LastObservedLength:  bucket.LastObservedLength,
+			LastObservedHealthy: bucket.LastObservedHealthy,
+			LastResult:          bucket.LastResult,
+		}
+		snapshot.ModelStates = append(snapshot.ModelStates, modelState)
+		snapshot.TotalModels++
+		switch bucket.TicketState {
+		case "healthy":
+			snapshot.HealthyModels++
+			if snapshot.EarliestExpiresAt.IsZero() || bucket.ExpiresAt.Before(snapshot.EarliestExpiresAt) {
+				snapshot.EarliestExpiresAt = bucket.ExpiresAt
+			}
+		case "expiring":
+			expiringModels++
+			if snapshot.EarliestExpiresAt.IsZero() || bucket.ExpiresAt.Before(snapshot.EarliestExpiresAt) {
+				snapshot.EarliestExpiresAt = bucket.ExpiresAt
+			}
+		case "expired_or_invalid":
+			invalidModels++
+		}
+	}
+
+	switch {
+	case snapshot.TotalModels > 0 && snapshot.HealthyModels == snapshot.TotalModels:
+		snapshot.State = "healthy"
+	case snapshot.HealthyModels > 0:
+		snapshot.State = "partial"
+	case expiringModels > 0:
+		snapshot.State = "expiring"
+	case invalidModels > 0:
+		snapshot.State = "expired_or_invalid"
+	default:
+		snapshot.State = "missing"
+	}
+	return snapshot
+}
+
 func (h *CodexTurnTicketHarvester) bucketSnapshots(effective CodexTurnTicketConfig) []CodexTurnTicketBucketSnapshot {
 	if h == nil || h.store == nil || h.listAuths == nil {
 		return nil
@@ -1468,26 +1574,7 @@ func (h *CodexTurnTicketHarvester) bucketSnapshots(effective CodexTurnTicketConf
 			continue
 		}
 		for _, model := range effective.Models {
-			entry := CodexTurnTicketBucketSnapshot{AuthHint: codexTurnTicketAuthHint(auth), Model: model, TicketState: "missing"}
-			if ticket := h.store.Lookup(auth.ID, model); ticket != nil {
-				entry.TicketLength = ticket.Length
-				entry.ExpiresAt = ticket.ExpiresAt
-				switch {
-				case ticket.validForExecution(now, effective.TargetLength):
-					entry.TicketState = "healthy"
-				case !ticket.valid(now, effective.TargetLength):
-					entry.TicketState = "expired_or_invalid"
-				default:
-					entry.TicketState = "expiring"
-				}
-			}
-			observation := h.observation(auth.ID, model)
-			entry.LastObservedAt = observation.ObservedAt
-			entry.LastHTTPStatus = observation.StatusCode
-			entry.LastObservedLength = observation.StateLength
-			entry.LastObservedHealthy = observation.Healthy
-			entry.LastResult = observation.Result
-			out = append(out, entry)
+			out = append(out, h.bucketSnapshotAt(auth, model, effective, now))
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -1497,6 +1584,36 @@ func (h *CodexTurnTicketHarvester) bucketSnapshots(effective CodexTurnTicketConf
 		return out[i].Model < out[j].Model
 	})
 	return out
+}
+
+func (h *CodexTurnTicketHarvester) bucketSnapshot(auth *cliproxyauth.Auth, model string, effective CodexTurnTicketConfig) CodexTurnTicketBucketSnapshot {
+	return h.bucketSnapshotAt(auth, model, effective, time.Now())
+}
+
+func (h *CodexTurnTicketHarvester) bucketSnapshotAt(auth *cliproxyauth.Auth, model string, effective CodexTurnTicketConfig, now time.Time) CodexTurnTicketBucketSnapshot {
+	entry := CodexTurnTicketBucketSnapshot{AuthHint: codexTurnTicketAuthHint(auth), Model: model, TicketState: "missing"}
+	if h == nil || h.store == nil || auth == nil {
+		return entry
+	}
+	if ticket := h.store.Lookup(auth.ID, model); ticket != nil {
+		entry.TicketLength = ticket.Length
+		entry.ExpiresAt = ticket.ExpiresAt
+		switch {
+		case ticket.validForExecution(now, effective.TargetLength):
+			entry.TicketState = "healthy"
+		case !ticket.valid(now, effective.TargetLength):
+			entry.TicketState = "expired_or_invalid"
+		default:
+			entry.TicketState = "expiring"
+		}
+	}
+	observation := h.observation(auth.ID, model)
+	entry.LastObservedAt = observation.ObservedAt
+	entry.LastHTTPStatus = observation.StatusCode
+	entry.LastObservedLength = observation.StateLength
+	entry.LastObservedHealthy = observation.Healthy
+	entry.LastResult = observation.Result
+	return entry
 }
 
 func codexTurnTicketAuthHint(auth *cliproxyauth.Auth) string {

@@ -1066,6 +1066,46 @@ func TestSnapshotCodexTurnTicketsReportsRedactedState(t *testing.T) {
 	}
 }
 
+func TestSnapshotCodexTurnTicketForAuthReportsPerModelHealthAndExpiry(t *testing.T) {
+	cfg := turnTicketTestConfig()
+	cfg.Codex.TurnTicket.Models = []string{"gpt-5.5", "gpt-6-astra"}
+	auth := turnTicketTestAuth("auth-ticket-health")
+	process := ConfigureCodexTurnTickets(turnTicketTestConfigProvider(cfg), func() []*cliproxyauth.Auth {
+		return []*cliproxyauth.Auth{auth}
+	})
+	defer ConfigureCodexTurnTickets(nil, nil)
+
+	now := time.Now().Truncate(time.Second)
+	state := testTurnState(t, now.Unix(), 292)
+	ticket := NewCodexTurnTicket(state, now, time.Hour)
+	process.Store.Store(auth.ID, "gpt-5.5", ticket)
+
+	snapshot := SnapshotCodexTurnTicketForAuth(auth)
+	if snapshot == nil {
+		t.Fatal("credential snapshot is nil")
+	}
+	if !snapshot.Configured || !snapshot.Enabled || snapshot.TargetLength != 292 {
+		t.Fatalf("unexpected credential configuration: %+v", snapshot)
+	}
+	if snapshot.State != "partial" || snapshot.HealthyModels != 1 || snapshot.TotalModels != 2 {
+		t.Fatalf("unexpected credential aggregate: %+v", snapshot)
+	}
+	if !snapshot.EarliestExpiresAt.Equal(ticket.ExpiresAt) {
+		t.Fatalf("earliest expiry = %s, want %s", snapshot.EarliestExpiresAt, ticket.ExpiresAt)
+	}
+	if len(snapshot.ModelStates) != 2 || snapshot.ModelStates[0].TicketState != "healthy" || snapshot.ModelStates[1].TicketState != "missing" {
+		t.Fatalf("unexpected model states: %+v", snapshot.ModelStates)
+	}
+}
+
+func TestSnapshotCodexTurnTicketForAuthIgnoresNonCodexCredentials(t *testing.T) {
+	auth := turnTicketTestAuth("non-codex")
+	auth.Provider = "claude"
+	if snapshot := SnapshotCodexTurnTicketForAuth(auth); snapshot != nil {
+		t.Fatalf("non-Codex snapshot = %+v, want nil", snapshot)
+	}
+}
+
 func TestDescribeCodexTurnTicketsNeverLeaksTokenMaterial(t *testing.T) {
 	cfg := turnTicketTestConfig()
 	process := ConfigureCodexTurnTickets(turnTicketTestConfigProvider(cfg), nil)
