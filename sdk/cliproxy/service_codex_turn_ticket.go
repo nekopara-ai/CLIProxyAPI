@@ -21,26 +21,27 @@ var codexTurnTicketLifecycleMu sync.Mutex
 // operator opts in. Once enabled, passive capture from live traffic records any healthy
 // token the upstream mints for a real request at no extra quota; only the synthetic probe
 // loop, which spends quota through a dedicated egress, additionally needs a proxy URL.
+//
+// The harvester is always started when the wiring is installed. Its loop re-reads the live
+// config every cycle, so an operator can enable the feature through a config reload and the
+// first probe follows without a restart.
 func (s *Service) startCodexTurnTicketHarvester(ctx context.Context) {
 	if s == nil || s.coreManager == nil {
 		return
 	}
-	s.cfgMu.RLock()
-	cfg := s.cfg
-	s.cfgMu.RUnlock()
-	if cfg == nil {
+	if s.currentConfig() == nil {
 		return
 	}
 	codexTurnTicketLifecycleMu.Lock()
 	defer codexTurnTicketLifecycleMu.Unlock()
-	process := helps.ConfigureCodexTurnTickets(cfg, s.codexTurnTicketAuths)
+	process := helps.ConfigureCodexTurnTickets(s.currentConfig, s.codexTurnTicketAuths)
 	if process == nil || process.Harvester == nil {
 		return
 	}
 	process.Harvester.Start(ctx)
-	effective := helps.EffectiveCodexTurnTicketConfig(cfg)
+	effective := helps.EffectiveCodexTurnTicketConfig(s.currentConfig())
 	if !effective.Enabled {
-		log.Infof("codex turn tickets: disabled (turn-ticket.enabled is false)")
+		log.Infof("codex turn tickets: disabled (turn-ticket.enabled is false); hot reload will enable it in place")
 		return
 	}
 	if strings.TrimSpace(effective.HarvestProxyURL) == "" {
@@ -49,6 +50,17 @@ func (s *Service) startCodexTurnTicketHarvester(ctx context.Context) {
 	}
 	log.Infof("codex turn tickets: harvester started (models=%v target_length=%d ttl_seconds=%d interval_seconds=%d)",
 		effective.Models, effective.TargetLength, effective.TTLSeconds, effective.ProbeIntervalSeconds)
+}
+
+// currentConfig returns the live configuration pointer under the config lock. Every
+// consumer that must observe hot reloads goes through this instead of capturing s.cfg once.
+func (s *Service) currentConfig() *config.Config {
+	if s == nil {
+		return nil
+	}
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
+	return s.cfg
 }
 
 // stopCodexTurnTicketHarvester stops the probe loop and drops the process-wide wiring so
@@ -81,6 +93,12 @@ func (s *Service) codexTurnTicketAuths() []*coreauth.Auth {
 // exposes token material.
 func CodexTurnTicketSummary() string {
 	return helps.DescribeCodexTurnTickets()
+}
+
+// CodexTurnTicketSnapshot reports the full redacted turn-ticket state for the management
+// API. It never exposes token material, credential identifiers, or proxy credentials.
+func CodexTurnTicketSnapshot() helps.CodexTurnTicketSnapshot {
+	return helps.SnapshotCodexTurnTickets()
 }
 
 // codexTurnTicketConfigEnabled reports whether the configuration asks for synthetic

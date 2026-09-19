@@ -159,6 +159,12 @@ func turnTicketTestConfig() *config.Config {
 	return cfg
 }
 
+// turnTicketTestConfigProvider exposes cfg through the same lazy accessor the service
+// uses, so the tests exercise the hot-reload path instead of a startup snapshot.
+func turnTicketTestConfigProvider(cfg *config.Config) func() *config.Config {
+	return func() *config.Config { return cfg }
+}
+
 func turnTicketTestAuth(id string) *cliproxyauth.Auth {
 	return &cliproxyauth.Auth{
 		ID:       id,
@@ -174,7 +180,7 @@ func TestCodexTurnTicketInjectorOverwritesClientValue(t *testing.T) {
 	store := NewCodexTurnTicketStore()
 	state := testTurnState(t, time.Now().Unix(), 292)
 	store.Store("auth-a", "gpt-5.5", NewCodexTurnTicket(state, time.Now(), time.Hour))
-	injector := NewCodexTurnTicketInjector(store, cfg)
+	injector := NewCodexTurnTicketInjector(store, turnTicketTestConfigProvider(cfg))
 
 	headers := http.Header{}
 	headers.Set("X-Codex-Turn-State", strings.Repeat("z", 312))
@@ -190,7 +196,7 @@ func TestCodexTurnTicketInjectorOverwritesClientValue(t *testing.T) {
 // TestCodexTurnTicketInjectorLeavesHeaderAloneWithoutTicket keeps pass-through behaviour:
 // with no ticket the client's own value must reach the upstream unchanged.
 func TestCodexTurnTicketInjectorLeavesHeaderAloneWithoutTicket(t *testing.T) {
-	injector := NewCodexTurnTicketInjector(NewCodexTurnTicketStore(), turnTicketTestConfig())
+	injector := NewCodexTurnTicketInjector(NewCodexTurnTicketStore(), turnTicketTestConfigProvider(turnTicketTestConfig()))
 	headers := http.Header{}
 	clientValue := strings.Repeat("c", 312)
 	headers.Set("X-Codex-Turn-State", clientValue)
@@ -205,7 +211,7 @@ func TestCodexTurnTicketInjectorRespectsModelAndAuthScope(t *testing.T) {
 	store := NewCodexTurnTicketStore()
 	state := testTurnState(t, time.Now().Unix(), 292)
 	store.Store("auth-a", "gpt-5.5", NewCodexTurnTicket(state, time.Now(), time.Hour))
-	injector := NewCodexTurnTicketInjector(store, cfg)
+	injector := NewCodexTurnTicketInjector(store, turnTicketTestConfigProvider(cfg))
 
 	for _, tc := range []struct {
 		name  string
@@ -231,7 +237,7 @@ func TestCodexTurnTicketInjectorDisabledConfigIsNoOp(t *testing.T) {
 	state := testTurnState(t, time.Now().Unix(), 292)
 	store.Store("auth-a", "gpt-5.5", NewCodexTurnTicket(state, time.Now(), time.Hour))
 	headers := http.Header{}
-	NewCodexTurnTicketInjector(store, cfg).Apply(turnTicketTestAuth("auth-a"), "gpt-5.5", headers)
+	NewCodexTurnTicketInjector(store, turnTicketTestConfigProvider(cfg)).Apply(turnTicketTestAuth("auth-a"), "gpt-5.5", headers)
 	if got := headers.Get(CodexTurnStateHeader); got != "" {
 		t.Fatalf("disabled feature injected %q", got)
 	}
@@ -244,7 +250,7 @@ func TestCodexTurnTicketInjectorRejectsWrongLengthTicket(t *testing.T) {
 	degraded := testTurnState(t, time.Now().Unix(), 312)
 	store.Store("auth-a", "gpt-5.5", NewCodexTurnTicket(degraded, time.Now(), time.Hour))
 	headers := http.Header{}
-	NewCodexTurnTicketInjector(store, cfg).Apply(turnTicketTestAuth("auth-a"), "gpt-5.5", headers)
+	NewCodexTurnTicketInjector(store, turnTicketTestConfigProvider(cfg)).Apply(turnTicketTestAuth("auth-a"), "gpt-5.5", headers)
 	if got := headers.Get(CodexTurnStateHeader); got != "" {
 		t.Fatalf("a %d-char token was injected, want rejection", len(got))
 	}
@@ -253,7 +259,7 @@ func TestCodexTurnTicketInjectorRejectsWrongLengthTicket(t *testing.T) {
 func TestHarvestCodexTurnStatePassivelyStoresHealthyHeader(t *testing.T) {
 	cfg := turnTicketTestConfig()
 	store := NewCodexTurnTicketStore()
-	harvester := NewCodexTurnTicketHarvester(store, cfg, nil)
+	harvester := NewCodexTurnTicketHarvester(store, turnTicketTestConfigProvider(cfg), nil)
 	state := testTurnState(t, time.Now().Unix(), 292)
 	headers := http.Header{}
 	headers.Set(CodexTurnStateHeader, state)
@@ -261,7 +267,7 @@ func TestHarvestCodexTurnStatePassivelyStoresHealthyHeader(t *testing.T) {
 	if got := store.Lookup("auth-a", "gpt-5.5"); got == nil || got.State != state {
 		t.Fatalf("passive harvest did not store the ticket: %#v", got)
 	}
-	if stats := harvester.Stats(); stats.Harvested != 1 {
+	if stats := harvester.Stats(292); stats.Harvested != 1 {
 		t.Fatalf("harvested counter = %d, want 1", stats.Harvested)
 	}
 }
@@ -269,7 +275,7 @@ func TestHarvestCodexTurnStatePassivelyStoresHealthyHeader(t *testing.T) {
 func TestHarvestCodexTurnStatePassivelyIgnoresDegradedAndScopedOut(t *testing.T) {
 	cfg := turnTicketTestConfig()
 	store := NewCodexTurnTicketStore()
-	harvester := NewCodexTurnTicketHarvester(store, cfg, nil)
+	harvester := NewCodexTurnTicketHarvester(store, turnTicketTestConfigProvider(cfg), nil)
 
 	degraded := http.Header{}
 	degraded.Set(CodexTurnStateHeader, testTurnState(t, time.Now().Unix(), 312))
@@ -284,7 +290,7 @@ func TestHarvestCodexTurnStatePassivelyIgnoresDegradedAndScopedOut(t *testing.T)
 	if store.Lookup("auth-a", "gpt-5.6-sol") != nil {
 		t.Fatal("a model outside the configured scope was stored")
 	}
-	if stats := harvester.Stats(); stats.Harvested != 0 {
+	if stats := harvester.Stats(292); stats.Harvested != 0 {
 		t.Fatalf("harvested counter = %d, want 0", stats.Harvested)
 	}
 }
@@ -456,7 +462,7 @@ func TestCodexTurnTicketHarvesterBacksOffOnRejection(t *testing.T) {
 	auth.Attributes = map[string]string{"base_url": upstream.URL}
 
 	store := NewCodexTurnTicketStore()
-	harvester := NewCodexTurnTicketHarvester(store, cfg, func() []*cliproxyauth.Auth { return []*cliproxyauth.Auth{auth} })
+	harvester := NewCodexTurnTicketHarvester(store, turnTicketTestConfigProvider(cfg), func() []*cliproxyauth.Auth { return []*cliproxyauth.Auth{auth} })
 
 	harvester.probeAll(context.Background())
 	if got := calls.Load(); got != 1 {
@@ -468,10 +474,10 @@ func TestCodexTurnTicketHarvesterBacksOffOnRejection(t *testing.T) {
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("backoff did not hold: %d probes were made, want 1", got)
 	}
-	if stats := harvester.Stats(); stats.Probed != 1 {
+	if stats := harvester.Stats(292); stats.Probed != 1 {
 		t.Fatalf("probed counter = %d, want 1", stats.Probed)
 	}
-	if stats := harvester.Stats(); stats.Harvested != 0 {
+	if stats := harvester.Stats(292); stats.Harvested != 0 {
 		t.Fatalf("harvested counter = %d, want 0", stats.Harvested)
 	}
 }
@@ -495,7 +501,7 @@ func TestCodexTurnTicketHarvesterCooldownHoldsHealthyBuckets(t *testing.T) {
 	auth.Attributes = map[string]string{"base_url": upstream.URL}
 
 	store := NewCodexTurnTicketStore()
-	harvester := NewCodexTurnTicketHarvester(store, cfg, func() []*cliproxyauth.Auth { return []*cliproxyauth.Auth{auth} })
+	harvester := NewCodexTurnTicketHarvester(store, turnTicketTestConfigProvider(cfg), func() []*cliproxyauth.Auth { return []*cliproxyauth.Auth{auth} })
 	harvester.probeAll(context.Background())
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("first cycle made %d probes, want 1", got)
@@ -533,7 +539,7 @@ func TestCodexTurnTicketHarvesterProbesOnlyScopedOAuthCredentials(t *testing.T) 
 	scoped.Attributes = map[string]string{"base_url": upstream.URL}
 
 	store := NewCodexTurnTicketStore()
-	harvester := NewCodexTurnTicketHarvester(store, cfg, func() []*cliproxyauth.Auth {
+	harvester := NewCodexTurnTicketHarvester(store, turnTicketTestConfigProvider(cfg), func() []*cliproxyauth.Auth {
 		return []*cliproxyauth.Auth{apiKeyAuth, foreign, scoped}
 	})
 	harvester.probeAll(context.Background())
@@ -542,21 +548,69 @@ func TestCodexTurnTicketHarvesterProbesOnlyScopedOAuthCredentials(t *testing.T) 
 	}
 }
 
-func TestCodexTurnTicketHarvesterStartRequiresEnabledAndProxy(t *testing.T) {
+// TestCodexTurnTicketHarvesterStartsWhileDisabledForHotReload pins the reload contract:
+// the loop must be running even while the feature is off, because enabling it later is a
+// config-only change that must not require a service restart.
+func TestCodexTurnTicketHarvesterStartsWhileDisabledForHotReload(t *testing.T) {
 	store := NewCodexTurnTicketStore()
 	disabled := &config.Config{}
-	harvester := NewCodexTurnTicketHarvester(store, disabled, nil)
+	harvester := NewCodexTurnTicketHarvester(store, turnTicketTestConfigProvider(disabled), nil)
+	defer harvester.Stop()
 	harvester.Start(context.Background())
-	if harvester.running {
-		t.Fatal("harvester started with the feature disabled")
+	if !harvester.Running() {
+		t.Fatal("the harvester loop must run while disabled so a reload can enable it in place")
+	}
+	// A disabled cycle must not probe anything, and must not require a harvest proxy.
+	harvester.probeAll(context.Background())
+	if stats := harvester.Stats(292); stats.Probed != 0 {
+		t.Fatalf("probed counter = %d while disabled, want 0", stats.Probed)
+	}
+}
+
+// TestCodexTurnTicketHarvesterPicksUpEnabledConfigHotReload proves the reload actually
+// reaches the probe loop: the same harvester instance must begin probing once the live
+// config flips enabled, without being restarted or rebuilt.
+func TestCodexTurnTicketHarvesterPicksUpEnabledConfigHotReload(t *testing.T) {
+	var calls atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set(CodexTurnStateHeader, testTurnState(t, time.Now().Unix(), 292))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	var proxyHits atomic.Int64
+	proxyURL := newRecordingForwardProxy(t, upstream.URL, &proxyHits)
+
+	auth := turnTicketTestAuth("auth-a")
+	auth.Attributes = map[string]string{"base_url": upstream.URL}
+	store := NewCodexTurnTicketStore()
+
+	current := &config.Config{}
+	current.Codex.TurnTicket.Models = []string{"gpt-5.5"}
+	provider := func() *config.Config { return current }
+	harvester := NewCodexTurnTicketHarvester(store, provider, func() []*cliproxyauth.Auth {
+		return []*cliproxyauth.Auth{auth}
+	})
+
+	harvester.probeAll(context.Background())
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("a disabled cycle made %d probes, want 0", got)
 	}
 
-	enabledNoProxy := &config.Config{}
-	enabledNoProxy.Codex.TurnTicket.Enabled = true
-	harvester = NewCodexTurnTicketHarvester(store, enabledNoProxy, nil)
-	harvester.Start(context.Background())
-	if harvester.running {
-		t.Fatal("harvester started without a harvest proxy")
+	// Simulate the hot reload: the service swaps the live config pointer, and the next
+	// cycle must see the new value without the harvester being rebuilt.
+	reloaded := &config.Config{}
+	reloaded.Codex.TurnTicket.Enabled = true
+	reloaded.Codex.TurnTicket.HarvestProxyURL = proxyURL
+	reloaded.Codex.TurnTicket.Models = []string{"gpt-5.5"}
+	current = reloaded
+
+	harvester.probeAll(context.Background())
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("after hot reload the harvester made %d probes, want 1", got)
+	}
+	if store.Lookup("auth-a", "gpt-5.5") == nil {
+		t.Fatal("the hot-reload probe result was not stored")
 	}
 }
 
@@ -564,7 +618,7 @@ func TestCodexTurnTicketHarvesterStartStopIsIdempotent(t *testing.T) {
 	cfg := turnTicketTestConfig()
 	cfg.Codex.TurnTicket.ProbeIntervalSeconds = 3600
 	store := NewCodexTurnTicketStore()
-	harvester := NewCodexTurnTicketHarvester(store, cfg, nil)
+	harvester := NewCodexTurnTicketHarvester(store, turnTicketTestConfigProvider(cfg), nil)
 	// Point the probe at an unroutable address so the initial cycle returns immediately
 	// without touching the network in a way the test depends on.
 	harvester.Start(context.Background())
@@ -578,7 +632,7 @@ func TestCodexTurnTicketHarvesterStartStopIsIdempotent(t *testing.T) {
 
 func TestProcessWideTurnTicketWiring(t *testing.T) {
 	cfg := turnTicketTestConfig()
-	process := ConfigureCodexTurnTickets(cfg, nil)
+	process := ConfigureCodexTurnTickets(turnTicketTestConfigProvider(cfg), nil)
 	if process == nil || CurrentCodexTurnTickets() != process {
 		t.Fatal("ConfigureCodexTurnTickets did not install the process-wide state")
 	}
@@ -603,9 +657,66 @@ func TestProcessWideTurnTicketWiring(t *testing.T) {
 	}
 }
 
+// TestProcessWideTurnTicketWiringFollowsConfigReload is the regression for the reload
+// bug: the process-wide injector used to hold the startup *config.Config pointer, so a
+// config reload that enabled the feature never reached injection.
+func TestProcessWideTurnTicketWiringFollowsConfigReload(t *testing.T) {
+	current := &config.Config{}
+	current.Codex.TurnTicket.Models = []string{"gpt-5.5"}
+	process := ConfigureCodexTurnTickets(func() *config.Config { return current }, nil)
+	defer ConfigureCodexTurnTickets(nil, nil)
+
+	state := testTurnState(t, time.Now().Unix(), 292)
+	process.Store.Store("auth-a", "gpt-5.5", NewCodexTurnTicket(state, time.Now(), time.Hour))
+
+	// While the live config is disabled the stored ticket must not be injected.
+	headers := http.Header{}
+	ApplyCodexTurnTicket(turnTicketTestAuth("auth-a"), "gpt-5.5", headers)
+	if got := headers.Get(CodexTurnStateHeader); got != "" {
+		t.Fatalf("a ticket was injected while the live config was disabled: %q", got)
+	}
+
+	// Hot-reload the live config to enabled: injection must start on the very next call.
+	reloaded := &config.Config{}
+	reloaded.Codex.TurnTicket.Enabled = true
+	reloaded.Codex.TurnTicket.Models = []string{"gpt-5.5"}
+	current = reloaded
+
+	headers = http.Header{}
+	ApplyCodexTurnTicket(turnTicketTestAuth("auth-a"), "gpt-5.5", headers)
+	if got := headers.Get(CodexTurnStateHeader); got != state {
+		t.Fatalf("hot reload did not enable injection: got %d chars, want the stored ticket", len(got))
+	}
+}
+
+// TestSnapshotCodexTurnTicketsReportsRedactedState covers the management-facing counter
+// export: it must report configuration and counts without leaking credentials or tokens.
+func TestSnapshotCodexTurnTicketsReportsRedactedState(t *testing.T) {
+	cfg := turnTicketTestConfig()
+	cfg.Codex.TurnTicket.HarvestProxyURL = "http://user:secret@127.0.0.1:8080"
+	process := ConfigureCodexTurnTickets(turnTicketTestConfigProvider(cfg), nil)
+	defer ConfigureCodexTurnTickets(nil, nil)
+	state := testTurnState(t, time.Now().Unix(), 292)
+	process.Store.Store("auth-a", "gpt-5.5", NewCodexTurnTicket(state, time.Now(), time.Hour))
+
+	snapshot := SnapshotCodexTurnTickets()
+	if !snapshot.Configured || !snapshot.Enabled {
+		t.Fatalf("snapshot did not report the enabled feature: %+v", snapshot)
+	}
+	if snapshot.Buckets != 1 || snapshot.HealthyTickets != 1 {
+		t.Fatalf("snapshot occupancy = %d buckets / %d healthy, want 1/1", snapshot.Buckets, snapshot.HealthyTickets)
+	}
+	if snapshot.HarvestProxySet && strings.Contains(snapshot.HarvestProxy, "secret") {
+		t.Fatalf("snapshot leaked harvest proxy credentials: %q", snapshot.HarvestProxy)
+	}
+	if summary := DescribeCodexTurnTickets(); strings.Contains(summary, "secret") || strings.Contains(summary, state) {
+		t.Fatalf("summary leaked material: %q", summary)
+	}
+}
+
 func TestDescribeCodexTurnTicketsNeverLeaksTokenMaterial(t *testing.T) {
 	cfg := turnTicketTestConfig()
-	process := ConfigureCodexTurnTickets(cfg, nil)
+	process := ConfigureCodexTurnTickets(turnTicketTestConfigProvider(cfg), nil)
 	state := testTurnState(t, time.Now().Unix(), 292)
 	process.Store.Store("auth-a", "gpt-5.5", NewCodexTurnTicket(state, time.Now(), time.Hour))
 	if summary := DescribeCodexTurnTickets(); strings.Contains(summary, state) || strings.Contains(summary, "auth-a") {
@@ -658,8 +769,8 @@ func TestExtractCodexTurnStateAndHealthCheck(t *testing.T) {
 func TestCodexTurnTicketConcurrentAccessIsRaceFree(t *testing.T) {
 	cfg := turnTicketTestConfig()
 	store := NewCodexTurnTicketStore()
-	harvester := NewCodexTurnTicketHarvester(store, cfg, nil)
-	injector := NewCodexTurnTicketInjector(store, cfg)
+	harvester := NewCodexTurnTicketHarvester(store, turnTicketTestConfigProvider(cfg), nil)
+	injector := NewCodexTurnTicketInjector(store, turnTicketTestConfigProvider(cfg))
 	auth := turnTicketTestAuth("auth-a")
 	state := testTurnState(t, time.Now().Unix(), 292)
 
@@ -674,7 +785,7 @@ func TestCodexTurnTicketConcurrentAccessIsRaceFree(t *testing.T) {
 				harvester.HarvestCodexTurnStatePassively(auth, "gpt-5.5", headers)
 				injector.Apply(auth, "gpt-5.5", http.Header{})
 				_ = store.Lookup("auth-a", "gpt-5.5")
-				_ = harvester.Stats()
+				_ = harvester.Stats(292)
 			}
 		}()
 	}

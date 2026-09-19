@@ -48,6 +48,9 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/debug", s.mgmt.PutDebug)
 		mgmt.PATCH("/debug", s.mgmt.PutDebug)
 
+		// Codex turn-ticket counters and effective configuration, redacted.
+		mgmt.GET("/codex-turn-ticket", s.mgmt.GetCodexTurnTicket)
+
 		mgmt.GET("/logging-to-file", s.mgmt.GetLoggingToFile)
 		mgmt.PUT("/logging-to-file", s.mgmt.PutLoggingToFile)
 		mgmt.PATCH("/logging-to-file", s.mgmt.PutLoggingToFile)

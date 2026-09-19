@@ -66,8 +66,8 @@ func TestCodexExecutorStreamInjectsHarvestedTurnTicket(t *testing.T) {
 	defer server.Close()
 
 	cfg := turnTicketIntegrationConfig("gpt-5.5")
-	process := helps.ConfigureCodexTurnTickets(cfg, nil)
-	defer helps.ConfigureCodexTurnTickets(&config.Config{}, nil)
+	process := helps.ConfigureCodexTurnTickets(func() *config.Config { return cfg }, nil)
+	defer helps.ConfigureCodexTurnTickets(nil, nil)
 	process.Store.Store("integration-auth", "gpt-5.5", helps.NewCodexTurnTicket(healthy, time.Now(), time.Hour))
 
 	auth := &cliproxyauth.Auth{ID: "integration-auth", Provider: "codex", Attributes: map[string]string{
@@ -121,8 +121,9 @@ func TestCodexExecutorStreamLeavesTurnStateAloneWhenDisabled(t *testing.T) {
 	}))
 	defer server.Close()
 
-	process := helps.ConfigureCodexTurnTickets(&config.Config{}, nil)
-	defer helps.ConfigureCodexTurnTickets(&config.Config{}, nil)
+	disabled := &config.Config{}
+	process := helps.ConfigureCodexTurnTickets(func() *config.Config { return disabled }, nil)
+	defer helps.ConfigureCodexTurnTickets(nil, nil)
 	// A ticket exists in the store, but the feature is disabled, so it must not be replayed.
 	process.Store.Store("integration-auth", "gpt-5.5", helps.NewCodexTurnTicket(integrationTurnState(t, time.Now().Unix(), 292), time.Now(), time.Hour))
 

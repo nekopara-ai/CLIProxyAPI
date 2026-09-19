@@ -91,7 +91,6 @@ func (s *Service) Run(ctx context.Context) error {
 			includeBaseline: true,
 			auths:           s.coreManager.List(),
 		})
-		s.startCodexTurnTicketHarvester(ctx)
 		interval := 15 * time.Minute
 		s.coreManager.StartAutoRefresh(ctx, interval)
 		log.Infof("core auth auto-refresh started (interval=%s)", interval)
@@ -118,6 +117,10 @@ func (s *Service) Run(ctx context.Context) error {
 	// legacy clients removed; no caches to refresh
 
 	s.ensureWebsocketGateway()
+	// The turn-ticket wiring must exist in both runtime modes. Home serves the same Codex
+	// traffic, and the feature is inert until its config enables it, so installing it here
+	// keeps injection and passive capture available regardless of which mode started.
+	s.startCodexTurnTicketHarvester(ctx)
 	if homeEnabled {
 		s.registerAvailableExecutors(ctx, executorRegistrationOptions{
 			includeBaseline: true,

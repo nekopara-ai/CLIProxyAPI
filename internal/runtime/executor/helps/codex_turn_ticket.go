@@ -228,6 +228,16 @@ func codexTurnTicketModelGated(effective CodexTurnTicketConfig, model string) bo
 	return false
 }
 
+// codexTurnTicketEffectiveConfig resolves the effective config through the live provider.
+// A nil provider means "no configuration": the feature stays disabled with defaults, which
+// is the same state as an explicit empty config.
+func codexTurnTicketEffectiveConfig(provider func() *config.Config) CodexTurnTicketConfig {
+	if provider == nil {
+		return EffectiveCodexTurnTicketConfig(nil)
+	}
+	return EffectiveCodexTurnTicketConfig(provider())
+}
+
 // fernetTimeVersion is the version byte every Fernet token carries.
 const fernetTimeVersion = 0x80
 
@@ -321,12 +331,16 @@ func NewCodexTurnTicket(state string, observedAt time.Time, ttl time.Duration) *
 // slow or failing upstream probe cannot add latency to client traffic.
 type CodexTurnTicketInjector struct {
 	store *CodexTurnTicketStore
-	cfg   *config.Config
+	// cfgProvider returns the live service config. The injector resolves it on every call
+	// instead of capturing a startup snapshot, so a config reload flips injection on or off
+	// without rebuilding the process-wide wiring.
+	cfgProvider func() *config.Config
 }
 
-// NewCodexTurnTicketInjector returns an injector over store, reading live config.
-func NewCodexTurnTicketInjector(store *CodexTurnTicketStore, cfg *config.Config) *CodexTurnTicketInjector {
-	return &CodexTurnTicketInjector{store: store, cfg: cfg}
+// NewCodexTurnTicketInjector returns an injector over store, reading live config through
+// cfgProvider on every Apply call.
+func NewCodexTurnTicketInjector(store *CodexTurnTicketStore, cfgProvider func() *config.Config) *CodexTurnTicketInjector {
+	return &CodexTurnTicketInjector{store: store, cfgProvider: cfgProvider}
 }
 
 // Apply overwrites X-Codex-Turn-State on the outbound headers with the ticket captured
@@ -337,7 +351,7 @@ func (i *CodexTurnTicketInjector) Apply(auth *cliproxyauth.Auth, model string, h
 	if i == nil || i.store == nil || headers == nil || auth == nil {
 		return
 	}
-	effective := EffectiveCodexTurnTicketConfig(i.cfg)
+	effective := codexTurnTicketEffectiveConfig(i.cfgProvider)
 	if !effective.Enabled || !codexTurnTicketModelGated(effective, model) {
 		return
 	}
@@ -356,7 +370,9 @@ func (i *CodexTurnTicketInjector) Apply(auth *cliproxyauth.Auth, model string, h
 // consumer traffic, so it cannot disturb the live request path.
 type CodexTurnTicketHarvester struct {
 	store *CodexTurnTicketStore
-	cfg   *config.Config
+	// cfgProvider returns the live service config, so enabling or retuning the feature
+	// through a config reload is picked up by the next harvest cycle.
+	cfgProvider func() *config.Config
 
 	// listAuths returns the credentials eligible for probing.
 	listAuths func() []*cliproxyauth.Auth
@@ -377,24 +393,25 @@ type CodexTurnTicketHarvester struct {
 	harvested     atomic.Int64
 }
 
-// NewCodexTurnTicketHarvester returns a harvester bound to store and listAuths.
-func NewCodexTurnTicketHarvester(store *CodexTurnTicketStore, cfg *config.Config, listAuths func() []*cliproxyauth.Auth) *CodexTurnTicketHarvester {
+// NewCodexTurnTicketHarvester returns a harvester bound to store and listAuths, reading
+// live config through cfgProvider on every cycle.
+func NewCodexTurnTicketHarvester(store *CodexTurnTicketStore, cfgProvider func() *config.Config, listAuths func() []*cliproxyauth.Auth) *CodexTurnTicketHarvester {
 	return &CodexTurnTicketHarvester{
-		store:      store,
-		cfg:        cfg,
-		listAuths:  listAuths,
-		nextProbe:  make(map[string]time.Time),
-		backoffRun: make(map[string]time.Time),
+		store:       store,
+		cfgProvider: cfgProvider,
+		listAuths:   listAuths,
+		nextProbe:   make(map[string]time.Time),
+		backoffRun:  make(map[string]time.Time),
 	}
 }
 
 // Start launches the background probe loop. It is idempotent.
+//
+// The loop is launched even when the feature is currently disabled, because the operator
+// may enable it later through a config reload. Each cycle re-reads the live config, so a
+// disabled cycle is a cheap no-op and an enabled cycle starts probing without a restart.
 func (h *CodexTurnTicketHarvester) Start(ctx context.Context) {
 	if h == nil {
-		return
-	}
-	effective := EffectiveCodexTurnTicketConfig(h.cfg)
-	if !effective.Enabled || effective.HarvestProxyURL == "" {
 		return
 	}
 	h.mu.Lock()
@@ -436,23 +453,24 @@ func (h *CodexTurnTicketHarvester) Stop() {
 }
 
 func (h *CodexTurnTicketHarvester) run(ctx context.Context, stop <-chan struct{}) {
-	effective := EffectiveCodexTurnTicketConfig(h.cfg)
-	interval := time.Duration(effective.ProbeIntervalSeconds) * time.Second
-	if interval <= 0 {
-		interval = time.Minute
-	}
-	timer := time.NewTimer(interval)
-	defer timer.Stop()
-	h.probeAll(ctx)
 	for {
+		// Re-read the live config every cycle so a reload can change the probe interval, or
+		// turn probing on and off, without restarting the service.
+		effective := codexTurnTicketEffectiveConfig(h.cfgProvider)
+		interval := time.Duration(effective.ProbeIntervalSeconds) * time.Second
+		if interval <= 0 {
+			interval = time.Minute
+		}
+		h.probeAll(ctx)
+		timer := time.NewTimer(interval)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
 		case <-stop:
+			timer.Stop()
 			return
 		case <-timer.C:
-			h.probeAll(ctx)
-			timer.Reset(interval)
 		}
 	}
 }
@@ -461,7 +479,7 @@ func (h *CodexTurnTicketHarvester) probeAll(ctx context.Context) {
 	if h == nil || h.listAuths == nil || h.store == nil {
 		return
 	}
-	effective := EffectiveCodexTurnTicketConfig(h.cfg)
+	effective := codexTurnTicketEffectiveConfig(h.cfgProvider)
 	if !effective.Enabled || effective.HarvestProxyURL == "" {
 		return
 	}
@@ -818,7 +836,7 @@ func (h *CodexTurnTicketHarvester) HarvestCodexTurnStatePassively(auth *cliproxy
 	if h == nil || h.store == nil || auth == nil {
 		return
 	}
-	effective := EffectiveCodexTurnTicketConfig(h.cfg)
+	effective := codexTurnTicketEffectiveConfig(h.cfgProvider)
 	if !effective.Enabled || !codexTurnTicketModelGated(effective, model) {
 		return
 	}
@@ -835,18 +853,51 @@ func (h *CodexTurnTicketHarvester) HarvestCodexTurnStatePassively(auth *cliproxy
 	h.harvested.Add(1)
 }
 
-// CodexTurnTicketStats is a snapshot of harvester counters for diagnostics.
+// CodexTurnTicketStats is a snapshot of harvester counters and store occupancy for
+// diagnostics. It never carries token material or credential identifiers.
 type CodexTurnTicketStats struct {
-	Probed    int64
-	Harvested int64
+	Probed    int64 `json:"probed"`
+	Harvested int64 `json:"harvested"`
+	Buckets   int   `json:"buckets"`
+	Healthy   int   `json:"healthy_tickets"`
 }
 
-// Stats returns current harvester counters.
-func (h *CodexTurnTicketHarvester) Stats() CodexTurnTicketStats {
+// Stats returns current harvester counters together with how many buckets exist and how
+// many of them currently hold a replayable ticket.
+func (h *CodexTurnTicketHarvester) Stats(targetLength int) CodexTurnTicketStats {
 	if h == nil {
 		return CodexTurnTicketStats{}
 	}
-	return CodexTurnTicketStats{Probed: h.probed.Load(), Harvested: h.harvested.Load()}
+	stats := CodexTurnTicketStats{Probed: h.probed.Load(), Harvested: h.harvested.Load()}
+	stats.Buckets, stats.Healthy = h.store.occupancy(time.Now(), targetLength)
+	return stats
+}
+
+// Running reports whether the background probe loop is currently active.
+func (h *CodexTurnTicketHarvester) Running() bool {
+	if h == nil {
+		return false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.running
+}
+
+// occupancy reports how many buckets the store holds and how many of them currently hold
+// a ticket that is valid for targetLength. It reports counts only, never bucket keys.
+func (s *CodexTurnTicketStore) occupancy(now time.Time, targetLength int) (buckets, healthy int) {
+	if s == nil {
+		return 0, 0
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, ticket := range s.tickets {
+		buckets++
+		if ticket.valid(now, targetLength) {
+			healthy++
+		}
+	}
+	return buckets, healthy
 }
 
 // CodexTurnTicketProcess is the process-wide ticket store and harvester wiring used by
@@ -861,14 +912,22 @@ type CodexTurnTicketProcess struct {
 var codexTurnTicketProcess atomic.Pointer[CodexTurnTicketProcess]
 
 // ConfigureCodexTurnTickets installs the process-wide ticket state. It is called once at
-// service start; because the injector reads the live config pointer on every request,
-// enabling or disabling the feature through config reload takes effect without a restart.
-func ConfigureCodexTurnTickets(cfg *config.Config, listAuths func() []*cliproxyauth.Auth) *CodexTurnTicketProcess {
+// service start. cfgProvider is consulted on every request and every harvest cycle rather
+// than being snapshotted here, so enabling, disabling, or retuning the feature through a
+// config reload takes effect without a restart.
+//
+// A nil cfgProvider clears the process-wide wiring, which tests use to restore the
+// unwired state a process has before the service starts.
+func ConfigureCodexTurnTickets(cfgProvider func() *config.Config, listAuths func() []*cliproxyauth.Auth) *CodexTurnTicketProcess {
+	if cfgProvider == nil {
+		codexTurnTicketProcess.Store(nil)
+		return nil
+	}
 	store := NewCodexTurnTicketStore()
 	process := &CodexTurnTicketProcess{
 		Store:     store,
-		Harvester: NewCodexTurnTicketHarvester(store, cfg, listAuths),
-		Injector:  NewCodexTurnTicketInjector(store, cfg),
+		Harvester: NewCodexTurnTicketHarvester(store, cfgProvider, listAuths),
+		Injector:  NewCodexTurnTicketInjector(store, cfgProvider),
 	}
 	codexTurnTicketProcess.Store(process)
 	return process
@@ -897,13 +956,72 @@ func HarvestCodexTurnStateOnResponse(auth *cliproxyauth.Auth, model string, head
 	process.Harvester.HarvestCodexTurnStatePassively(auth, model, header)
 }
 
-// DescribeCodexTurnTickets renders a redacted one-line summary for logs. It never emits
-// token material, only counts and bucket keys.
-func DescribeCodexTurnTickets() string {
+// CodexTurnTicketSnapshot is a redacted, serializable view of the turn-ticket subsystem
+// for the management API. It never contains token material or credential identifiers.
+type CodexTurnTicketSnapshot struct {
+	Configured      bool     `json:"configured"`
+	Enabled         bool     `json:"enabled"`
+	HarvesterActive bool     `json:"harvester_active"`
+	Models          []string `json:"models"`
+	AuthIDScoped    bool     `json:"auth_id_scoped"`
+	TargetLength    int      `json:"target_length"`
+	TTLSeconds      int      `json:"ttl_seconds"`
+	RefreshBefore   int      `json:"refresh_before_seconds"`
+	ProbeInterval   int      `json:"probe_interval_seconds"`
+	ProbeCooldown   int      `json:"probe_cooldown_seconds"`
+	RejectBackoff   int      `json:"reject_backoff_seconds"`
+	HarvestProxySet bool     `json:"harvest_proxy_configured"`
+	HarvestProxy    string   `json:"harvest_proxy_url,omitempty"`
+	Probed          int64    `json:"probed"`
+	Harvested       int64    `json:"harvested"`
+	Buckets         int      `json:"buckets"`
+	HealthyTickets  int      `json:"healthy_tickets"`
+}
+
+// SnapshotCodexTurnTickets renders the current turn-ticket state for the management API.
+func SnapshotCodexTurnTickets() CodexTurnTicketSnapshot {
 	process := CurrentCodexTurnTickets()
-	if process == nil {
+	if process == nil || process.Harvester == nil {
+		return CodexTurnTicketSnapshot{Configured: false}
+	}
+	harvester := process.Harvester
+	effective := codexTurnTicketEffectiveConfig(harvester.cfgProvider)
+	snapshot := CodexTurnTicketSnapshot{
+		Configured:      true,
+		Enabled:         effective.Enabled,
+		HarvesterActive: harvester.Running(),
+		Models:          append([]string(nil), effective.Models...),
+		AuthIDScoped:    len(effective.AuthIDs) > 0,
+		TargetLength:    effective.TargetLength,
+		TTLSeconds:      effective.TTLSeconds,
+		RefreshBefore:   effective.RefreshBeforeSeconds,
+		ProbeInterval:   effective.ProbeIntervalSeconds,
+		ProbeCooldown:   effective.ProbeCooldownSeconds,
+		RejectBackoff:   effective.RejectBackoffSeconds,
+		HarvestProxySet: strings.TrimSpace(effective.HarvestProxyURL) != "",
+	}
+	// The harvest proxy URL may embed credentials; only a redacted form is ever reported.
+	if snapshot.HarvestProxySet {
+		snapshot.HarvestProxy = proxyutil.Redact(effective.HarvestProxyURL)
+	}
+	stats := harvester.Stats(effective.TargetLength)
+	snapshot.Probed = stats.Probed
+	snapshot.Harvested = stats.Harvested
+	snapshot.Buckets = stats.Buckets
+	snapshot.HealthyTickets = stats.Healthy
+	return snapshot
+}
+
+// DescribeCodexTurnTickets renders a redacted one-line summary for logs. It never emits
+// token material or credential identifiers, only configuration state and counts.
+func DescribeCodexTurnTickets() string {
+	snapshot := SnapshotCodexTurnTickets()
+	if !snapshot.Configured {
 		return "codex turn tickets: not configured"
 	}
-	stats := process.Harvester.Stats()
-	return fmt.Sprintf("codex turn tickets: probed=%d harvested=%d", stats.Probed, stats.Harvested)
+	return fmt.Sprintf(
+		"codex turn tickets: enabled=%t harvester_active=%t proxy_configured=%t probed=%d harvested=%d buckets=%d healthy=%d",
+		snapshot.Enabled, snapshot.HarvesterActive, snapshot.HarvestProxySet,
+		snapshot.Probed, snapshot.Harvested, snapshot.Buckets, snapshot.HealthyTickets,
+	)
 }
