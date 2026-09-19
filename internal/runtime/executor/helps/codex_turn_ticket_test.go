@@ -18,6 +18,8 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	log "github.com/sirupsen/logrus"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 )
 
 // testTurnState builds a syntactically valid Fernet-shaped turn-state of the requested
@@ -459,6 +461,141 @@ func TestCodexTurnTicketProbeUsesExplicitDirectEgress(t *testing.T) {
 	}
 	if status != http.StatusOK || got != state {
 		t.Fatalf("direct probe result = status %d, state length %d; want 200 and %d", status, len(got), len(state))
+	}
+}
+
+func TestCodexTurnTicketActiveProbeLogsDetailedRedactedOutcome(t *testing.T) {
+	hook := logtest.NewLocal(log.StandardLogger())
+	defer hook.Reset()
+
+	state := testTurnState(t, time.Now().Unix(), 292)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(CodexTurnStateHeader, state)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	var proxyHits atomic.Int64
+	proxyURL := newRecordingForwardProxy(t, upstream.URL, &proxyHits)
+	parsedProxy, errParse := url.Parse(proxyURL)
+	if errParse != nil {
+		t.Fatalf("parse proxy URL: %v", errParse)
+	}
+	parsedProxy.User = url.UserPassword("probe-user", "proxy-secret")
+
+	cfg := turnTicketTestConfig()
+	cfg.Codex.TurnTicket.HarvestProxyURLs = []string{parsedProxy.String()}
+	auth := turnTicketTestAuth("sensitive-auth-id")
+	auth.Attributes = map[string]string{"base_url": upstream.URL}
+	auth.Metadata["email"] = "kaycee.rempel@mail.com"
+	auth.Metadata["access_token"] = "secret-access-token"
+
+	harvester := NewCodexTurnTicketHarvester(NewCodexTurnTicketStore(), turnTicketTestConfigProvider(cfg), func() []*cliproxyauth.Auth {
+		return []*cliproxyauth.Auth{auth}
+	})
+	harvester.probeAll(context.Background())
+
+	var entry *log.Entry
+	for _, candidate := range hook.AllEntries() {
+		if candidate.Message == "codex turn ticket: active probe completed" {
+			entry = candidate
+		}
+	}
+	if entry == nil {
+		t.Fatalf("active probe completion log missing; logs=%#v", hook.AllEntries())
+	}
+	for key, want := range map[string]any{
+		"auth_hint":           "ka***@mail.com",
+		"model":               "gpt-5.5",
+		"result":              "healthy_ticket",
+		"http_status":         http.StatusOK,
+		"state_length":        292,
+		"healthy":             true,
+		"next_action":         "cooldown",
+		"retry_after_seconds": 3300,
+	} {
+		if got := entry.Data[key]; got != want {
+			t.Errorf("log field %s = %#v, want %#v", key, got, want)
+		}
+	}
+	if got, _ := entry.Data["egress"].(string); !strings.Contains(got, "redacted@") || strings.Contains(got, "proxy-secret") {
+		t.Fatalf("logged egress = %q, want credential-redacted proxy", got)
+	}
+	if expiresAt, ok := entry.Data["ticket_expires_at"].(string); !ok || strings.TrimSpace(expiresAt) == "" {
+		t.Fatal("healthy probe log omitted ticket_expires_at")
+	}
+	encoded, errMarshal := json.Marshal(map[string]any{"message": entry.Message, "fields": entry.Data})
+	if errMarshal != nil {
+		t.Fatalf("marshal log entry: %v", errMarshal)
+	}
+	for _, leaked := range []string{"kaycee.rempel@mail.com", "sensitive-auth-id", "proxy-secret", "secret-access-token", state} {
+		if strings.Contains(string(encoded), leaked) {
+			t.Fatalf("active probe log leaked %q: %s", leaked, encoded)
+		}
+	}
+}
+
+func TestCodexTurnTicketActiveProbeLogsRetryAndBackoffOutcomes(t *testing.T) {
+	tests := []struct {
+		name          string
+		status        int
+		stateLength   int
+		wantResult    string
+		wantAction    string
+		wantRetrySecs int
+	}{
+		{name: "degraded ticket", status: http.StatusOK, stateLength: 312, wantResult: "unhealthy_ticket", wantAction: "retry_next_cycle", wantRetrySecs: 60},
+		{name: "missing ticket", status: http.StatusOK, wantResult: "missing_ticket", wantAction: "retry_next_cycle", wantRetrySecs: 60},
+		{name: "ordinary HTTP error", status: http.StatusBadGateway, wantResult: "http_error", wantAction: "retry_next_cycle", wantRetrySecs: 60},
+		{name: "upstream rejection", status: http.StatusTooManyRequests, wantResult: "rejected", wantAction: "backoff", wantRetrySecs: 600},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hook := logtest.NewLocal(log.StandardLogger())
+			defer hook.Reset()
+
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tt.stateLength > 0 {
+					w.Header().Set(CodexTurnStateHeader, testTurnState(t, time.Now().Unix(), tt.stateLength))
+				}
+				w.WriteHeader(tt.status)
+			}))
+			defer upstream.Close()
+
+			cfg := turnTicketTestConfig()
+			cfg.Codex.TurnTicket.HarvestProxyURLs = []string{"direct"}
+			auth := turnTicketTestAuth("auth-a")
+			auth.Attributes = map[string]string{"base_url": upstream.URL}
+			harvester := NewCodexTurnTicketHarvester(NewCodexTurnTicketStore(), turnTicketTestConfigProvider(cfg), func() []*cliproxyauth.Auth {
+				return []*cliproxyauth.Auth{auth}
+			})
+			harvester.probeAll(context.Background())
+
+			var entry *log.Entry
+			for _, candidate := range hook.AllEntries() {
+				if candidate.Message == "codex turn ticket: active probe completed" {
+					entry = candidate
+				}
+			}
+			if entry == nil {
+				t.Fatalf("active probe completion log missing; logs=%#v", hook.AllEntries())
+			}
+			if got := entry.Data["result"]; got != tt.wantResult {
+				t.Errorf("result = %#v, want %q", got, tt.wantResult)
+			}
+			if got := entry.Data["next_action"]; got != tt.wantAction {
+				t.Errorf("next_action = %#v, want %q", got, tt.wantAction)
+			}
+			if got := entry.Data["retry_after_seconds"]; got != tt.wantRetrySecs {
+				t.Errorf("retry_after_seconds = %#v, want %d", got, tt.wantRetrySecs)
+			}
+			if got := entry.Data["state_length"]; got != tt.stateLength {
+				t.Errorf("state_length = %#v, want %d", got, tt.stateLength)
+			}
+			if got := entry.Data["egress"]; got != "direct" {
+				t.Errorf("egress = %#v, want direct", got)
+			}
+		})
 	}
 }
 

@@ -812,17 +812,34 @@ func (h *CodexTurnTicketHarvester) probeOne(ctx context.Context, auth *cliproxya
 		return
 	}
 	h.probed.Add(1)
-	state, status, errProbe := ProbeCodexTurnState(ctx, auth, model, effective)
+	egress := chooseCodexTurnTicketHarvestEgress(effective.HarvestProxyURLs)
+	startedAt := time.Now()
+	state, status, errProbe := probeCodexTurnStateThroughEgress(ctx, auth, model, effective, egress)
+	logFields := log.Fields{
+		"auth_hint":  codexTurnTicketAuthHint(auth),
+		"model":      strings.TrimSpace(model),
+		"egress":     codexTurnTicketHarvestEgressLabel(egress),
+		"elapsed_ms": time.Since(startedAt).Milliseconds(),
+	}
 	if errProbe != nil {
 		h.recordObservation(auth.ID, model, CodexTurnTicketObservation{ObservedAt: time.Now(), Result: "error"})
+		logFields["result"] = "error"
+		logFields["error_class"] = codexTurnTicketProbeErrorClass(errProbe)
+		logFields["next_action"] = "retry_next_cycle"
+		logFields["retry_after_seconds"] = effective.ProbeIntervalSeconds
+		log.WithFields(logFields).Info("codex turn ticket: active probe completed")
 		return
 	}
 	trimmedState := strings.TrimSpace(state)
+	healthy := IsHealthyCodexTurnState(trimmedState, effective.TargetLength)
+	logFields["http_status"] = status
+	logFields["state_length"] = len(trimmedState)
+	logFields["healthy"] = healthy
 	h.recordObservation(auth.ID, model, CodexTurnTicketObservation{
 		ObservedAt:  time.Now(),
 		StatusCode:  status,
 		StateLength: len(trimmedState),
-		Healthy:     IsHealthyCodexTurnState(trimmedState, effective.TargetLength),
+		Healthy:     healthy,
 		Result:      "probe",
 	})
 	// A rejection is not a miss. 429 means the credential is being asked to mint too
@@ -830,17 +847,63 @@ func (h *CodexTurnTicketHarvester) probeOne(ctx context.Context, auth *cliproxya
 	// waiting turns either into a sustained burst that harms every bucket sharing the
 	// credential, so the bucket parks for the configured backoff instead.
 	if status == http.StatusTooManyRequests || status == http.StatusUnauthorized || status == http.StatusForbidden {
-		h.parkBucket(auth.ID, model, time.Now().Add(time.Duration(effective.RejectBackoffSeconds)*time.Second))
-		log.Debugf("codex turn ticket: bucket backed off after upstream rejection (status=%d)", status)
+		backoffUntil := time.Now().Add(time.Duration(effective.RejectBackoffSeconds) * time.Second)
+		h.parkBucket(auth.ID, model, backoffUntil)
+		logFields["result"] = "rejected"
+		logFields["next_action"] = "backoff"
+		logFields["retry_after_seconds"] = effective.RejectBackoffSeconds
+		logFields["retry_at"] = backoffUntil.UTC().Format(time.RFC3339)
+		log.WithFields(logFields).Info("codex turn ticket: active probe completed")
 		return
 	}
 	ticket := NewCodexTurnTicket(state, time.Now(), time.Duration(effective.TTLSeconds)*time.Second)
 	if ticket == nil || !ticket.valid(time.Now(), effective.TargetLength) {
+		switch {
+		case status != http.StatusOK:
+			logFields["result"] = "http_error"
+		case len(trimmedState) == 0:
+			logFields["result"] = "missing_ticket"
+		default:
+			logFields["result"] = "unhealthy_ticket"
+		}
+		logFields["next_action"] = "retry_next_cycle"
+		logFields["retry_after_seconds"] = effective.ProbeIntervalSeconds
+		log.WithFields(logFields).Info("codex turn ticket: active probe completed")
 		return
 	}
 	h.store.Store(auth.ID, model, ticket)
-	h.setProbeCooldown(auth.ID, model, time.Now().Add(time.Duration(effective.ProbeCooldownSeconds)*time.Second))
+	cooldownUntil := time.Now().Add(time.Duration(effective.ProbeCooldownSeconds) * time.Second)
+	h.setProbeCooldown(auth.ID, model, cooldownUntil)
 	h.harvested.Add(1)
+	logFields["result"] = "healthy_ticket"
+	logFields["next_action"] = "cooldown"
+	logFields["retry_after_seconds"] = effective.ProbeCooldownSeconds
+	logFields["retry_at"] = cooldownUntil.UTC().Format(time.RFC3339)
+	logFields["ticket_expires_at"] = ticket.ExpiresAt.UTC().Format(time.RFC3339)
+	log.WithFields(logFields).Info("codex turn ticket: active probe completed")
+}
+
+func codexTurnTicketHarvestEgressLabel(egress string) string {
+	trimmed := strings.TrimSpace(egress)
+	if strings.EqualFold(trimmed, "direct") || strings.EqualFold(trimmed, "none") {
+		return "direct"
+	}
+	return proxyutil.Redact(trimmed)
+}
+
+func codexTurnTicketProbeErrorClass(err error) string {
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, ErrCodexTurnTicketProbeSkipped):
+		return "skipped"
+	default:
+		return "transport_error"
+	}
 }
 
 // reserveProbeSlot reports whether a bucket may be probed now. Rejections retain their
@@ -921,6 +984,11 @@ func (h *CodexTurnTicketHarvester) observation(authID, model string) CodexTurnTi
 // the healthy turn-state token the upstream minted, if any, together with the HTTP status
 // so the caller can tell a rejection from a plain miss.
 func ProbeCodexTurnState(ctx context.Context, auth *cliproxyauth.Auth, model string, effective CodexTurnTicketConfig) (string, int, error) {
+	egress := chooseCodexTurnTicketHarvestEgress(effective.HarvestProxyURLs)
+	return probeCodexTurnStateThroughEgress(ctx, auth, model, effective, egress)
+}
+
+func probeCodexTurnStateThroughEgress(ctx context.Context, auth *cliproxyauth.Auth, model string, effective CodexTurnTicketConfig, egress string) (string, int, error) {
 	if auth == nil {
 		return "", 0, ErrCodexTurnTicketProbeSkipped
 	}
@@ -928,7 +996,6 @@ func ProbeCodexTurnState(ctx context.Context, auth *cliproxyauth.Auth, model str
 	if token == "" {
 		return "", 0, ErrCodexTurnTicketProbeSkipped
 	}
-	egress := chooseCodexTurnTicketHarvestEgress(effective.HarvestProxyURLs)
 	if egress == "" {
 		return "", 0, ErrCodexTurnTicketProbeSkipped
 	}
