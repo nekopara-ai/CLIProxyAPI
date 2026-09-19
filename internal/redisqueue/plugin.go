@@ -66,6 +66,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 	}
 	effectiveServiceTier := strings.TrimSpace(record.EffectiveServiceTier)
 	responseServiceTier := strings.TrimSpace(record.ResponseServiceTier)
+	responseModel := strings.TrimSpace(record.ResponseModel)
 	clientRequestMetadata := internallogging.GetClientRequestMetadata(ctx)
 	sessionID := strings.TrimSpace(record.SessionID)
 	parentSessionID := strings.TrimSpace(record.ParentSessionID)
@@ -140,6 +141,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		ServiceTier:          serviceTier,
 		EffectiveServiceTier: effectiveServiceTier,
 		ResponseServiceTier:  responseServiceTier,
+		ResponseModel:        responseModel,
 	})
 	if err != nil {
 		return
@@ -165,6 +167,7 @@ type queuedUsageDetail struct {
 	ServiceTier          string                   `json:"service_tier"`
 	EffectiveServiceTier string                   `json:"effective_service_tier,omitempty"`
 	ResponseServiceTier  string                   `json:"response_service_tier,omitempty"`
+	ResponseModel        string                   `json:"response_model,omitempty"`
 }
 
 type requestDetail struct {

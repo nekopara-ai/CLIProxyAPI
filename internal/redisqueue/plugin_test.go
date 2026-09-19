@@ -44,6 +44,7 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 			ServiceTier:          "auto",
 			EffectiveServiceTier: "priority",
 			ResponseServiceTier:  "default",
+			ResponseModel:        "gpt-5.6-luna",
 			Generate:             coreusage.GenerateFlag(true),
 			RequestedAt:          time.Date(2026, 4, 25, 0, 0, 0, 0, time.UTC),
 			Latency:              1500 * time.Millisecond,
@@ -74,6 +75,7 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 		requireStringField(t, payload, "effective_service_tier", "priority")
 		requireMissingField(t, payload, "request_service_tier")
 		requireStringField(t, payload, "response_service_tier", "default")
+		requireStringField(t, payload, "response_model", "gpt-5.6-luna")
 		requireIntField(t, payload, "accounting_version", coreusage.TokenAccountingSchemaVersion)
 		requireTokenBreakdown(t, payload, coreusage.TokenAccountingQualityComplete, 30)
 		requireTokensBoolField(t, payload, "cache_read_tokens_present", true)
