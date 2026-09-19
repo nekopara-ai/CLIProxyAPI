@@ -167,29 +167,10 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		attrs = auth.Attributes
 	}
 	util.ApplyCustomHeadersFromAttrs(httpReq, attrs, opts.Headers)
-	var authID, authLabel, authType, authValue string
-	if auth != nil {
-		authID = auth.ID
-		authLabel = auth.Label
-		authType, authValue = auth.AccountInfo()
-	}
-	helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
-		URL:       url,
-		Method:    http.MethodPost,
-		Headers:   httpReq.Header.Clone(),
-		Body:      translated,
-		Provider:  e.Identifier(),
-		AuthID:    authID,
-		AuthLabel: authLabel,
-		AuthType:  authType,
-		AuthValue: authValue,
-	})
-
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClient(httpClient)
-	httpResp, err := httpClient.Do(httpReq)
+	httpResp, translated, err := e.doChatRequest(ctx, auth, httpClient, httpReq, translated, reporter, to.String())
 	if err != nil {
-		helps.RecordAPIResponseError(ctx, e.cfg, err)
 		return resp, err
 	}
 	defer func() {
@@ -197,14 +178,6 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 			log.Errorf("openai compat executor: close response body error: %v", errClose)
 		}
 	}()
-	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
-	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		b, _ := io.ReadAll(httpResp.Body)
-		helps.AppendAPIResponseChunk(ctx, e.cfg, b)
-		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
-		err = newOpenAICompatStatusError(httpResp.StatusCode, httpResp.Header, b)
-		return resp, err
-	}
 	body, err := io.ReadAll(httpResp.Body)
 	if err != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, err)
@@ -223,6 +196,57 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	}
 	resp = cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}
 	return resp, nil
+}
+
+// doChatRequest retries only a rejected thinking/tool-choice combination, before
+// any successful response body is consumed. Tool selection remains authoritative.
+func (e *OpenAICompatExecutor) doChatRequest(ctx context.Context, auth *cliproxyauth.Auth, client *http.Client, request *http.Request, payload []byte, reporter *helps.UsageReporter, format string) (*http.Response, []byte, error) {
+	var authID, authLabel, authType, authValue string
+	if auth != nil {
+		authID = auth.ID
+		authLabel = auth.Label
+		authType, authValue = auth.AccountInfo()
+	}
+	for attempt := 0; ; attempt++ {
+		reporter.SetTranslatedReasoningEffort(payload, format)
+		helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
+			URL: request.URL.String(), Method: request.Method,
+			Headers: request.Header.Clone(), Body: payload,
+			Provider: e.Identifier(), AuthID: authID, AuthLabel: authLabel,
+			AuthType: authType, AuthValue: authValue,
+		})
+		response, err := client.Do(request)
+		if err != nil {
+			helps.RecordAPIResponseError(ctx, e.cfg, err)
+			return nil, payload, err
+		}
+		helps.RecordAPIResponseMetadata(ctx, e.cfg, response.StatusCode, response.Header.Clone())
+		if response.StatusCode >= 200 && response.StatusCode < 300 {
+			return response, payload, nil
+		}
+		body, errRead := io.ReadAll(response.Body)
+		if errClose := response.Body.Close(); errClose != nil {
+			log.Errorf("openai compat executor: close response body error: %v", errClose)
+		}
+		helps.AppendAPIResponseChunk(ctx, e.cfg, body)
+		if attempt == 0 && errRead == nil && format == "openai" {
+			if fallback, ok := helps.OpenAIThinkingToolChoiceFallback(payload, response.StatusCode, body); ok {
+				// Clone the original request to preserve credentials, custom headers,
+				// routing and cancellation. Do not reapply thinking defaults.
+				request = request.Clone(ctx)
+				payload = fallback
+				request.Body = io.NopCloser(bytes.NewReader(payload))
+				request.ContentLength = int64(len(payload))
+				request.GetBody = func() (io.ReadCloser, error) {
+					return io.NopCloser(bytes.NewReader(fallback)), nil
+				}
+				helps.LogWithRequestID(ctx).Warn("openai compat executor: upstream rejected thinking with tool_choice; retrying once with thinking disabled and tool_choice preserved")
+				continue
+			}
+		}
+		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", response.StatusCode, helps.SummarizeErrorBody(response.Header.Get("Content-Type"), body))
+		return nil, payload, newOpenAICompatStatusError(response.StatusCode, response.Header, body)
+	}
 }
 
 func (e *OpenAICompatExecutor) executeImages(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, endpointPath string) (resp cliproxyexecutor.Response, err error) {
@@ -392,40 +416,10 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	util.ApplyCustomHeadersFromAttrs(httpReq, attrs, opts.Headers)
 	httpReq.Header.Set("Accept", "text/event-stream")
 	httpReq.Header.Set("Cache-Control", "no-cache")
-	var authID, authLabel, authType, authValue string
-	if auth != nil {
-		authID = auth.ID
-		authLabel = auth.Label
-		authType, authValue = auth.AccountInfo()
-	}
-	helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
-		URL:       url,
-		Method:    http.MethodPost,
-		Headers:   httpReq.Header.Clone(),
-		Body:      translated,
-		Provider:  e.Identifier(),
-		AuthID:    authID,
-		AuthLabel: authLabel,
-		AuthType:  authType,
-		AuthValue: authValue,
-	})
-
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClient(httpClient)
-	httpResp, err := httpClient.Do(httpReq)
+	httpResp, translated, err := e.doChatRequest(ctx, auth, httpClient, httpReq, translated, reporter, to.String())
 	if err != nil {
-		helps.RecordAPIResponseError(ctx, e.cfg, err)
-		return nil, err
-	}
-	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
-	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		b, _ := io.ReadAll(httpResp.Body)
-		helps.AppendAPIResponseChunk(ctx, e.cfg, b)
-		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
-		if errClose := httpResp.Body.Close(); errClose != nil {
-			log.Errorf("openai compat executor: close response body error: %v", errClose)
-		}
-		err = newOpenAICompatStatusError(httpResp.StatusCode, httpResp.Header, b)
 		return nil, err
 	}
 	out := make(chan cliproxyexecutor.StreamChunk)
