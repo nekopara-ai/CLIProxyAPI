@@ -231,9 +231,12 @@ type CodexConfig struct {
 // lets an account skip the degraded state, so this feature probes each eligible
 // credential out of band through its own egress and keeps only healthy tokens.
 type CodexTurnTicketSettings struct {
-	// Enabled turns the harvester on. Injection also requires a captured ticket; requests
-	// for buckets without one keep the client-supplied header untouched.
+	// Enabled turns the harvester on. Injection also requires a captured ticket.
 	Enabled bool `yaml:"enabled" json:"enabled"`
+	// FailClosed prevents a Codex OAuth credential from serving a gated model until that
+	// exact (credential, model) bucket has a valid healthy ticket. It defaults to true when
+	// omitted so a missing ticket can never silently fall back to a degraded turn state.
+	FailClosed *bool `yaml:"fail-closed,omitempty" json:"fail-closed,omitempty"`
 	// TargetLength is the token length treated as healthy. Defaults to 292.
 	TargetLength int `yaml:"target-length,omitempty" json:"target-length,omitempty"`
 	// TTLSeconds bounds how long a captured token is replayed, measured from the issue

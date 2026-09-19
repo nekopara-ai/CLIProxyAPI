@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -169,7 +171,73 @@ func turnTicketTestAuth(id string) *cliproxyauth.Auth {
 	return &cliproxyauth.Auth{
 		ID:       id,
 		Provider: "codex",
+		Status:   cliproxyauth.StatusActive,
 		Metadata: map[string]any{"access_token": "test-access-token", "auth_kind": "oauth"},
+	}
+}
+
+func TestPersistentCodexTurnTicketStoreSurvivesRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), codexTurnTicketPersistenceFile)
+	state := testTurnState(t, time.Now().Unix(), 292)
+	store := NewPersistentCodexTurnTicketStore(path, 292, time.Hour)
+	store.Store("auth-a", "gpt-5.5", NewCodexTurnTicket(state, time.Now(), time.Hour))
+
+	info, errStat := os.Stat(path)
+	if errStat != nil {
+		t.Fatalf("persistent store was not created: %v", errStat)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("persistent store mode = %o, want 600", got)
+	}
+
+	restarted := NewPersistentCodexTurnTicketStore(path, 292, time.Hour)
+	if got := restarted.Lookup("auth-a", "gpt-5.5"); got == nil || got.State != state {
+		t.Fatalf("restart did not restore the healthy ticket: %#v", got)
+	}
+	if restarted.restoredCount() != 1 {
+		t.Fatalf("restored count = %d, want 1", restarted.restoredCount())
+	}
+	if matches, errGlob := filepath.Glob(path + ".*.tmp"); errGlob != nil || len(matches) != 0 {
+		t.Fatalf("atomic persistence left temp files: matches=%v err=%v", matches, errGlob)
+	}
+}
+
+func TestPersistentCodexTurnTicketStoreThrottlesRefreshCheckpoints(t *testing.T) {
+	path := filepath.Join(t.TempDir(), codexTurnTicketPersistenceFile)
+	now := time.Now().Truncate(time.Second)
+	firstState := testTurnState(t, now.Add(-2*time.Minute).Unix(), 292)
+	secondState := testTurnState(t, now.Add(-119*time.Second).Unix(), 292)
+	thirdState := testTurnState(t, now.Add(-30*time.Second).Unix(), 292)
+	store := NewPersistentCodexTurnTicketStore(path, 292, time.Hour)
+	store.Store("auth-a", "gpt-5.5", NewCodexTurnTicket(firstState, now, time.Hour))
+	store.Store("auth-a", "gpt-5.5", NewCodexTurnTicket(secondState, now, time.Hour))
+
+	readPersistedState := func() string {
+		t.Helper()
+		data, errRead := os.ReadFile(path)
+		if errRead != nil {
+			t.Fatalf("read persistent store: %v", errRead)
+		}
+		var disk codexTurnTicketDiskFile
+		if errUnmarshal := json.Unmarshal(data, &disk); errUnmarshal != nil {
+			t.Fatalf("parse persistent store: %v", errUnmarshal)
+		}
+		if len(disk.Tickets) != 1 || disk.Tickets[0].CodexTurnTicket == nil {
+			t.Fatalf("unexpected persistent store records: %+v", disk.Tickets)
+		}
+		return disk.Tickets[0].State
+	}
+
+	if got := readPersistedState(); got != firstState {
+		t.Fatalf("one-second refresh rewrote checkpoint: got state len=%d", len(got))
+	}
+	if got := store.Lookup("auth-a", "gpt-5.5"); got == nil || got.State != secondState {
+		t.Fatal("checkpoint throttling prevented the in-memory ticket from refreshing")
+	}
+
+	store.Store("auth-a", "gpt-5.5", NewCodexTurnTicket(thirdState, now, time.Hour))
+	if got := readPersistedState(); got != thirdState {
+		t.Fatalf("advanced refresh was not checkpointed: got state len=%d", len(got))
 	}
 }
 
@@ -515,6 +583,39 @@ func TestCodexTurnTicketHarvesterCooldownHoldsHealthyBuckets(t *testing.T) {
 	}
 }
 
+// A 312 response is a miss, not a successful harvest. It must be retried on the next
+// cycle instead of consuming the 55-minute healthy-ticket cooldown.
+func TestCodexTurnTicketHarvesterRetriesDegradedMissNextCycle(t *testing.T) {
+	var calls atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set(CodexTurnStateHeader, testTurnState(t, time.Now().Unix(), 312))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	var proxyHits atomic.Int64
+	proxyURL := newRecordingForwardProxy(t, upstream.URL, &proxyHits)
+
+	cfg := turnTicketTestConfig()
+	cfg.Codex.TurnTicket.HarvestProxyURL = proxyURL
+	cfg.Codex.TurnTicket.ProbeCooldownSeconds = 3300
+	auth := turnTicketTestAuth("auth-a")
+	auth.Attributes = map[string]string{"base_url": upstream.URL}
+	harvester := NewCodexTurnTicketHarvester(NewCodexTurnTicketStore(), turnTicketTestConfigProvider(cfg), func() []*cliproxyauth.Auth {
+		return []*cliproxyauth.Auth{auth}
+	})
+
+	harvester.probeAll(context.Background())
+	harvester.probeAll(context.Background())
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("degraded miss made %d probes across two cycles, want 2", got)
+	}
+	observation := harvester.observation("auth-a", "gpt-5.5")
+	if observation.StatusCode != http.StatusOK || observation.StateLength != 312 || observation.Healthy {
+		t.Fatalf("degraded observation = %+v, want HTTP 200 / length 312 / unhealthy", observation)
+	}
+}
+
 func TestCodexTurnTicketHarvesterProbesOnlyScopedOAuthCredentials(t *testing.T) {
 	var calls atomic.Int64
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -545,6 +646,34 @@ func TestCodexTurnTicketHarvesterProbesOnlyScopedOAuthCredentials(t *testing.T) 
 	harvester.probeAll(context.Background())
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("made %d probes, want only the single scoped OAuth credential", got)
+	}
+}
+
+func TestCodexTurnTicketHarvesterSkipsDisabledCredentials(t *testing.T) {
+	var calls atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	var proxyHits atomic.Int64
+	proxyURL := newRecordingForwardProxy(t, upstream.URL, &proxyHits)
+
+	cfg := turnTicketTestConfig()
+	cfg.Codex.TurnTicket.HarvestProxyURL = proxyURL
+	active := turnTicketTestAuth("active")
+	active.Attributes = map[string]string{"base_url": upstream.URL}
+	disabled := turnTicketTestAuth("disabled")
+	disabled.Disabled = true
+	disabled.Status = cliproxyauth.StatusDisabled
+	disabled.Attributes = map[string]string{"base_url": upstream.URL}
+
+	harvester := NewCodexTurnTicketHarvester(NewCodexTurnTicketStore(), turnTicketTestConfigProvider(cfg), func() []*cliproxyauth.Auth {
+		return []*cliproxyauth.Auth{active, disabled}
+	})
+	harvester.probeAll(context.Background())
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("probe count = %d, want only the active credential", got)
 	}
 }
 
@@ -689,15 +818,44 @@ func TestProcessWideTurnTicketWiringFollowsConfigReload(t *testing.T) {
 	}
 }
 
+func TestCodexTurnTicketFailClosedExecutionGuard(t *testing.T) {
+	cfg := turnTicketTestConfig()
+	process := ConfigureCodexTurnTickets(turnTicketTestConfigProvider(cfg), nil)
+	defer ConfigureCodexTurnTickets(nil, nil)
+	auth := turnTicketTestAuth("auth-a")
+
+	if CodexTurnTicketAllowsExecution(auth, "gpt-5.5") {
+		t.Fatal("fail-closed guard admitted a gated bucket without a healthy ticket")
+	}
+	if !CodexTurnTicketAllowsExecution(auth, "gpt-4o") {
+		t.Fatal("fail-closed guard blocked an unrelated model")
+	}
+	state := testTurnState(t, time.Now().Unix(), 292)
+	process.Store.Store(auth.ID, "gpt-5.5", NewCodexTurnTicket(state, time.Now(), time.Hour))
+	if !CodexTurnTicketAllowsExecution(auth, "gpt-5.5") {
+		t.Fatal("fail-closed guard rejected a bucket with a healthy ticket")
+	}
+
+	disabled := false
+	cfg.Codex.TurnTicket.FailClosed = &disabled
+	if !CodexTurnTicketAllowsExecution(turnTicketTestAuth("auth-b"), "gpt-5.5") {
+		t.Fatal("explicit fail-closed=false did not restore pass-through behavior")
+	}
+}
+
 // TestSnapshotCodexTurnTicketsReportsRedactedState covers the management-facing counter
 // export: it must report configuration and counts without leaking credentials or tokens.
 func TestSnapshotCodexTurnTicketsReportsRedactedState(t *testing.T) {
 	cfg := turnTicketTestConfig()
 	cfg.Codex.TurnTicket.HarvestProxyURL = "http://user:secret@127.0.0.1:8080"
-	process := ConfigureCodexTurnTickets(turnTicketTestConfigProvider(cfg), nil)
+	auth := turnTicketTestAuth("sensitive-auth-id")
+	auth.Metadata["email"] = "kaycee.rempel@mail.com"
+	process := ConfigureCodexTurnTickets(turnTicketTestConfigProvider(cfg), func() []*cliproxyauth.Auth {
+		return []*cliproxyauth.Auth{auth}
+	})
 	defer ConfigureCodexTurnTickets(nil, nil)
 	state := testTurnState(t, time.Now().Unix(), 292)
-	process.Store.Store("auth-a", "gpt-5.5", NewCodexTurnTicket(state, time.Now(), time.Hour))
+	process.Store.Store(auth.ID, "gpt-5.5", NewCodexTurnTicket(state, time.Now(), time.Hour))
 
 	snapshot := SnapshotCodexTurnTickets()
 	if !snapshot.Configured || !snapshot.Enabled {
@@ -708,6 +866,22 @@ func TestSnapshotCodexTurnTicketsReportsRedactedState(t *testing.T) {
 	}
 	if snapshot.HarvestProxySet && strings.Contains(snapshot.HarvestProxy, "secret") {
 		t.Fatalf("snapshot leaked harvest proxy credentials: %q", snapshot.HarvestProxy)
+	}
+	if len(snapshot.BucketStates) != 1 {
+		t.Fatalf("bucket state count = %d, want 1", len(snapshot.BucketStates))
+	}
+	bucket := snapshot.BucketStates[0]
+	if bucket.AuthHint != "ka***@mail.com" || bucket.Model != "gpt-5.5" || bucket.TicketState != "healthy" || bucket.TicketLength != 292 {
+		t.Fatalf("unexpected redacted bucket state: %+v", bucket)
+	}
+	encoded, errMarshal := json.Marshal(snapshot)
+	if errMarshal != nil {
+		t.Fatalf("marshal snapshot: %v", errMarshal)
+	}
+	for _, leaked := range []string{state, auth.ID, "kaycee.rempel@mail.com", "secret"} {
+		if strings.Contains(string(encoded), leaked) {
+			t.Fatalf("snapshot leaked %q: %s", leaked, encoded)
+		}
 	}
 	if summary := DescribeCodexTurnTickets(); strings.Contains(summary, "secret") || strings.Contains(summary, state) {
 		t.Fatalf("summary leaked material: %q", summary)
@@ -731,6 +905,9 @@ func TestEffectiveCodexTurnTicketConfigDefaults(t *testing.T) {
 	}
 	if effective.Enabled {
 		t.Fatal("the feature must be off by default")
+	}
+	if !effective.FailClosed {
+		t.Fatal("fail-closed must default to true")
 	}
 	if len(effective.Models) == 0 {
 		t.Fatal("default models must be populated so a bare enable is useful")

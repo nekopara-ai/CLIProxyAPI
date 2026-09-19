@@ -38,6 +38,7 @@ func (s *Service) startCodexTurnTicketHarvester(ctx context.Context) {
 	if process == nil || process.Harvester == nil {
 		return
 	}
+	s.coreManager.SetExecutionModelGuard(helps.CodexTurnTicketAllowsExecution)
 	process.Harvester.Start(ctx)
 	effective := helps.EffectiveCodexTurnTicketConfig(s.currentConfig())
 	if !effective.Enabled {
@@ -48,8 +49,9 @@ func (s *Service) startCodexTurnTicketHarvester(ctx context.Context) {
 		log.Warnf("codex turn tickets: enabled but codex.turn-ticket.harvest-proxy-url is empty; synthetic probing stays off")
 		return
 	}
-	log.Infof("codex turn tickets: harvester started (models=%v target_length=%d ttl_seconds=%d interval_seconds=%d)",
-		effective.Models, effective.TargetLength, effective.TTLSeconds, effective.ProbeIntervalSeconds)
+	snapshot := helps.SnapshotCodexTurnTickets()
+	log.Infof("codex turn tickets: harvester started (models=%v target_length=%d ttl_seconds=%d interval_seconds=%d fail_closed=%t persistent=%t restored=%d)",
+		effective.Models, effective.TargetLength, effective.TTLSeconds, effective.ProbeIntervalSeconds, effective.FailClosed, snapshot.PersistentStore, snapshot.RestoredTickets)
 }
 
 // currentConfig returns the live configuration pointer under the config lock. Every
@@ -68,6 +70,9 @@ func (s *Service) currentConfig() *config.Config {
 func (s *Service) stopCodexTurnTicketHarvester() {
 	codexTurnTicketLifecycleMu.Lock()
 	defer codexTurnTicketLifecycleMu.Unlock()
+	if s != nil && s.coreManager != nil {
+		s.coreManager.SetExecutionModelGuard(nil)
+	}
 	process := helps.CurrentCodexTurnTickets()
 	if process == nil || process.Harvester == nil {
 		return

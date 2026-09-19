@@ -135,6 +135,15 @@ type resultPolicyHolder struct {
 	policy ResultPolicy
 }
 
+// ExecutionModelGuard can reject one resolved upstream model for a credential before
+// any request preparation or upstream I/O occurs. It is intended for runtime safety
+// gates whose state lives outside the auth manager, such as Codex turn-ticket readiness.
+type ExecutionModelGuard func(auth *Auth, model string) bool
+
+type executionModelGuardHolder struct {
+	guard ExecutionModelGuard
+}
+
 // Manager orchestrates auth lifecycle, selection, execution, and persistence.
 type Manager struct {
 	store                     Store
@@ -144,6 +153,7 @@ type Manager struct {
 	selector                  Selector
 	hook                      Hook
 	resultPolicy              atomic.Pointer[resultPolicyHolder]
+	executionModelGuard       atomic.Pointer[executionModelGuardHolder]
 	mu                        sync.RWMutex
 	selectorMu                sync.Mutex
 	configCooldownMu          sync.Mutex
@@ -252,4 +262,24 @@ func (m *Manager) ResultPolicy() ResultPolicy {
 		return nil
 	}
 	return holder.policy
+}
+
+// SetExecutionModelGuard installs a request-time model guard. A nil guard clears it.
+func (m *Manager) SetExecutionModelGuard(guard ExecutionModelGuard) {
+	if m == nil {
+		return
+	}
+	if guard == nil {
+		m.executionModelGuard.Store(nil)
+		return
+	}
+	m.executionModelGuard.Store(&executionModelGuardHolder{guard: guard})
+}
+
+func (m *Manager) executionModelAllowed(auth *Auth, model string) bool {
+	if m == nil {
+		return true
+	}
+	holder := m.executionModelGuard.Load()
+	return holder == nil || holder.guard == nil || holder.guard(auth, model)
 }
