@@ -34,6 +34,7 @@ func TestLogFormatterPrintsCodexTurnTicketProbeFields(t *testing.T) {
 	entry.Data["auth_hint"] = "ka***@mail.com"
 	entry.Data["model"] = "gpt-5.6-sol"
 	entry.Data["egress"] = "socks5h://redacted@proxy.example.com:1080"
+	entry.Data["phase"] = "business"
 	entry.Data["elapsed_ms"] = int64(412)
 	entry.Data["http_status"] = 200
 	entry.Data["state_length"] = 312
@@ -55,6 +56,7 @@ func TestLogFormatterPrintsCodexTurnTicketProbeFields(t *testing.T) {
 		"auth_hint=ka***@mail.com",
 		"model=gpt-5.6-sol",
 		"egress=socks5h://redacted@proxy.example.com:1080",
+		"phase=business",
 		"elapsed_ms=412",
 		"http_status=200",
 		"state_length=312",

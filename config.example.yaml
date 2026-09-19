@@ -409,7 +409,9 @@ codex:
     probe-cooldown-seconds: 3300
     # How long a bucket stops being probed after 429, 401, or 403.
     reject-backoff-seconds: 600
-    # Dedicated egress pool for synthetic probes. Every probe randomly selects one entry.
+    # Fallback egress pool for synthetic probes. Each cycle first uses the credential
+    # proxy, then the global proxy, or the environment when neither is set. Only an
+    # HTTP 200 with a 312 turn state triggers one random fallback from this pool.
     # Entries may be concrete http/https/socks5 proxy URLs, or "direct" to explicitly
     # bypass HTTP_PROXY/HTTPS_PROXY. Harvesting stays disabled while this list is empty.
     harvest-proxy-urls: []

@@ -33,7 +33,7 @@ type LogFormatter struct{}
 // logFieldOrder defines the display order for common log fields.
 var logFieldOrder = []string{
 	"provider", "model",
-	"auth_hint", "egress", "elapsed_ms", "http_status", "state_length", "healthy",
+	"auth_hint", "egress", "phase", "elapsed_ms", "http_status", "state_length", "healthy",
 	"result", "next_action", "retry_after_seconds", "retry_at", "ticket_expires_at", "error_class",
 	"plugin_id", "plugin_name", "source_id",
 	"version", "active_version", "retired_version", "overwritten",

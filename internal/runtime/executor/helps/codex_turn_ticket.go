@@ -375,6 +375,7 @@ type CodexTurnTicketConfig struct {
 	ProbeTimeoutSeconds  int
 	ProbeCooldownSeconds int
 	RejectBackoffSeconds int
+	BusinessProxyURL     string
 	HarvestProxyURLs     []string
 	Models               []string
 	AuthIDs              []string
@@ -400,6 +401,7 @@ func EffectiveCodexTurnTicketConfig(cfg *config.Config) CodexTurnTicketConfig {
 		effective.Models = append([]string(nil), CodexTurnTicketDefaults...)
 		return effective
 	}
+	effective.BusinessProxyURL = strings.TrimSpace(cfg.ProxyURL)
 	raw := cfg.Codex.TurnTicket
 	effective.Enabled = raw.Enabled
 	if raw.FailClosed != nil {
@@ -812,15 +814,41 @@ func (h *CodexTurnTicketHarvester) probeOne(ctx context.Context, auth *cliproxya
 	if !h.reserveProbeSlot(auth.ID, model, now, effective) {
 		return
 	}
-	h.probed.Add(1)
-	egress := chooseCodexTurnTicketHarvestEgress(effective.HarvestProxyURLs)
-	startedAt := time.Now()
-	state, status, errProbe := probeCodexTurnStateThroughEgress(ctx, auth, model, effective, egress)
-	logFields := log.Fields{
-		"auth_hint":  codexTurnTicketAuthHint(auth),
-		"model":      strings.TrimSpace(model),
-		"egress":     codexTurnTicketHarvestEgressLabel(egress),
-		"elapsed_ms": time.Since(startedAt).Milliseconds(),
+	egress := strings.TrimSpace(auth.ProxyURL)
+	if egress == "" {
+		egress = effective.BusinessProxyURL
+	}
+	phase := "business"
+	var state string
+	var status int
+	var errProbe error
+	var logFields log.Fields
+	for {
+		h.probed.Add(1)
+		startedAt := time.Now()
+		state, status, errProbe = probeCodexTurnStateWithTimeout(ctx, auth, model, effective, egress)
+		logFields = log.Fields{
+			"auth_hint":  codexTurnTicketAuthHint(auth),
+			"model":      strings.TrimSpace(model),
+			"egress":     codexTurnTicketHarvestEgressLabel(egress),
+			"phase":      phase,
+			"elapsed_ms": time.Since(startedAt).Milliseconds(),
+		}
+		if phase != "business" || errProbe != nil || status != http.StatusOK ||
+			len(strings.TrimSpace(state)) != 312 || IsHealthyCodexTurnState(state, effective.TargetLength) {
+			break
+		}
+		fallback := chooseCodexTurnTicketHarvestEgress(effective.HarvestProxyURLs)
+		if fallback == "" || (ctx != nil && ctx.Err() != nil) {
+			break
+		}
+		logFields["http_status"] = status
+		logFields["state_length"] = 312
+		logFields["healthy"] = false
+		logFields["result"] = "unhealthy_ticket"
+		logFields["next_action"] = "harvest_fallback"
+		log.WithFields(logFields).Info("codex turn ticket: active probe completed")
+		egress, phase = fallback, "harvest"
 	}
 	if errProbe != nil {
 		h.recordObservation(auth.ID, model, CodexTurnTicketObservation{ObservedAt: time.Now(), Result: "error"})
@@ -886,6 +914,9 @@ func (h *CodexTurnTicketHarvester) probeOne(ctx context.Context, auth *cliproxya
 
 func codexTurnTicketHarvestEgressLabel(egress string) string {
 	trimmed := strings.TrimSpace(egress)
+	if trimmed == "" {
+		return "environment"
+	}
 	if strings.EqualFold(trimmed, "direct") || strings.EqualFold(trimmed, "none") {
 		return "direct"
 	}
@@ -990,14 +1021,19 @@ func ProbeCodexTurnState(ctx context.Context, auth *cliproxyauth.Auth, model str
 }
 
 func probeCodexTurnStateThroughEgress(ctx context.Context, auth *cliproxyauth.Auth, model string, effective CodexTurnTicketConfig, egress string) (string, int, error) {
+	if egress == "" {
+		return "", 0, ErrCodexTurnTicketProbeSkipped
+	}
+	return probeCodexTurnStateWithTimeout(ctx, auth, model, effective, egress)
+}
+
+// An empty business egress inherits the environment, as ordinary requests do.
+func probeCodexTurnStateWithTimeout(ctx context.Context, auth *cliproxyauth.Auth, model string, effective CodexTurnTicketConfig, egress string) (string, int, error) {
 	if auth == nil {
 		return "", 0, ErrCodexTurnTicketProbeSkipped
 	}
 	token := codexAuthAccessToken(auth)
 	if token == "" {
-		return "", 0, ErrCodexTurnTicketProbeSkipped
-	}
-	if egress == "" {
 		return "", 0, ErrCodexTurnTicketProbeSkipped
 	}
 	timeout := time.Duration(effective.ProbeTimeoutSeconds) * time.Second
@@ -1036,17 +1072,21 @@ func codexTurnTicketProbeBody(model string) []byte {
 var codexTurnTicketProbeClient = func(ctx context.Context, auth *cliproxyauth.Auth, proxyURL string, timeout time.Duration) (*http.Client, error) {
 	transport, mode, errBuild := proxyutil.BuildHTTPTransport(proxyURL)
 	if errBuild != nil {
-		return nil, fmt.Errorf("codex turn ticket: build harvest egress transport: %w", errBuild)
+		return nil, fmt.Errorf("codex turn ticket: build probe egress transport: %w", errBuild)
 	}
-	// The egress must be explicit. ModeDirect intentionally bypasses HTTP_PROXY and
-	// HTTPS_PROXY, while ModeProxy uses the configured endpoint. ModeInherit is rejected
-	// because it could silently merge probe traffic with the client-traffic path.
-	if (mode != proxyutil.ModeProxy && mode != proxyutil.ModeDirect) || transport == nil {
-		return nil, fmt.Errorf("codex turn ticket: harvest egress %q is not an explicit direct or proxy setting", proxyutil.Redact(proxyURL))
+	// Business requests without an explicit proxy inherit the environment. Explicit
+	// harvest probes are checked by probeCodexTurnStateThroughEgress before reaching here.
+	if mode == proxyutil.ModeInherit {
+		if base, ok := http.DefaultTransport.(*http.Transport); ok {
+			transport = base.Clone()
+		} else {
+			transport = &http.Transport{Proxy: http.ProxyFromEnvironment}
+		}
 	}
-	// Synthetic probes must not share a connection with client traffic: the harvest
-	// egress is a different path, and reusing a pooled connection would leak that
-	// separation. DisableKeepAlives makes every probe open and close its own connection.
+	if transport == nil {
+		return nil, fmt.Errorf("codex turn ticket: no transport for egress %q", proxyutil.Redact(proxyURL))
+	}
+	// Probes use a separate connection from client traffic.
 	transport.DisableKeepAlives = true
 	return &http.Client{Transport: transport, Timeout: timeout}, nil
 }
