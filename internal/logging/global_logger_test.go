@@ -26,6 +26,52 @@ func TestLogFormatterPrintsVersionField(t *testing.T) {
 	}
 }
 
+func TestLogFormatterPrintsCodexTurnTicketProbeFields(t *testing.T) {
+	entry := log.NewEntry(log.New())
+	entry.Time = time.Date(2026, 9, 19, 12, 52, 26, 0, time.UTC)
+	entry.Level = log.InfoLevel
+	entry.Message = "codex turn ticket: active probe completed"
+	entry.Data["auth_hint"] = "ka***@mail.com"
+	entry.Data["model"] = "gpt-5.6-sol"
+	entry.Data["egress"] = "socks5h://redacted@proxy.example.com:1080"
+	entry.Data["elapsed_ms"] = int64(412)
+	entry.Data["http_status"] = 200
+	entry.Data["state_length"] = 312
+	entry.Data["healthy"] = false
+	entry.Data["result"] = "unhealthy_ticket"
+	entry.Data["next_action"] = "retry_next_cycle"
+	entry.Data["retry_after_seconds"] = 120
+	entry.Data["retry_at"] = "2026-09-19T12:54:26Z"
+	entry.Data["ticket_expires_at"] = "2026-09-19T13:52:26Z"
+	entry.Data["error_class"] = "timeout"
+
+	formatted, errFormat := (&LogFormatter{}).Format(entry)
+	if errFormat != nil {
+		t.Fatalf("Format() error = %v", errFormat)
+	}
+
+	line := string(formatted)
+	for _, want := range []string{
+		"auth_hint=ka***@mail.com",
+		"model=gpt-5.6-sol",
+		"egress=socks5h://redacted@proxy.example.com:1080",
+		"elapsed_ms=412",
+		"http_status=200",
+		"state_length=312",
+		"healthy=false",
+		"result=unhealthy_ticket",
+		"next_action=retry_next_cycle",
+		"retry_after_seconds=120",
+		"retry_at=2026-09-19T12:54:26Z",
+		"ticket_expires_at=2026-09-19T13:52:26Z",
+		"error_class=timeout",
+	} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("formatted line %q missing %s", line, want)
+		}
+	}
+}
+
 func TestLogFormatterPrintsMediaForwardingFields(t *testing.T) {
 	entry := log.NewEntry(log.New())
 	entry.Time = time.Date(2026, 7, 25, 7, 36, 4, 0, time.Local)
