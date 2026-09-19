@@ -156,7 +156,7 @@ func TestCodexTurnTicketKeySeparatesAuthFromModel(t *testing.T) {
 func turnTicketTestConfig() *config.Config {
 	cfg := &config.Config{}
 	cfg.Codex.TurnTicket.Enabled = true
-	cfg.Codex.TurnTicket.HarvestProxyURL = "http://127.0.0.1:1"
+	cfg.Codex.TurnTicket.HarvestProxyURLs = []string{"http://127.0.0.1:1"}
 	cfg.Codex.TurnTicket.Models = []string{"gpt-5.5"}
 	return cfg
 }
@@ -400,7 +400,7 @@ func TestCodexTurnTicketProbeUsesHarvestProxyAndIdentity(t *testing.T) {
 	auth.Metadata["account_id"] = "acct-123"
 
 	effective := EffectiveCodexTurnTicketConfig(turnTicketTestConfig())
-	effective.HarvestProxyURL = proxyURL
+	effective.HarvestProxyURLs = []string{proxyURL}
 	got, status, errProbe := ProbeCodexTurnState(context.Background(), auth, "gpt-5.5", effective)
 	if errProbe != nil {
 		t.Fatalf("ProbeCodexTurnState returned error: %v", errProbe)
@@ -440,6 +440,28 @@ func TestCodexTurnTicketProbeUsesHarvestProxyAndIdentity(t *testing.T) {
 	}
 }
 
+func TestCodexTurnTicketProbeUsesExplicitDirectEgress(t *testing.T) {
+	state := testTurnState(t, time.Now().Unix(), 292)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(CodexTurnStateHeader, state)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	auth := turnTicketTestAuth("auth-a")
+	auth.Attributes = map[string]string{"base_url": upstream.URL}
+	effective := EffectiveCodexTurnTicketConfig(turnTicketTestConfig())
+	effective.HarvestProxyURLs = []string{"direct"}
+
+	got, status, errProbe := ProbeCodexTurnState(context.Background(), auth, "gpt-5.5", effective)
+	if errProbe != nil {
+		t.Fatalf("direct ProbeCodexTurnState returned error: %v", errProbe)
+	}
+	if status != http.StatusOK || got != state {
+		t.Fatalf("direct probe result = status %d, state length %d; want 200 and %d", status, len(got), len(state))
+	}
+}
+
 func TestCodexTurnTicketProbeUpgradesVersionForNewestModels(t *testing.T) {
 	headers := http.Header{}
 	applyCodexTurnTicketProbeIdentity(headers, turnTicketTestAuth("auth-a"), "gpt-6-astra")
@@ -475,7 +497,7 @@ func TestCodexTurnTicketProbeReportsRejectionStatus(t *testing.T) {
 	auth := turnTicketTestAuth("auth-a")
 	auth.Attributes = map[string]string{"base_url": upstream.URL}
 	effective := EffectiveCodexTurnTicketConfig(turnTicketTestConfig())
-	effective.HarvestProxyURL = proxyURL
+	effective.HarvestProxyURLs = []string{proxyURL}
 	state, status, errProbe := ProbeCodexTurnState(context.Background(), auth, "gpt-5.5", effective)
 	if errProbe != nil {
 		t.Fatalf("unexpected error: %v", errProbe)
@@ -488,23 +510,37 @@ func TestCodexTurnTicketProbeReportsRejectionStatus(t *testing.T) {
 	}
 }
 
-func TestCodexTurnTicketProbeSkipsWithoutProxyOrToken(t *testing.T) {
+func TestCodexTurnTicketProbeSkipsWithoutEgressOrToken(t *testing.T) {
 	effective := EffectiveCodexTurnTicketConfig(turnTicketTestConfig())
-	effective.HarvestProxyURL = ""
+	effective.HarvestProxyURLs = nil
 	if _, _, errProbe := ProbeCodexTurnState(context.Background(), turnTicketTestAuth("auth-a"), "gpt-5.5", effective); errProbe == nil {
-		t.Fatal("a probe without a harvest proxy must be skipped, not attempted")
+		t.Fatal("a probe without a harvest egress must be skipped, not attempted")
 	}
-	effective.HarvestProxyURL = "http://127.0.0.1:1"
+	effective.HarvestProxyURLs = []string{"http://127.0.0.1:1"}
 	noToken := &cliproxyauth.Auth{ID: "auth-a", Provider: "codex"}
 	if _, _, errProbe := ProbeCodexTurnState(context.Background(), noToken, "gpt-5.5", effective); errProbe == nil {
 		t.Fatal("a probe without a credential token must be skipped")
 	}
 }
 
-func TestCodexTurnTicketProbeClientRejectsUsableNonProxy(t *testing.T) {
-	if _, errClient := codexTurnTicketProbeClient(context.Background(), nil, "direct", 0); errClient == nil {
-		t.Fatal("probes must refuse to run without an explicit proxy")
+func TestCodexTurnTicketProbeClientSupportsExplicitDirect(t *testing.T) {
+	client, errClient := codexTurnTicketProbeClient(context.Background(), nil, "direct", 0)
+	if errClient != nil {
+		t.Fatalf("explicit direct harvest egress was rejected: %v", errClient)
 	}
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok || transport == nil {
+		t.Fatalf("direct client transport = %T, want *http.Transport", client.Transport)
+	}
+	if transport.Proxy != nil {
+		t.Fatal("explicit direct harvest egress must bypass environment proxies")
+	}
+	if !transport.DisableKeepAlives {
+		t.Fatal("direct probes must keep the one-connection-per-probe isolation")
+	}
+}
+
+func TestCodexTurnTicketProbeClientRejectsInvalidEgress(t *testing.T) {
 	if _, errClient := codexTurnTicketProbeClient(context.Background(), nil, "ftp://example.com:21", 0); errClient == nil {
 		t.Fatal("probes must reject an unsupported proxy scheme")
 	}
@@ -523,7 +559,7 @@ func TestCodexTurnTicketHarvesterBacksOffOnRejection(t *testing.T) {
 	proxyURL := newRecordingForwardProxy(t, upstream.URL, &proxyHits)
 
 	cfg := turnTicketTestConfig()
-	cfg.Codex.TurnTicket.HarvestProxyURL = proxyURL
+	cfg.Codex.TurnTicket.HarvestProxyURLs = []string{proxyURL}
 	cfg.Codex.TurnTicket.ProbeCooldownSeconds = 3300
 	cfg.Codex.TurnTicket.RejectBackoffSeconds = 600
 	auth := turnTicketTestAuth("auth-a")
@@ -564,7 +600,7 @@ func TestCodexTurnTicketHarvesterCooldownHoldsHealthyBuckets(t *testing.T) {
 	proxyURL := newRecordingForwardProxy(t, upstream.URL, &proxyHits)
 
 	cfg := turnTicketTestConfig()
-	cfg.Codex.TurnTicket.HarvestProxyURL = proxyURL
+	cfg.Codex.TurnTicket.HarvestProxyURLs = []string{proxyURL}
 	auth := turnTicketTestAuth("auth-a")
 	auth.Attributes = map[string]string{"base_url": upstream.URL}
 
@@ -597,7 +633,7 @@ func TestCodexTurnTicketHarvesterRetriesDegradedMissNextCycle(t *testing.T) {
 	proxyURL := newRecordingForwardProxy(t, upstream.URL, &proxyHits)
 
 	cfg := turnTicketTestConfig()
-	cfg.Codex.TurnTicket.HarvestProxyURL = proxyURL
+	cfg.Codex.TurnTicket.HarvestProxyURLs = []string{proxyURL}
 	cfg.Codex.TurnTicket.ProbeCooldownSeconds = 3300
 	auth := turnTicketTestAuth("auth-a")
 	auth.Attributes = map[string]string{"base_url": upstream.URL}
@@ -627,7 +663,7 @@ func TestCodexTurnTicketHarvesterProbesOnlyScopedOAuthCredentials(t *testing.T) 
 	proxyURL := newRecordingForwardProxy(t, upstream.URL, &proxyHits)
 
 	cfg := turnTicketTestConfig()
-	cfg.Codex.TurnTicket.HarvestProxyURL = proxyURL
+	cfg.Codex.TurnTicket.HarvestProxyURLs = []string{proxyURL}
 	cfg.Codex.TurnTicket.AuthIDs = []string{"auth-a"}
 
 	apiKeyAuth := &cliproxyauth.Auth{
@@ -660,7 +696,7 @@ func TestCodexTurnTicketHarvesterSkipsDisabledCredentials(t *testing.T) {
 	proxyURL := newRecordingForwardProxy(t, upstream.URL, &proxyHits)
 
 	cfg := turnTicketTestConfig()
-	cfg.Codex.TurnTicket.HarvestProxyURL = proxyURL
+	cfg.Codex.TurnTicket.HarvestProxyURLs = []string{proxyURL}
 	active := turnTicketTestAuth("active")
 	active.Attributes = map[string]string{"base_url": upstream.URL}
 	disabled := turnTicketTestAuth("disabled")
@@ -689,7 +725,7 @@ func TestCodexTurnTicketHarvesterStartsWhileDisabledForHotReload(t *testing.T) {
 	if !harvester.Running() {
 		t.Fatal("the harvester loop must run while disabled so a reload can enable it in place")
 	}
-	// A disabled cycle must not probe anything, and must not require a harvest proxy.
+	// A disabled cycle must not probe anything, and must not require a harvest egress.
 	harvester.probeAll(context.Background())
 	if stats := harvester.Stats(292); stats.Probed != 0 {
 		t.Fatalf("probed counter = %d while disabled, want 0", stats.Probed)
@@ -730,7 +766,7 @@ func TestCodexTurnTicketHarvesterPicksUpEnabledConfigHotReload(t *testing.T) {
 	// cycle must see the new value without the harvester being rebuilt.
 	reloaded := &config.Config{}
 	reloaded.Codex.TurnTicket.Enabled = true
-	reloaded.Codex.TurnTicket.HarvestProxyURL = proxyURL
+	reloaded.Codex.TurnTicket.HarvestProxyURLs = []string{proxyURL}
 	reloaded.Codex.TurnTicket.Models = []string{"gpt-5.5"}
 	current = reloaded
 
@@ -847,7 +883,7 @@ func TestCodexTurnTicketFailClosedExecutionGuard(t *testing.T) {
 // export: it must report configuration and counts without leaking credentials or tokens.
 func TestSnapshotCodexTurnTicketsReportsRedactedState(t *testing.T) {
 	cfg := turnTicketTestConfig()
-	cfg.Codex.TurnTicket.HarvestProxyURL = "http://user:secret@127.0.0.1:8080"
+	cfg.Codex.TurnTicket.HarvestProxyURLs = []string{"direct", "http://user:secret@127.0.0.1:8080"}
 	auth := turnTicketTestAuth("sensitive-auth-id")
 	auth.Metadata["email"] = "kaycee.rempel@mail.com"
 	process := ConfigureCodexTurnTickets(turnTicketTestConfigProvider(cfg), func() []*cliproxyauth.Auth {
@@ -864,8 +900,13 @@ func TestSnapshotCodexTurnTicketsReportsRedactedState(t *testing.T) {
 	if snapshot.Buckets != 1 || snapshot.HealthyTickets != 1 {
 		t.Fatalf("snapshot occupancy = %d buckets / %d healthy, want 1/1", snapshot.Buckets, snapshot.HealthyTickets)
 	}
-	if snapshot.HarvestProxySet && strings.Contains(snapshot.HarvestProxy, "secret") {
-		t.Fatalf("snapshot leaked harvest proxy credentials: %q", snapshot.HarvestProxy)
+	if snapshot.HarvestProxyCount != 2 || len(snapshot.HarvestProxyURLs) != 2 {
+		t.Fatalf("snapshot harvest egresses = %d / %v, want 2 redacted entries", snapshot.HarvestProxyCount, snapshot.HarvestProxyURLs)
+	}
+	for _, egress := range snapshot.HarvestProxyURLs {
+		if strings.Contains(egress, "secret") {
+			t.Fatalf("snapshot leaked harvest proxy credentials: %q", egress)
+		}
 	}
 	if len(snapshot.BucketStates) != 1 {
 		t.Fatalf("bucket state count = %d, want 1", len(snapshot.BucketStates))
@@ -919,6 +960,25 @@ func TestEffectiveCodexTurnTicketConfigDefaults(t *testing.T) {
 	}
 	if codexTurnTicketModelGated(effective, "") || codexTurnTicketModelGated(effective, "gpt-4o") {
 		t.Fatal("unrelated models must not be gated")
+	}
+}
+
+func TestEffectiveCodexTurnTicketConfigNormalizesHarvestEgressPool(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Codex.TurnTicket.HarvestProxyURLs = []string{
+		" direct ",
+		"",
+		" socks5h://proxy.example.com:1080 ",
+	}
+	effective := EffectiveCodexTurnTicketConfig(cfg)
+	if len(effective.HarvestProxyURLs) != 2 || effective.HarvestProxyURLs[0] != "direct" || effective.HarvestProxyURLs[1] != "socks5h://proxy.example.com:1080" {
+		t.Fatalf("normalized harvest egresses = %v", effective.HarvestProxyURLs)
+	}
+	allowed := map[string]bool{"direct": true, "socks5h://proxy.example.com:1080": true}
+	for i := 0; i < 32; i++ {
+		if selected := chooseCodexTurnTicketHarvestEgress(effective.HarvestProxyURLs); !allowed[selected] {
+			t.Fatalf("selected harvest egress %q is outside the configured pool", selected)
+		}
 	}
 }
 

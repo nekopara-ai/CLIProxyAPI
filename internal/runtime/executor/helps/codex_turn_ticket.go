@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -374,7 +375,7 @@ type CodexTurnTicketConfig struct {
 	ProbeTimeoutSeconds  int
 	ProbeCooldownSeconds int
 	RejectBackoffSeconds int
-	HarvestProxyURL      string
+	HarvestProxyURLs     []string
 	Models               []string
 	AuthIDs              []string
 }
@@ -404,7 +405,11 @@ func EffectiveCodexTurnTicketConfig(cfg *config.Config) CodexTurnTicketConfig {
 	if raw.FailClosed != nil {
 		effective.FailClosed = *raw.FailClosed
 	}
-	effective.HarvestProxyURL = strings.TrimSpace(raw.HarvestProxyURL)
+	for _, candidate := range raw.HarvestProxyURLs {
+		if trimmed := strings.TrimSpace(candidate); trimmed != "" {
+			effective.HarvestProxyURLs = append(effective.HarvestProxyURLs, trimmed)
+		}
+	}
 	if raw.TargetLength > 0 {
 		effective.TargetLength = raw.TargetLength
 	}
@@ -611,7 +616,7 @@ func (i *CodexTurnTicketInjector) Apply(auth *cliproxyauth.Auth, model string, h
 	headers.Set(CodexTurnStateHeader, ticket.State)
 }
 
-// CodexTurnTicketHarvester probes Codex accounts through a dedicated egress proxy and
+// CodexTurnTicketHarvester probes Codex accounts through a dedicated explicit egress and
 // records healthy turn-state tickets. It never refreshes credentials and never touches
 // consumer traffic, so it cannot disturb the live request path.
 type CodexTurnTicketHarvester struct {
@@ -730,7 +735,7 @@ func (h *CodexTurnTicketHarvester) probeAll(ctx context.Context) {
 		return
 	}
 	effective := codexTurnTicketEffectiveConfig(h.cfgProvider)
-	if !effective.Enabled || effective.HarvestProxyURL == "" {
+	if !effective.Enabled || len(effective.HarvestProxyURLs) == 0 {
 		return
 	}
 	scope := make(map[string]struct{}, len(effective.AuthIDs))
@@ -911,7 +916,8 @@ func (h *CodexTurnTicketHarvester) observation(authID, model string) CodexTurnTi
 	return observation
 }
 
-// ProbeCodexTurnState issues one synthetic request through the harvest proxy and returns
+// ProbeCodexTurnState issues one synthetic request through the configured harvest egress
+// (either an explicit proxy or an explicit direct connection) and returns
 // the healthy turn-state token the upstream minted, if any, together with the HTTP status
 // so the caller can tell a rejection from a plain miss.
 func ProbeCodexTurnState(ctx context.Context, auth *cliproxyauth.Auth, model string, effective CodexTurnTicketConfig) (string, int, error) {
@@ -922,8 +928,8 @@ func ProbeCodexTurnState(ctx context.Context, auth *cliproxyauth.Auth, model str
 	if token == "" {
 		return "", 0, ErrCodexTurnTicketProbeSkipped
 	}
-	proxyURL := strings.TrimSpace(effective.HarvestProxyURL)
-	if proxyURL == "" {
+	egress := chooseCodexTurnTicketHarvestEgress(effective.HarvestProxyURLs)
+	if egress == "" {
 		return "", 0, ErrCodexTurnTicketProbeSkipped
 	}
 	timeout := time.Duration(effective.ProbeTimeoutSeconds) * time.Second
@@ -936,7 +942,19 @@ func ProbeCodexTurnState(ctx context.Context, auth *cliproxyauth.Auth, model str
 	}
 	probeCtx, cancel := context.WithTimeout(probeCtx, timeout)
 	defer cancel()
-	return probeCodexTurnStateWithClient(probeCtx, auth, token, model, proxyURL)
+	return probeCodexTurnStateWithClient(probeCtx, auth, token, model, egress)
+}
+
+// chooseCodexTurnTicketHarvestEgress selects one configured egress independently for each
+// probe. Configuration normalization removes blank entries before this point.
+func chooseCodexTurnTicketHarvestEgress(egresses []string) string {
+	if len(egresses) == 0 {
+		return ""
+	}
+	if len(egresses) == 1 {
+		return strings.TrimSpace(egresses[0])
+	}
+	return strings.TrimSpace(egresses[rand.IntN(len(egresses))])
 }
 
 // codexTurnTicketProbeBody is the smallest request that makes the upstream mint a
@@ -950,13 +968,13 @@ func codexTurnTicketProbeBody(model string) []byte {
 var codexTurnTicketProbeClient = func(ctx context.Context, auth *cliproxyauth.Auth, proxyURL string, timeout time.Duration) (*http.Client, error) {
 	transport, mode, errBuild := proxyutil.BuildHTTPTransport(proxyURL)
 	if errBuild != nil {
-		return nil, fmt.Errorf("codex turn ticket: build harvest proxy transport: %w", errBuild)
+		return nil, fmt.Errorf("codex turn ticket: build harvest egress transport: %w", errBuild)
 	}
-	// Only a concrete proxy is acceptable: ModeInherit would fall back to the process's
-	// ambient egress and ModeDirect would bypass the harvest path entirely, and both would
-	// silently merge probe traffic with the client-traffic path this feature separates.
-	if mode != proxyutil.ModeProxy || transport == nil {
-		return nil, fmt.Errorf("codex turn ticket: harvest proxy %q is not a usable proxy URL", proxyutil.Redact(proxyURL))
+	// The egress must be explicit. ModeDirect intentionally bypasses HTTP_PROXY and
+	// HTTPS_PROXY, while ModeProxy uses the configured endpoint. ModeInherit is rejected
+	// because it could silently merge probe traffic with the client-traffic path.
+	if (mode != proxyutil.ModeProxy && mode != proxyutil.ModeDirect) || transport == nil {
+		return nil, fmt.Errorf("codex turn ticket: harvest egress %q is not an explicit direct or proxy setting", proxyutil.Redact(proxyURL))
 	}
 	// Synthetic probes must not share a connection with client traffic: the harvest
 	// egress is a different path, and reusing a pooled connection would leak that
@@ -1295,27 +1313,27 @@ func HarvestCodexTurnStateOnResponse(auth *cliproxyauth.Auth, model string, head
 // CodexTurnTicketSnapshot is a redacted, serializable view of the turn-ticket subsystem
 // for the management API. It never contains token material or credential identifiers.
 type CodexTurnTicketSnapshot struct {
-	Configured      bool                            `json:"configured"`
-	Enabled         bool                            `json:"enabled"`
-	FailClosed      bool                            `json:"fail_closed"`
-	HarvesterActive bool                            `json:"harvester_active"`
-	Models          []string                        `json:"models"`
-	AuthIDScoped    bool                            `json:"auth_id_scoped"`
-	TargetLength    int                             `json:"target_length"`
-	TTLSeconds      int                             `json:"ttl_seconds"`
-	RefreshBefore   int                             `json:"refresh_before_seconds"`
-	ProbeInterval   int                             `json:"probe_interval_seconds"`
-	ProbeCooldown   int                             `json:"probe_cooldown_seconds"`
-	RejectBackoff   int                             `json:"reject_backoff_seconds"`
-	HarvestProxySet bool                            `json:"harvest_proxy_configured"`
-	HarvestProxy    string                          `json:"harvest_proxy_url,omitempty"`
-	Probed          int64                           `json:"probed"`
-	Harvested       int64                           `json:"harvested"`
-	Buckets         int                             `json:"buckets"`
-	HealthyTickets  int                             `json:"healthy_tickets"`
-	PersistentStore bool                            `json:"persistent_store"`
-	RestoredTickets int                             `json:"restored_tickets"`
-	BucketStates    []CodexTurnTicketBucketSnapshot `json:"bucket_states,omitempty"`
+	Configured        bool                            `json:"configured"`
+	Enabled           bool                            `json:"enabled"`
+	FailClosed        bool                            `json:"fail_closed"`
+	HarvesterActive   bool                            `json:"harvester_active"`
+	Models            []string                        `json:"models"`
+	AuthIDScoped      bool                            `json:"auth_id_scoped"`
+	TargetLength      int                             `json:"target_length"`
+	TTLSeconds        int                             `json:"ttl_seconds"`
+	RefreshBefore     int                             `json:"refresh_before_seconds"`
+	ProbeInterval     int                             `json:"probe_interval_seconds"`
+	ProbeCooldown     int                             `json:"probe_cooldown_seconds"`
+	RejectBackoff     int                             `json:"reject_backoff_seconds"`
+	HarvestProxyCount int                             `json:"harvest_proxy_count"`
+	HarvestProxyURLs  []string                        `json:"harvest_proxy_urls,omitempty"`
+	Probed            int64                           `json:"probed"`
+	Harvested         int64                           `json:"harvested"`
+	Buckets           int                             `json:"buckets"`
+	HealthyTickets    int                             `json:"healthy_tickets"`
+	PersistentStore   bool                            `json:"persistent_store"`
+	RestoredTickets   int                             `json:"restored_tickets"`
+	BucketStates      []CodexTurnTicketBucketSnapshot `json:"bucket_states,omitempty"`
 }
 
 // CodexTurnTicketBucketSnapshot is a credential-safe per-model view. AuthHint is either
@@ -1342,25 +1360,25 @@ func SnapshotCodexTurnTickets() CodexTurnTicketSnapshot {
 	harvester := process.Harvester
 	effective := codexTurnTicketEffectiveConfig(harvester.cfgProvider)
 	snapshot := CodexTurnTicketSnapshot{
-		Configured:      true,
-		Enabled:         effective.Enabled,
-		FailClosed:      effective.FailClosed,
-		HarvesterActive: harvester.Running(),
-		Models:          append([]string(nil), effective.Models...),
-		AuthIDScoped:    len(effective.AuthIDs) > 0,
-		TargetLength:    effective.TargetLength,
-		TTLSeconds:      effective.TTLSeconds,
-		RefreshBefore:   effective.RefreshBeforeSeconds,
-		ProbeInterval:   effective.ProbeIntervalSeconds,
-		ProbeCooldown:   effective.ProbeCooldownSeconds,
-		RejectBackoff:   effective.RejectBackoffSeconds,
-		HarvestProxySet: strings.TrimSpace(effective.HarvestProxyURL) != "",
-		PersistentStore: process.Store.persistent(),
-		RestoredTickets: process.Store.restoredCount(),
+		Configured:        true,
+		Enabled:           effective.Enabled,
+		FailClosed:        effective.FailClosed,
+		HarvesterActive:   harvester.Running(),
+		Models:            append([]string(nil), effective.Models...),
+		AuthIDScoped:      len(effective.AuthIDs) > 0,
+		TargetLength:      effective.TargetLength,
+		TTLSeconds:        effective.TTLSeconds,
+		RefreshBefore:     effective.RefreshBeforeSeconds,
+		ProbeInterval:     effective.ProbeIntervalSeconds,
+		ProbeCooldown:     effective.ProbeCooldownSeconds,
+		RejectBackoff:     effective.RejectBackoffSeconds,
+		HarvestProxyCount: len(effective.HarvestProxyURLs),
+		PersistentStore:   process.Store.persistent(),
+		RestoredTickets:   process.Store.restoredCount(),
 	}
-	// The harvest proxy URL may embed credentials; only a redacted form is ever reported.
-	if snapshot.HarvestProxySet {
-		snapshot.HarvestProxy = proxyutil.Redact(effective.HarvestProxyURL)
+	// Harvest proxy URLs may embed credentials; only redacted forms are ever reported.
+	for _, egress := range effective.HarvestProxyURLs {
+		snapshot.HarvestProxyURLs = append(snapshot.HarvestProxyURLs, proxyutil.Redact(egress))
 	}
 	stats := harvester.Stats(effective.TargetLength)
 	snapshot.Probed = stats.Probed
@@ -1450,8 +1468,8 @@ func DescribeCodexTurnTickets() string {
 		return "codex turn tickets: not configured"
 	}
 	return fmt.Sprintf(
-		"codex turn tickets: enabled=%t fail_closed=%t harvester_active=%t proxy_configured=%t persistent=%t restored=%d probed=%d harvested=%d buckets=%d healthy=%d",
-		snapshot.Enabled, snapshot.FailClosed, snapshot.HarvesterActive, snapshot.HarvestProxySet, snapshot.PersistentStore, snapshot.RestoredTickets,
+		"codex turn tickets: enabled=%t fail_closed=%t harvester_active=%t harvest_egresses=%d persistent=%t restored=%d probed=%d harvested=%d buckets=%d healthy=%d",
+		snapshot.Enabled, snapshot.FailClosed, snapshot.HarvesterActive, snapshot.HarvestProxyCount, snapshot.PersistentStore, snapshot.RestoredTickets,
 		snapshot.Probed, snapshot.Harvested, snapshot.Buckets, snapshot.HealthyTickets,
 	)
 }

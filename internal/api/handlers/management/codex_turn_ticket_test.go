@@ -22,7 +22,7 @@ func TestGetCodexTurnTicketReportsRedactedState(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Codex.TurnTicket.Enabled = true
 	cfg.Codex.TurnTicket.Models = []string{"gpt-5.5"}
-	cfg.Codex.TurnTicket.HarvestProxyURL = "http://user:proxy-secret@127.0.0.1:8080"
+	cfg.Codex.TurnTicket.HarvestProxyURLs = []string{"direct", "http://user:proxy-secret@127.0.0.1:8080"}
 	process := helps.ConfigureCodexTurnTickets(func() *config.Config { return cfg }, nil)
 	defer helps.ConfigureCodexTurnTickets(nil, nil)
 	process.Store.Store("auth-a", "gpt-5.5", helps.NewCodexTurnTicket(testManagementTurnState(t), time.Now(), time.Hour))
@@ -54,8 +54,8 @@ func TestGetCodexTurnTicketReportsRedactedState(t *testing.T) {
 	if snapshot.Buckets != 1 || snapshot.HealthyTickets != 1 {
 		t.Fatalf("snapshot occupancy = %d buckets / %d healthy, want 1/1", snapshot.Buckets, snapshot.HealthyTickets)
 	}
-	if !snapshot.HarvestProxySet {
-		t.Fatal("snapshot did not report the configured harvest proxy")
+	if snapshot.HarvestProxyCount != 2 || len(snapshot.HarvestProxyURLs) != 2 {
+		t.Fatalf("snapshot did not report both configured harvest egresses: %+v", snapshot)
 	}
 }
 

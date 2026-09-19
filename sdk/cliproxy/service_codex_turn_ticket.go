@@ -2,7 +2,6 @@ package cliproxy
 
 import (
 	"context"
-	"strings"
 	"sync"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -20,7 +19,8 @@ var codexTurnTicketLifecycleMu sync.Mutex
 // capture both check the live config on every call, so the feature costs nothing until an
 // operator opts in. Once enabled, passive capture from live traffic records any healthy
 // token the upstream mints for a real request at no extra quota; only the synthetic probe
-// loop, which spends quota through a dedicated egress, additionally needs a proxy URL.
+// loop, which spends quota through a dedicated egress, additionally needs one or more
+// explicit proxy URLs and/or the "direct" setting.
 //
 // The harvester is always started when the wiring is installed. Its loop re-reads the live
 // config every cycle, so an operator can enable the feature through a config reload and the
@@ -45,13 +45,13 @@ func (s *Service) startCodexTurnTicketHarvester(ctx context.Context) {
 		log.Infof("codex turn tickets: disabled (turn-ticket.enabled is false); hot reload will enable it in place")
 		return
 	}
-	if strings.TrimSpace(effective.HarvestProxyURL) == "" {
-		log.Warnf("codex turn tickets: enabled but codex.turn-ticket.harvest-proxy-url is empty; synthetic probing stays off")
+	if len(effective.HarvestProxyURLs) == 0 {
+		log.Warnf("codex turn tickets: enabled but codex.turn-ticket.harvest-proxy-urls is empty; synthetic probing stays off")
 		return
 	}
 	snapshot := helps.SnapshotCodexTurnTickets()
-	log.Infof("codex turn tickets: harvester started (models=%v target_length=%d ttl_seconds=%d interval_seconds=%d fail_closed=%t persistent=%t restored=%d)",
-		effective.Models, effective.TargetLength, effective.TTLSeconds, effective.ProbeIntervalSeconds, effective.FailClosed, snapshot.PersistentStore, snapshot.RestoredTickets)
+	log.Infof("codex turn tickets: harvester started (models=%v harvest_egresses=%d target_length=%d ttl_seconds=%d interval_seconds=%d fail_closed=%t persistent=%t restored=%d)",
+		effective.Models, len(effective.HarvestProxyURLs), effective.TargetLength, effective.TTLSeconds, effective.ProbeIntervalSeconds, effective.FailClosed, snapshot.PersistentStore, snapshot.RestoredTickets)
 }
 
 // currentConfig returns the live configuration pointer under the config lock. Every

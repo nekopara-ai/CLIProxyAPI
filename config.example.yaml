@@ -409,9 +409,12 @@ codex:
     probe-cooldown-seconds: 3300
     # How long a bucket stops being probed after 429, 401, or 403.
     reject-backoff-seconds: 600
-    # Dedicated egress for synthetic probes. Harvesting stays disabled until this is set:
-    # probes must not share the client-traffic path.
-    harvest-proxy-url: ""
+    # Dedicated egress pool for synthetic probes. Every probe randomly selects one entry.
+    # Entries may be concrete http/https/socks5 proxy URLs, or "direct" to explicitly
+    # bypass HTTP_PROXY/HTTPS_PROXY. Harvesting stays disabled while this list is empty.
+    harvest-proxy-urls: []
+    #  - direct
+    #  - socks5h://user:password@proxy.example.com:1080
     # Buckets to harvest and inject for. Omit to use the built-in Codex model list.
     # models:
     #   - gpt-5.6-sol

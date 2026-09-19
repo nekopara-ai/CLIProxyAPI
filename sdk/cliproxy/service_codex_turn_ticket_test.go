@@ -131,7 +131,7 @@ func TestCodexTurnTicketSummaryNeverLeaksMaterial(t *testing.T) {
 	defer helps.ConfigureCodexTurnTickets(nil, nil)
 	cfg := turnTicketServiceConfig()
 	cfg.Codex.TurnTicket.Enabled = true
-	cfg.Codex.TurnTicket.HarvestProxyURL = "http://user:proxy-secret@127.0.0.1:8080"
+	cfg.Codex.TurnTicket.HarvestProxyURLs = []string{"direct", "http://user:proxy-secret@127.0.0.1:8080"}
 	service := &Service{cfg: cfg, coreManager: coreauth.NewManager(nil, nil, nil)}
 	service.startCodexTurnTicketHarvester(context.Background())
 	defer service.stopCodexTurnTicketHarvester()
