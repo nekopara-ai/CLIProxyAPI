@@ -366,6 +366,7 @@ func (s *CodexTurnTicketStore) persistent() bool {
 // CodexTurnTicketConfig is the effective, normalized ticket configuration.
 type CodexTurnTicketConfig struct {
 	Enabled              bool
+	InjectionEnabled     bool
 	FailClosed           bool
 	TargetLength         int
 	TTLSeconds           int
@@ -387,6 +388,7 @@ var CodexTurnTicketDefaults = []string{"gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra"
 // EffectiveCodexTurnTicketConfig normalizes cfg.Codex.TurnTicket with defaults.
 func EffectiveCodexTurnTicketConfig(cfg *config.Config) CodexTurnTicketConfig {
 	effective := CodexTurnTicketConfig{
+		InjectionEnabled:     true,
 		FailClosed:           true,
 		TargetLength:         292,
 		TTLSeconds:           3600,
@@ -403,6 +405,9 @@ func EffectiveCodexTurnTicketConfig(cfg *config.Config) CodexTurnTicketConfig {
 	effective.BusinessProxyURL = strings.TrimSpace(cfg.ProxyURL)
 	raw := cfg.Codex.TurnTicket
 	effective.Enabled = raw.Enabled
+	if raw.InjectionEnabled != nil {
+		effective.InjectionEnabled = *raw.InjectionEnabled
+	}
 	if raw.FailClosed != nil {
 		effective.FailClosed = *raw.FailClosed
 	}
@@ -596,7 +601,7 @@ func NewCodexTurnTicketInjector(store *CodexTurnTicketStore, cfgProvider func() 
 }
 
 // Apply overwrites X-Codex-Turn-State on the outbound headers with the ticket captured
-// for this (auth, model) bucket. It is a no-op unless the feature is enabled and the
+// for this (auth, model) bucket. It is a no-op unless injection is enabled and the
 // model participates; when no usable ticket exists the client-supplied header is left
 // untouched, matching pass-through behaviour.
 func (i *CodexTurnTicketInjector) Apply(auth *cliproxyauth.Auth, model string, headers http.Header) bool {
@@ -604,7 +609,7 @@ func (i *CodexTurnTicketInjector) Apply(auth *cliproxyauth.Auth, model string, h
 		return false
 	}
 	effective := codexTurnTicketEffectiveConfig(i.cfgProvider)
-	if !effective.Enabled || !codexTurnTicketModelGated(effective, model) || !codexTurnTicketAuthScoped(effective, auth.ID) {
+	if !effective.Enabled || !effective.InjectionEnabled || !codexTurnTicketModelGated(effective, model) || !codexTurnTicketAuthScoped(effective, auth.ID) {
 		return false
 	}
 	ticket := i.store.Lookup(auth.ID, model)
@@ -1447,6 +1452,7 @@ func HarvestCodexTurnStateOnResponse(auth *cliproxyauth.Auth, model string, head
 type CodexTurnTicketSnapshot struct {
 	Configured        bool                            `json:"configured"`
 	Enabled           bool                            `json:"enabled"`
+	InjectionEnabled  bool                            `json:"injection_enabled"`
 	FailClosed        bool                            `json:"fail_closed"`
 	HarvesterActive   bool                            `json:"harvester_active"`
 	Models            []string                        `json:"models"`
@@ -1494,6 +1500,7 @@ type CodexTurnTicketCredentialSnapshot struct {
 	PlanSource        string                         `json:"plan_source"`
 	Configured        bool                           `json:"configured"`
 	Enabled           bool                           `json:"enabled"`
+	InjectionEnabled  bool                           `json:"injection_enabled"`
 	HarvesterActive   bool                           `json:"harvester_active"`
 	TargetLength      int                            `json:"target_length"`
 	State             string                         `json:"state"`
@@ -1528,6 +1535,7 @@ func SnapshotCodexTurnTickets() CodexTurnTicketSnapshot {
 	snapshot := CodexTurnTicketSnapshot{
 		Configured:        true,
 		Enabled:           effective.Enabled,
+		InjectionEnabled:  effective.Enabled && effective.InjectionEnabled,
 		FailClosed:        effective.FailClosed,
 		HarvesterActive:   harvester.Running(),
 		Models:            append([]string(nil), effective.Models...),
@@ -1570,13 +1578,14 @@ func SnapshotCodexTurnTicketForAuth(auth *cliproxyauth.Auth) *CodexTurnTicketCre
 	harvester := process.Harvester
 	effective := codexTurnTicketEffectiveConfig(harvester.cfgProvider)
 	snapshot := &CodexTurnTicketCredentialSnapshot{
-		Configured:      true,
-		Enabled:         effective.Enabled,
-		HarvesterActive: harvester.Running(),
-		TargetLength:    codexTurnTicketTargetLength(auth, effective),
-		Plan:            ResolveCodexTurnTicketPlan(auth, effective.TargetLength).Plan,
-		PlanSource:      ResolveCodexTurnTicketPlan(auth, effective.TargetLength).Source,
-		State:           "missing",
+		Configured:       true,
+		Enabled:          effective.Enabled,
+		InjectionEnabled: effective.Enabled && effective.InjectionEnabled,
+		HarvesterActive:  harvester.Running(),
+		TargetLength:     codexTurnTicketTargetLength(auth, effective),
+		Plan:             ResolveCodexTurnTicketPlan(auth, effective.TargetLength).Plan,
+		PlanSource:       ResolveCodexTurnTicketPlan(auth, effective.TargetLength).Source,
+		State:            "missing",
 	}
 	if !effective.Enabled {
 		snapshot.State = "disabled"
@@ -1724,8 +1733,8 @@ func DescribeCodexTurnTickets() string {
 		return "codex turn tickets: not configured"
 	}
 	return fmt.Sprintf(
-		"codex turn tickets: enabled=%t fail_closed=%t harvester_active=%t harvest_egresses=%d persistent=%t restored=%d probed=%d harvested=%d buckets=%d healthy=%d",
-		snapshot.Enabled, snapshot.FailClosed, snapshot.HarvesterActive, snapshot.HarvestProxyCount, snapshot.PersistentStore, snapshot.RestoredTickets,
+		"codex turn tickets: enabled=%t injection_enabled=%t fail_closed=%t harvester_active=%t harvest_egresses=%d persistent=%t restored=%d probed=%d harvested=%d buckets=%d healthy=%d",
+		snapshot.Enabled, snapshot.InjectionEnabled, snapshot.FailClosed, snapshot.HarvesterActive, snapshot.HarvestProxyCount, snapshot.PersistentStore, snapshot.RestoredTickets,
 		snapshot.Probed, snapshot.Harvested, snapshot.Buckets, snapshot.HealthyTickets,
 	)
 }

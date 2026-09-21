@@ -391,6 +391,11 @@ codex:
     # both check this flag, so nothing is stored or replayed until an operator opts in.
     # When true, injection still requires a captured ticket.
     enabled: false
+    # Replay cached personal (292) or Team (332) tickets on outbound requests. Defaults
+    # to true when omitted. Set false to keep probing, passive capture, and fail-closed
+    # scheduling while preserving client-supplied turn-state headers. Hot-reloadable;
+    # existing WebSocket handshakes are unchanged until the connection is replaced.
+    injection-enabled: true
     # Refuse to route a gated model through a Codex OAuth credential that has no valid
     # healthy ticket for that exact model. Defaults to true. Set false only to restore the
     # old pass-through behavior, which may allow a 312 degraded turn state onto live traffic.

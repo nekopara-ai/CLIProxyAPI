@@ -31,7 +31,7 @@ const ticketUsageTerminal = `{"type":"response.completed","response":{"id":"resp
 
 func TestCodexHTTPUsageRecordsActualRequestTicketWithoutResponseTicket(t *testing.T) {
 	for _, mode := range []string{"stream", "nonstream", "compact", "failure"} {
-		for _, source := range []string{"cache", "passthrough", "none"} {
+		for _, source := range []string{"cache", "passthrough", "none", "injection_off_passthrough", "injection_off_none"} {
 			t.Run(mode+"/"+source, func(t *testing.T) {
 				ctx, capture := ticketUsageCapture(t)
 				healthy := integrationTurnState(t, time.Now().Unix(), 292)
@@ -55,15 +55,21 @@ func TestCodexHTTPUsageRecordsActualRequestTicketWithoutResponseTicket(t *testin
 				defer server.Close()
 				cfg := turnTicketIntegrationConfig("gpt-5.5")
 				cfg.DisableImageGeneration = config.DisableImageGenerationAll
+				injectionOff := strings.HasPrefix(source, "injection_off_")
+				wantSource := strings.TrimPrefix(source, "injection_off_")
+				if injectionOff {
+					off := false
+					cfg.Codex.TurnTicket.InjectionEnabled = &off
+				}
 				process := helps.ConfigureCodexTurnTickets(func() *config.Config { return cfg }, nil)
 				defer helps.ConfigureCodexTurnTickets(nil, nil)
-				if source == "cache" {
+				if source == "cache" || injectionOff {
 					process.Store.Store("ticket-auth", "gpt-5.5", helps.NewCodexTurnTicket(healthy, time.Now(), time.Hour))
 				}
 				auth := &cliproxyauth.Auth{ID: "ticket-auth", Index: "ticket-index", Provider: "codex", Attributes: map[string]string{"api_key": "fixture", "base_url": server.URL}, ProxyURL: "direct"}
 				headers := http.Header{}
 				wantLength := 0
-				if source != "none" {
+				if wantSource != "none" {
 					headers.Set(helps.CodexTurnStateHeader, degraded)
 					wantLength = 312
 				}
@@ -94,7 +100,7 @@ func TestCodexHTTPUsageRecordsActualRequestTicketWithoutResponseTicket(t *testin
 					t.Fatalf("unexpected execution error: %v", err)
 				}
 				record := capture.await(t)
-				if record.CodexTurnState == nil || record.CodexTurnState.RequestLength != wantLength || record.CodexTurnState.RequestSource != source {
+				if record.CodexTurnState == nil || record.CodexTurnState.RequestLength != wantLength || record.CodexTurnState.RequestSource != wantSource {
 					t.Fatalf("record ticket = %+v", record.CodexTurnState)
 				}
 				if int(seen.Load()) != wantLength || record.AuthIndex != "ticket-index" || record.CodexTurnState.RequestScope != "" {
@@ -211,6 +217,70 @@ func TestCodexWebsocketUsageConnectionChangesAndFailedHandshake(t *testing.T) {
 			got := capture.await(t).CodexTurnState
 			if (got == nil) != (want == nil) || (got != nil && *got != *want) {
 				t.Fatalf("observation = %+v, want %+v", got, want)
+			}
+		})
+	}
+}
+
+func TestCodexWebsocketInjectionOffKeepsCachedTicketOutOfHandshake(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprint(stream), func(t *testing.T) {
+			ctx, capture := ticketUsageCapture(t)
+			var handshakes atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				handshakes.Add(1)
+				if len(r.Header.Get(helps.CodexTurnStateHeader)) != 312 {
+					t.Error("initial handshake did not use passthrough ticket")
+				}
+				conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+				if err != nil {
+					return
+				}
+				defer func() { _ = conn.Close() }()
+				for {
+					if _, _, err := conn.ReadMessage(); err != nil {
+						return
+					}
+					if err := conn.WriteMessage(websocket.TextMessage, []byte(ticketUsageTerminal)); err != nil {
+						return
+					}
+				}
+			}))
+			defer server.Close()
+			cfg := turnTicketIntegrationConfig("gpt-5.5")
+			cfg.DisableImageGeneration = config.DisableImageGenerationAll
+			off := false
+			cfg.Codex.TurnTicket.InjectionEnabled = &off
+			process := helps.ConfigureCodexTurnTickets(func() *config.Config { return cfg }, nil)
+			defer helps.ConfigureCodexTurnTickets(nil, nil)
+			exec := NewCodexWebsocketsExecutor(cfg)
+			defer exec.CloseExecutionSession(t.Name())
+			auth := &cliproxyauth.Auth{ID: "ws-ticket-auth", Index: "ws-ticket-index", Provider: "codex", Attributes: map[string]string{"api_key": "fixture", "base_url": server.URL}, ProxyURL: "direct"}
+			process.Store.Store(auth.ID, "gpt-5.5", helps.NewCodexTurnTicket(integrationTurnState(t, time.Now().Unix(), 292), time.Now(), time.Hour))
+			headers := http.Header{helps.CodexTurnStateHeader: []string{strings.Repeat("d", 312)}}
+			opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai-response"), Headers: headers, Metadata: map[string]any{cliproxyexecutor.ExecutionSessionMetadataKey: t.Name()}}
+			for attempt := 0; attempt < 2; attempt++ {
+				req := cliproxyexecutor.Request{Model: "gpt-5.5", Payload: []byte(`{"model":"gpt-5.5","input":"hello"}`)}
+				if stream {
+					result, err := exec.ExecuteStream(ctx, auth, req, opts)
+					if err != nil {
+						t.Fatal(err)
+					}
+					for chunk := range result.Chunks {
+						if chunk.Err != nil {
+							t.Fatal(chunk.Err)
+						}
+					}
+				} else if _, err := exec.Execute(ctx, auth, req, opts); err != nil {
+					t.Fatal(err)
+				}
+				record := capture.await(t)
+				if record.CodexTurnState == nil || *record.CodexTurnState != (coreusage.CodexTurnStateObservation{RequestLength: 312, RequestSource: "passthrough", RequestScope: "websocket_handshake"}) {
+					t.Fatalf("attempt %d falsely reported unsent cache header: %+v", attempt, record.CodexTurnState)
+				}
+			}
+			if handshakes.Load() != 1 {
+				t.Fatalf("expected one reused handshake, got %d", handshakes.Load())
 			}
 		})
 	}
