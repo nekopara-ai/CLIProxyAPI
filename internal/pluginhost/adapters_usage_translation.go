@@ -179,6 +179,8 @@ func (a *usageAdapter) HandleUsage(ctx context.Context, record coreusage.Record)
 		ServiceTier:          record.ServiceTier,
 		EffectiveServiceTier: record.EffectiveServiceTier,
 		ResponseServiceTier:  record.ResponseServiceTier,
+		ResponseModel:        record.ResponseModel,
+		Stream:               record.Stream,
 		Generate:             coreusage.GenerateEnabled(record.Generate),
 		RequestedAt:          record.RequestedAt,
 		Latency:              record.Latency,
