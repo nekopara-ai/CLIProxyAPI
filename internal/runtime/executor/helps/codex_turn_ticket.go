@@ -747,7 +747,7 @@ func (h *CodexTurnTicketHarvester) probeAll(ctx context.Context) {
 	now := time.Now()
 	refreshBefore := time.Duration(effective.RefreshBeforeSeconds) * time.Second
 	for _, auth := range h.listAuths() {
-		if auth == nil || auth.Disabled || auth.Status != cliproxyauth.StatusActive || !isCodexOAuthAuth(auth) {
+		if !isCodexTurnTicketProbeEligible(auth) {
 			continue
 		}
 		if len(scope) > 0 {
@@ -762,6 +762,17 @@ func (h *CodexTurnTicketHarvester) probeAll(ctx context.Context) {
 			h.probeOne(ctx, auth, model, effective)
 		}
 	}
+}
+
+// isCodexTurnTicketProbeEligible keeps explicit operator disablement authoritative while
+// allowing the harvester to repair credentials carrying a transient runtime error. The
+// probe path applies its own rejection backoff for 401, 403, and 429 responses, so an
+// execution failure must not permanently suppress ticket renewal.
+func isCodexTurnTicketProbeEligible(auth *cliproxyauth.Auth) bool {
+	if auth == nil || auth.Disabled || auth.Status == cliproxyauth.StatusDisabled {
+		return false
+	}
+	return isCodexOAuthAuth(auth)
 }
 
 // isCodexOAuthAuth limits probing to OAuth credentials. API-key credential pools have
@@ -814,7 +825,7 @@ func (h *CodexTurnTicketHarvester) probeOne(ctx context.Context, auth *cliproxya
 				break
 			}
 		}
-		if current == nil || current.Disabled || current.Status != cliproxyauth.StatusActive || !isCodexOAuthAuth(current) {
+		if !isCodexTurnTicketProbeEligible(current) {
 			return
 		}
 		auth = current
@@ -1630,7 +1641,7 @@ func (h *CodexTurnTicketHarvester) bucketSnapshots(effective CodexTurnTicketConf
 	now := time.Now()
 	out := make([]CodexTurnTicketBucketSnapshot, 0)
 	for _, auth := range h.listAuths() {
-		if auth == nil || auth.Disabled || auth.Status != cliproxyauth.StatusActive || !isCodexOAuthAuth(auth) || !codexTurnTicketAuthScoped(effective, auth.ID) {
+		if !isCodexTurnTicketProbeEligible(auth) || !codexTurnTicketAuthScoped(effective, auth.ID) {
 			continue
 		}
 		for _, model := range effective.Models {
