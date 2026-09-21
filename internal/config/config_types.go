@@ -233,8 +233,12 @@ type CodexConfig struct {
 // lets an account skip the degraded state, so this feature probes each eligible
 // credential out of band through its own egress and keeps only healthy tokens.
 type CodexTurnTicketSettings struct {
-	// Enabled turns the harvester on. Injection also requires a captured ticket.
+	// Enabled is the master switch for harvesting, injection, and ticket-based gating.
 	Enabled bool `yaml:"enabled" json:"enabled"`
+	// InjectionEnabled controls replay of cached tickets on outbound requests. Defaults
+	// to true when omitted. False preserves client headers and leaves harvesting,
+	// passive capture, and FailClosed scheduling unchanged.
+	InjectionEnabled *bool `yaml:"injection-enabled,omitempty" json:"injection-enabled,omitempty"`
 	// FailClosed prevents a Codex OAuth credential from serving a gated model until that
 	// exact (credential, model) bucket has a valid healthy ticket. It defaults to true when
 	// omitted so a missing ticket can never silently fall back to a degraded turn state.

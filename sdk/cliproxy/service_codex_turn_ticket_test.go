@@ -157,3 +157,35 @@ func TestCodexTurnTicketSummaryNeverLeaksMaterial(t *testing.T) {
 		t.Fatalf("snapshot occupancy = %d/%d, want 1/1", snapshot.Buckets, snapshot.HealthyTickets)
 	}
 }
+
+func TestServiceConfigReloadTogglesOnlyTicketInjection(t *testing.T) {
+	defer helps.ConfigureCodexTurnTickets(nil, nil)
+	cfg := turnTicketServiceConfig()
+	cfg.Codex.TurnTicket.Enabled = true
+	service := &Service{cfg: cfg, coreManager: coreauth.NewManager(nil, nil, nil)}
+	service.startCodexTurnTicketHarvester(context.Background())
+	defer service.stopCodexTurnTicketHarvester()
+	process := helps.CurrentCodexTurnTickets()
+	state := turnTicketServiceState(t)
+	auth := &coreauth.Auth{ID: "auth-a", Provider: "codex", Metadata: map[string]any{"access_token": "fixture"}}
+	process.Store.Store(auth.ID, "gpt-5.5", helps.NewCodexTurnTicket(state, time.Now(), time.Hour))
+	for _, enabled := range []bool{true, false, true} {
+		reloaded := cfg.CloneForRuntime()
+		reloaded.Codex.TurnTicket.InjectionEnabled = &enabled
+		if commit := service.commitConfigUpdate(reloaded); commit.cfg == nil {
+			t.Fatal("config update was rejected")
+		}
+		headers := http.Header{}
+		if helps.ApplyCodexTurnTicket(auth, "gpt-5.5", headers) != enabled {
+			t.Fatal("injection did not follow the live config")
+		}
+		if !process.Harvester.Running() || !helps.CodexTurnTicketAllowsExecution(auth, "gpt-5.5") {
+			t.Fatal("toggling injection stopped the harvester or blocked a healthy credential")
+		}
+		missing := auth.Clone()
+		missing.ID = "missing"
+		if helps.CodexTurnTicketAllowsExecution(missing, "gpt-5.5") {
+			t.Fatal("toggling injection bypassed fail-closed scheduling")
+		}
+	}
+}
