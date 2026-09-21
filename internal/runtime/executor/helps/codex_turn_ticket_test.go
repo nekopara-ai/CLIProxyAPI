@@ -1,3 +1,6 @@
+Failed to create stream fd: Operation not permitted
+Failed to create stream fd: Operation not permitted
+Failed to create stream fd: Operation not permitted
 package helps
 
 import (
@@ -824,7 +827,7 @@ func TestCodexTurnTicketHarvesterProbesOnlyScopedOAuthCredentials(t *testing.T) 
 	}
 }
 
-func TestCodexTurnTicketHarvesterSkipsDisabledCredentials(t *testing.T) {
+func TestCodexTurnTicketHarvesterProbesTransientErrorsAndSkipsDisabledCredentials(t *testing.T) {
 	var calls atomic.Int64
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
@@ -838,17 +841,21 @@ func TestCodexTurnTicketHarvesterSkipsDisabledCredentials(t *testing.T) {
 	cfg.Codex.TurnTicket.HarvestProxyURLs = []string{proxyURL}
 	active := turnTicketTestAuth("active")
 	active.Attributes = map[string]string{"base_url": upstream.URL}
+	transientError := turnTicketTestAuth("transient-error")
+	transientError.Status = cliproxyauth.StatusError
+	transientError.Unavailable = true
+	transientError.Attributes = map[string]string{"base_url": upstream.URL}
 	disabled := turnTicketTestAuth("disabled")
 	disabled.Disabled = true
 	disabled.Status = cliproxyauth.StatusDisabled
 	disabled.Attributes = map[string]string{"base_url": upstream.URL}
 
 	harvester := NewCodexTurnTicketHarvester(NewCodexTurnTicketStore(), turnTicketTestConfigProvider(cfg), func() []*cliproxyauth.Auth {
-		return []*cliproxyauth.Auth{active, disabled}
+		return []*cliproxyauth.Auth{active, transientError, disabled}
 	})
 	harvester.probeAll(context.Background())
-	if got := calls.Load(); got != 1 {
-		t.Fatalf("probe count = %d, want only the active credential", got)
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("probe count = %d, want active and transient-error credentials", got)
 	}
 }
 
