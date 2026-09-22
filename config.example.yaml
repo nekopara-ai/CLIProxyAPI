@@ -420,9 +420,9 @@ codex:
     # TTL. Unknown bundles are not retained across a restart.
     adaptive-injection: true
     # Maximum freshness lease for an adaptive-mode routing-cookie bundle, in seconds.
-    # Core default and hard cap are 180. This bounds local reuse of a validated bundle; it
+    # Core default is 240; positive overrides are honored. This bounds local reuse; it
     # is not the upstream token TTL. See docs/codex-adaptive-turn-ticket.md.
-    routing-cookie-ttl-seconds: 180
+    routing-cookie-ttl-seconds: 240
     # Renew a validated adaptive bundle this many seconds before its lease expires.
     # Core default is 30.
     routing-refresh-before-seconds: 30
@@ -430,7 +430,7 @@ codex:
     # Core default is 15.
     routing-probe-interval-seconds: 15
     # How many acquisition candidates the adaptive harvester tries before giving up on a
-    # bucket. Core default is 3, core maximum is 8.
+    # bucket. Core default is 3; positive overrides are honored.
     harvest-attempts: 3
     # Refuse to route a gated model through a Codex OAuth credential that has no valid
     # healthy ticket for that exact model. Defaults to true. In adaptive mode this means
@@ -453,8 +453,10 @@ codex:
     # ticket (including a 312 state) is retried on the next probe cycle instead of waiting
     # for this cooldown.
     probe-cooldown-seconds: 3300
-    # How long a bucket stops being probed after 429, 401, or 403.
+    # Bucket backoff after 401, 429, or a business-egress 403.
     reject-backoff-seconds: 600
+    # Adaptive harvest 403 pauses only that acquisition egress; business probes continue.
+    harvest-reject-backoff-seconds: 15
     # Fallback egress pool for synthetic probes. Each cycle first uses the credential
     # proxy, then the global proxy, or the environment when neither is set. Only an
     # HTTP 200 with a 312 personal / 356 Team state triggers one random pool fallback.

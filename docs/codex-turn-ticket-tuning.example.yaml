@@ -1,0 +1,54 @@
+# Merge these sections into the existing config.yaml. This is a tuning reference,
+# not a standalone replacement: keep existing credentials, plugins and model aliases.
+# Changes are hot-reloaded. A larger lease only applies to newly captured bundles;
+# it never extends an old cookie or ticket beyond its recorded expiration.
+codex:
+  stream-bootstrap-buffering: true
+  turn-ticket:
+    enabled: true
+    injection-enabled: true
+    adaptive-injection: true
+    fail-closed: true
+    target-length: 292
+    models:
+      - gpt-5.6-sol
+      - gpt-6-astra
+
+    # Adaptive routing: renewal starts around 240 - 60 = 180 seconds after capture.
+    # This is a local reuse limit, not a guarantee about upstream availability.
+    routing-cookie-ttl-seconds: 240
+    routing-refresh-before-seconds: 60
+    routing-probe-interval-seconds: 15
+    harvest-attempts: 3
+    probe-timeout-seconds: 25
+    probe-cooldown-seconds: 300
+    # Whole-bucket rejection backoff: 401, 429, and business/validation 403.
+    reject-backoff-seconds: 600
+    # Acquisition-only 403: pause this exit, continue clean business probes.
+    harvest-reject-backoff-seconds: 15
+
+    # Retain the configured private acquisition pool URLs here. They are used only
+    # for acquisition; the credential/global business proxy handles validation.
+    # harvest-proxy-urls:
+    #   - socks5h://user:password@pool.example:3000
+
+    # Ticket age limit and legacy-mode probe settings. Adaptive routing is also
+    # bounded by the shorter routing-cookie lease above.
+    ttl-seconds: 3600
+    refresh-before-seconds: 900
+    probe-interval-seconds: 120
+
+# Retries apply globally and still respect credential eligibility and stream state.
+request-retry: 1
+max-retry-credentials: 2
+max-retry-interval: 0
+streaming:
+  bootstrap-retries: 1
+
+# Existing sessions keep their healthy binding. A recovered credential participates
+# in new selection; recovery does not migrate an already-bound healthy session.
+routing:
+  strategy: weighted-round-robin
+  session-affinity: true
+  session-affinity-ttl: 2h
+  session-affinity-subagents: true
