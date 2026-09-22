@@ -39,6 +39,8 @@ func TestLogFormatterPrintsCodexTurnTicketProbeFields(t *testing.T) {
 	entry.Data["http_status"] = 200
 	entry.Data["state_length"] = 312
 	entry.Data["healthy"] = false
+	entry.Data["completed"] = true
+	entry.Data["model_match"] = false
 	entry.Data["result"] = "unhealthy_ticket"
 	entry.Data["next_action"] = "retry_next_cycle"
 	entry.Data["retry_after_seconds"] = 120
@@ -61,6 +63,8 @@ func TestLogFormatterPrintsCodexTurnTicketProbeFields(t *testing.T) {
 		"http_status=200",
 		"state_length=312",
 		"healthy=false",
+		"completed=true",
+		"model_match=false",
 		"result=unhealthy_ticket",
 		"next_action=retry_next_cycle",
 		"retry_after_seconds=120",

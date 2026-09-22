@@ -16,7 +16,7 @@ business egress before routing is decided:
 - An explicitly degraded probe enables injection for the affected auth+model bundle. On
   this stack that is a personal `312` turn state or a Team/Business `356` turn state.
 - HTTP `401`, `403`, `429`, and transport timeouts do not toggle the mode. Rejections
-  retain the configured rejection backoff.
+  retain the configured rejection backoff; acquisition-only 403 pauses just that exit.
 
 Injection state is isolated per auth+model. It is never shared per router, and cookie
 names are restricted to the `__cflb`/`__oailb` allowlist. Cookies discovered through an
@@ -39,10 +39,10 @@ business-first probe and degraded-triggered harvest fallback remain in legacy mo
 ## Freshness lease
 
 A validated bundle is activated under a short local freshness lease. The lease is capped
-at `routing-cookie-ttl-seconds` (core default and hard cap `180`), renewed
+at `routing-cookie-ttl-seconds` (core default `240`, positive overrides honored), renewed
 `routing-refresh-before-seconds` early (core default `30`), and invalidated on an explicit
 degraded `312`/`356` response.
-The `180` value bounds local reuse of a validated bundle. It is not the upstream token's
+The `240` value bounds local reuse of a validated bundle. It is not the upstream token's
 own TTL, and it should not be described or tuned as one.
 Cookie age starts when acquisition response headers arrive, including the time spent
 finishing and validating the response. A bundle with less than five seconds remaining is
@@ -68,13 +68,18 @@ degraded turn state onto live traffic.
 The fields live under the existing `codex.turn-ticket` section. See
 `config.example.yaml` for the commented reference block.
 
+`docs/codex-turn-ticket-tuning.example.yaml` groups the adjustable routing, probe,
+retry, and session-affinity settings for merging into an existing configuration.
+Explicit lease and candidate-count settings are no longer silently reduced to fixed
+180-second or eight-candidate limits. Ticket and cookie expirations still apply.
+
 | Field | Default | Cap | Purpose |
 | --- | --- | --- | --- |
 | `adaptive-injection` | `true` (resolved in core) | n/a | Enable adaptive mode; `false` selects legacy behavior. |
-| `routing-cookie-ttl-seconds` | `180` | `180` | Maximum freshness lease for a validated bundle. |
+| `routing-cookie-ttl-seconds` | `240` | Ticket and cookie expiry | Maximum freshness lease for a validated bundle. |
 | `routing-refresh-before-seconds` | `30` | Half the effective lease, minimum `1` | Renew a validated bundle this early. |
 | `routing-probe-interval-seconds` | `15` | Half the effective refresh margin, minimum `1` | Poll for due classification or renewal probes. |
-| `harvest-attempts` | `3` | `8` | Acquisition candidates tried before giving up on a bucket. |
+| `harvest-attempts` | `3` | Configured positive value | Acquisition candidates tried before giving up on a bucket. |
 
 `enabled` and `injection-enabled` remain the kill switches for the subsystem and for
 replay, exactly as before. The normal business cooldown (`probe-cooldown-seconds`) still
@@ -113,3 +118,43 @@ and validation before activation. WebSocket reuse checks both the effective prox
 injected ticket/cookie fingerprint. A changed bundle reconnects on the next independent
 execution; a continuation bound to the existing connection returns the existing
 replay-required error. Headers cannot be replaced on an already established socket.
+
+Atomic replacement of `config.yaml` remains watched through its parent directory.
+Saving raw YAML through management also explicitly updates the runtime without
+depending on a filesystem event. Shortening a healthy probe cooldown brings forward
+existing direct-mode schedules; upstream rejection backoff remains in force. Repeated
+saves during a reload are serialized and cannot be marked applied before being loaded.
+
+## Probe status and scheduling
+
+Every completed adaptive probe updates the last observation, including 312 responses,
+transport failures, rejected requests, wrong models, and rejected validation candidates.
+The per-model management snapshot also exposes `probe_in_flight`, `probe_phase`,
+`probe_started_at`, `probe_attempts`, `last_probe_at`, `last_probe_phase`,
+`last_probe_result`, `last_probe_complete`, `last_probe_model_match`, `next_probe_at`,
+`probe_backoff_until`, and `harvest_backoff_until`. The next-probe timestamp is the
+earliest eligible time; the serialized worker may execute it later. A harvest candidate is not readiness.
+
+Validated routing enables the existing execution guard for that auth/model. Credential
+cooldowns, model access, weighting, and session affinity still apply. A healthy session
+bound to another credential is not migrated merely because a new bundle is published.
+
+## Acquisition rejection and expiry recovery
+
+In adaptive mode an acquisition HTTP 403 pauses only that auth+model+acquisition
+egress for `harvest-reject-backoff-seconds` (default 15). Other configured acquisition
+egresses may be attempted within `harvest-attempts`; a rejected egress is not retried
+within its backoff. Clean business probes continue at the configured routing interval,
+even when every acquisition exit is paused. Changing this duration applies to existing
+acquisition backoffs without a restart.
+
+HTTP 401/429 from any phase, and business or validation HTTP 403, still park the bucket
+for `reject-backoff-seconds` (default 600). An acquisition exit rejection does not prove
+the business credential was rejected. Logs distinguish `harvest_egress_rejected` and
+`harvest_egress_backoff` from whole-bucket `rejected` and `bucket_backoff`.
+
+Renewal failure preserves a previously validated bundle until its effective expiration.
+After expiration, fail-closed scheduling excludes the bucket but the harvester remains
+eligible to probe it. A new bundle must complete business-egress validation before the
+bucket becomes executable again. `harvest_backoff_until` is nonzero when all configured
+acquisition exits are paused; it never postpones `next_probe_at`.

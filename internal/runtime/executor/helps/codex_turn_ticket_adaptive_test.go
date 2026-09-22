@@ -154,7 +154,7 @@ func TestCodexAdaptiveRoutingCookiesAreAllowlistedAndCaseSafe(t *testing.T) {
 	if len(cookies) != 1 || cookies[0].Name != "__oailb" || cookies[0].Value != "route-o" {
 		t.Fatalf("allowlisted cookies = %#v, want only __oailb", cookies)
 	}
-	if want := now.Add(180 * time.Second); !cookies[0].ExpiresAt.Equal(want) {
+	if want := now.Add(240 * time.Second); !cookies[0].ExpiresAt.Equal(want) {
 		t.Fatalf("local cookie lease = %s, want %s", cookies[0].ExpiresAt, want)
 	}
 
@@ -210,7 +210,7 @@ func TestEffectiveCodexAdaptiveConfigDefaultsAndCaps(t *testing.T) {
 	cfg.Codex.TurnTicket.RoutingProbeIntervalSeconds = 999
 	cfg.Codex.TurnTicket.HarvestAttempts = 99
 	effective := EffectiveCodexTurnTicketConfig(cfg)
-	if !effective.AdaptiveInjection || effective.RoutingCookieTTLSeconds != 180 || effective.RoutingRefreshBeforeSeconds != 90 || effective.RoutingProbeIntervalSeconds != 45 || effective.HarvestAttempts != 8 {
+	if !effective.AdaptiveInjection || effective.RoutingCookieTTLSeconds != 999 || effective.RoutingRefreshBeforeSeconds != 499 || effective.RoutingProbeIntervalSeconds != 249 || effective.HarvestAttempts != 99 {
 		t.Fatalf("adaptive caps = %+v", effective)
 	}
 
@@ -219,7 +219,7 @@ func TestEffectiveCodexAdaptiveConfigDefaultsAndCaps(t *testing.T) {
 	cfg.Codex.TurnTicket.RoutingProbeIntervalSeconds = 0
 	cfg.Codex.TurnTicket.HarvestAttempts = 0
 	effective = EffectiveCodexTurnTicketConfig(cfg)
-	if effective.RoutingCookieTTLSeconds != 180 || effective.RoutingRefreshBeforeSeconds != 30 || effective.RoutingProbeIntervalSeconds != 15 || effective.HarvestAttempts != 3 {
+	if effective.RoutingCookieTTLSeconds != 240 || effective.RoutingRefreshBeforeSeconds != 30 || effective.RoutingProbeIntervalSeconds != 15 || effective.HarvestAttempts != 3 {
 		t.Fatalf("adaptive defaults = %+v", effective)
 	}
 }

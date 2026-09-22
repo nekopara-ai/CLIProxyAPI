@@ -32,6 +32,12 @@ func (w *Watcher) start(ctx context.Context) error {
 		return errAddConfig
 	}
 	log.Debugf("watching config file: %s", w.configPath)
+	// Keep watching the pathname when an editor atomically replaces the file.
+	// A watch on the old inode alone disappears after rename-over or removal.
+	if errAddConfigDir := w.watcher.Add(filepath.Dir(w.configPath)); errAddConfigDir != nil {
+		log.Errorf("failed to watch config directory: %v", errAddConfigDir)
+		return errAddConfigDir
+	}
 
 	if errAddAuthDir := w.watcher.Add(w.authDir); errAddAuthDir != nil {
 		log.Errorf("failed to watch auth directory %s: %v", w.authDir, errAddAuthDir)
@@ -66,7 +72,7 @@ func (w *Watcher) processEvents(ctx context.Context) {
 
 func (w *Watcher) handleEvent(event fsnotify.Event) {
 	// Filter only relevant events: config file or auth-dir JSON files.
-	configOps := fsnotify.Write | fsnotify.Create | fsnotify.Rename
+	configOps := fsnotify.Write | fsnotify.Create | fsnotify.Rename | fsnotify.Remove
 	normalizedName := w.normalizeAuthPath(event.Name)
 	normalizedConfigPath := w.normalizeAuthPath(w.configPath)
 	normalizedAuthDir := w.normalizeAuthPath(w.authDir)
@@ -83,6 +89,12 @@ func (w *Watcher) handleEvent(event fsnotify.Event) {
 
 	// Handle config file changes
 	if isConfigEvent {
+		if event.Op&fsnotify.Create != 0 {
+			// Preserve direct file watching as well, including symlink targets.
+			if errAdd := w.watcher.Add(w.configPath); errAdd != nil {
+				log.Debugf("config file watch not yet available: %v", errAdd)
+			}
+		}
 		log.Debugf("config file change details - operation: %s, timestamp: %s", event.Op.String(), now.Format("2006-01-02 15:04:05.000"))
 		w.scheduleConfigReload()
 		return

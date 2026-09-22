@@ -620,9 +620,18 @@ func rawJSONPresent(raw json.RawMessage) bool {
 func (h *CodexTurnTicketHarvester) routingProbe(ctx context.Context, auth *cliproxyauth.Auth, model, phase, egress string, ticket *CodexTurnTicket, effective CodexTurnTicketConfig) (codexRoutingProbe, error) {
 	h.probed.Add(1)
 	start := time.Now()
+	h.beginRoutingProbe(auth.ID, model, phase, start)
 	result, err := probeCodexRouting(ctx, auth, model, egress, ticket, effective)
 	state := ExtractCodexTurnState(result.Header)
-	log.WithFields(log.Fields{"auth_hint": codexTurnTicketAuthHint(auth), "model": model, "phase": phase, "egress": codexTurnTicketHarvestEgressLabel(egress), "http_status": result.Status, "state_length": len(state), "completed": result.Complete, "model_match": result.Model == model, "elapsed_ms": time.Since(start).Milliseconds(), "error_class": codexTurnTicketProbeErrorClass(err)}).Info("codex turn ticket: adaptive probe completed")
+	observation := routingProbeObservation(auth, model, phase, result, ticket, effective, err)
+	h.endRoutingProbe(auth.ID, model, phase, result, observation)
+	fields := log.Fields{"auth_hint": codexTurnTicketAuthHint(auth), "model": model, "phase": phase, "egress": codexTurnTicketHarvestEgressLabel(egress), "http_status": result.Status, "state_length": len(state), "completed": result.Complete, "model_match": result.Model == model, "result": observation.Result, "elapsed_ms": time.Since(start).Milliseconds(), "error_class": codexTurnTicketProbeErrorClass(err)}
+	if observation.Result == "harvest_egress_rejected" {
+		fields["next_action"], fields["retry_after_seconds"] = "harvest_egress_backoff", effective.HarvestRejectBackoffSeconds
+	} else if observation.Result == "rejected" {
+		fields["next_action"], fields["retry_after_seconds"] = "bucket_backoff", effective.RejectBackoffSeconds
+	}
+	log.WithFields(fields).Info("codex turn ticket: adaptive probe completed")
 	return result, err
 }
 
@@ -669,12 +678,13 @@ func (h *CodexTurnTicketHarvester) probeAdaptive(ctx context.Context, auth *clip
 			// A hot reload that shortens the local lease or increases the renewal
 			// margin must bring the next probe forward immediately.
 			renewAt := minTime(ticket.RoutingExpiresAt, ticket.RoutingCapturedAt.Add(time.Duration(effective.RoutingCookieTTLSeconds)*time.Second)).Add(-time.Duration(effective.RoutingRefreshBeforeSeconds) * time.Second)
-			h.scheduleMu.Lock()
-			key := codexTurnTicketKey(auth.ID, model)
-			if h.nextProbe[key].After(renewAt) {
-				h.nextProbe[key] = renewAt
-			}
-			h.scheduleMu.Unlock()
+			h.bringRoutingProbeForward(auth, model, effective, route, renewAt)
+		}
+	} else if route.Mode == codexRouteDirect {
+		observation := h.observation(auth.ID, model)
+		if observation.Healthy && !observation.ObservedAt.IsZero() {
+			// A shorter healthy cooldown must also affect already classified buckets.
+			h.bringRoutingProbeForward(auth, model, effective, route, observation.ObservedAt.Add(time.Duration(effective.ProbeCooldownSeconds)*time.Second))
 		}
 	}
 	if !h.reserveProbeSlot(auth.ID, model, time.Now(), effective) {
@@ -721,11 +731,18 @@ func (h *CodexTurnTicketHarvester) probeAdaptive(ctx context.Context, auth *clip
 		if h.store.route(auth, model, effective) != route || !h.adaptiveProbeContextCurrent(auth, model, effective) {
 			return
 		}
-		egress := chooseCodexTurnTicketHarvestEgress(effective.HarvestProxyURLs)
+		candidates, _ := h.routingHarvestCandidates(auth.ID, model, effective, time.Now())
+		egress := chooseCodexTurnTicketHarvestEgress(candidates)
 		if egress == "" {
 			return
 		}
 		fresh, err := h.routingProbe(ctx, auth, model, "harvest", egress, nil, effective)
+		if fresh.Status == http.StatusForbidden {
+			// A pool exit can be forbidden while the credential's business route
+			// remains usable. Do not let it suppress renewal for the whole bucket.
+			h.parkRoutingHarvestEgress(auth.ID, model, egress, time.Now())
+			continue
+		}
 		if h.routingRejected(auth.ID, model, fresh, effective) {
 			return
 		}

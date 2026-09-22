@@ -246,8 +246,8 @@ type CodexTurnTicketSettings struct {
 	// through a business-egress probe.
 	AdaptiveInjection *bool `yaml:"adaptive-injection,omitempty" json:"adaptive-injection,omitempty"`
 	// RoutingCookieTTLSeconds caps the freshness lease granted to a validated routing
-	// cookie bundle in adaptive mode. The core default is 180 and the core also caps the
-	// value at 180; this is a local routing lease, not the upstream token's own lifetime.
+	// cookie bundle in adaptive mode. The default is 240; explicit positive values are
+	// honored and remain bounded by the ticket and cookie expirations.
 	RoutingCookieTTLSeconds int `yaml:"routing-cookie-ttl-seconds,omitempty" json:"routing-cookie-ttl-seconds,omitempty"`
 	// RoutingRefreshBeforeSeconds is how close to lease expiry a validated bundle is
 	// renewed. The core default is 30.
@@ -256,8 +256,8 @@ type CodexTurnTicketSettings struct {
 	// classification probes. The core default is 15.
 	RoutingProbeIntervalSeconds int `yaml:"routing-probe-interval-seconds,omitempty" json:"routing-probe-interval-seconds,omitempty"`
 	// HarvestAttempts bounds how many acquisition candidates the adaptive harvester
-	// tries before giving up on a bucket. The core default is 3 and the core caps the
-	// value at 8.
+	// tries before giving up on a bucket. The core default is 3; positive overrides
+	// are honored.
 	HarvestAttempts int `yaml:"harvest-attempts,omitempty" json:"harvest-attempts,omitempty"`
 	// FailClosed prevents a Codex OAuth credential from serving a gated model until that
 	// exact (credential, model) bucket has a valid healthy ticket. It defaults to true when
@@ -280,10 +280,13 @@ type CodexTurnTicketSettings struct {
 	// bucket's one-hour lifetime so a renewal is not blocked by its own cooldown.
 	ProbeCooldownSeconds int `yaml:"probe-cooldown-seconds,omitempty" json:"probe-cooldown-seconds,omitempty"`
 	// RejectBackoffSeconds is how long a bucket stops being probed after the upstream
-	// rejects it with 429, 401, or 403. Defaults to 600. A rejection means "you are asking
-	// too often" or "this credential is unusable", and trying another egress only makes
-	// both worse, so the bucket backs off instead of retrying.
+	// rejects it with 429, 401, or a business-egress 403. Defaults to 600.
+	// Adaptive acquisition 403 uses the separate egress-only backoff below.
 	RejectBackoffSeconds int `yaml:"reject-backoff-seconds,omitempty" json:"reject-backoff-seconds,omitempty"`
+	// HarvestRejectBackoffSeconds pauses an acquisition egress after an adaptive
+	// harvest 403 without stopping business probes or other acquisition egresses.
+	// Defaults to 15. Authentication (401) and quota (429) still park the whole bucket.
+	HarvestRejectBackoffSeconds int `yaml:"harvest-reject-backoff-seconds,omitempty" json:"harvest-reject-backoff-seconds,omitempty"`
 	// HarvestProxyURLs lists fallback egress choices used only by synthetic probes.
 	// Each entry may be a concrete proxy URL or "direct", which explicitly bypasses process
 	// environment proxies. Background probes try the business egress first and select one

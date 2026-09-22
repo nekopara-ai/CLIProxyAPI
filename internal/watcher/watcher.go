@@ -54,6 +54,7 @@ type Watcher struct {
 	fileAuthsByPath               map[string]map[string]*coreauth.Auth
 	lastRemoveTimes               map[string]time.Time
 	lastConfigHash                string
+	configApplyMu                 sync.Mutex
 	authQueue                     chan<- AuthUpdate
 	currentAuths                  map[string]*coreauth.Auth
 	authRevisions                 map[string]uint64 // Includes deletion tombstones; guarded by clientsMutex.

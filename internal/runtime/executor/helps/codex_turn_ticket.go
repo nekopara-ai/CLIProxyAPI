@@ -393,6 +393,7 @@ type CodexTurnTicketConfig struct {
 	ProbeTimeoutSeconds         int
 	ProbeCooldownSeconds        int
 	RejectBackoffSeconds        int
+	HarvestRejectBackoffSeconds int
 	BusinessProxyURL            string
 	HarvestProxyURLs            []string
 	Models                      []string
@@ -408,7 +409,7 @@ func EffectiveCodexTurnTicketConfig(cfg *config.Config) CodexTurnTicketConfig {
 	effective := CodexTurnTicketConfig{
 		InjectionEnabled:            true,
 		AdaptiveInjection:           true,
-		RoutingCookieTTLSeconds:     180,
+		RoutingCookieTTLSeconds:     240,
 		RoutingRefreshBeforeSeconds: 30,
 		RoutingProbeIntervalSeconds: 15,
 		HarvestAttempts:             3,
@@ -420,6 +421,7 @@ func EffectiveCodexTurnTicketConfig(cfg *config.Config) CodexTurnTicketConfig {
 		ProbeTimeoutSeconds:         25,
 		ProbeCooldownSeconds:        3300,
 		RejectBackoffSeconds:        600,
+		HarvestRejectBackoffSeconds: 15,
 	}
 	if cfg == nil {
 		effective.Models = append([]string(nil), CodexTurnTicketDefaults...)
@@ -435,7 +437,7 @@ func EffectiveCodexTurnTicketConfig(cfg *config.Config) CodexTurnTicketConfig {
 		effective.AdaptiveInjection = *raw.AdaptiveInjection
 	}
 	if raw.RoutingCookieTTLSeconds > 0 {
-		effective.RoutingCookieTTLSeconds = min(raw.RoutingCookieTTLSeconds, 180)
+		effective.RoutingCookieTTLSeconds = raw.RoutingCookieTTLSeconds
 	}
 	if raw.RoutingRefreshBeforeSeconds > 0 {
 		effective.RoutingRefreshBeforeSeconds = raw.RoutingRefreshBeforeSeconds
@@ -446,7 +448,7 @@ func EffectiveCodexTurnTicketConfig(cfg *config.Config) CodexTurnTicketConfig {
 	}
 	effective.RoutingProbeIntervalSeconds = min(effective.RoutingProbeIntervalSeconds, max(1, effective.RoutingRefreshBeforeSeconds/2))
 	if raw.HarvestAttempts > 0 {
-		effective.HarvestAttempts = min(raw.HarvestAttempts, 8)
+		effective.HarvestAttempts = raw.HarvestAttempts
 	}
 	if raw.FailClosed != nil {
 		effective.FailClosed = *raw.FailClosed
@@ -476,6 +478,9 @@ func EffectiveCodexTurnTicketConfig(cfg *config.Config) CodexTurnTicketConfig {
 	}
 	if raw.RejectBackoffSeconds > 0 {
 		effective.RejectBackoffSeconds = raw.RejectBackoffSeconds
+	}
+	if raw.HarvestRejectBackoffSeconds > 0 {
+		effective.HarvestRejectBackoffSeconds = raw.HarvestRejectBackoffSeconds
 	}
 	for _, model := range raw.Models {
 		if trimmed := strings.TrimSpace(model); trimmed != "" {
@@ -692,9 +697,13 @@ type CodexTurnTicketHarvester struct {
 	scheduleMu sync.Mutex
 	nextProbe  map[string]time.Time
 	backoffRun map[string]time.Time
+	// Harvest 403 is specific to the acquisition egress, not the business route.
+	// Store rejection times so a hot-reloaded duration applies immediately.
+	harvestRejectedAt map[string]map[string]time.Time
 
 	observationMu sync.RWMutex
 	observations  map[string]CodexTurnTicketObservation
+	probeProgress map[string]codexTurnTicketProbeProgress
 
 	probeInFlight sync.Mutex
 	probed        atomic.Int64
@@ -1516,38 +1525,40 @@ func HarvestCodexTurnStateOnResponse(auth *cliproxyauth.Auth, model string, head
 // CodexTurnTicketSnapshot is a redacted, serializable view of the turn-ticket subsystem
 // for the management API. It never contains token material or credential identifiers.
 type CodexTurnTicketSnapshot struct {
-	Configured        bool                            `json:"configured"`
-	Enabled           bool                            `json:"enabled"`
-	InjectionEnabled  bool                            `json:"injection_enabled"`
-	AdaptiveInjection bool                            `json:"adaptive_injection"`
-	FailClosed        bool                            `json:"fail_closed"`
-	HarvesterActive   bool                            `json:"harvester_active"`
-	Models            []string                        `json:"models"`
-	AuthIDScoped      bool                            `json:"auth_id_scoped"`
-	TargetLength      int                             `json:"target_length"`
-	TTLSeconds        int                             `json:"ttl_seconds"`
-	RefreshBefore     int                             `json:"refresh_before_seconds"`
-	ProbeInterval     int                             `json:"probe_interval_seconds"`
-	ProbeCooldown     int                             `json:"probe_cooldown_seconds"`
-	RejectBackoff     int                             `json:"reject_backoff_seconds"`
-	RoutingCookieTTL  int                             `json:"routing_cookie_ttl_seconds"`
-	RoutingRefresh    int                             `json:"routing_refresh_before_seconds"`
-	RoutingInterval   int                             `json:"routing_probe_interval_seconds"`
-	HarvestAttempts   int                             `json:"harvest_attempts"`
-	HarvestProxyCount int                             `json:"harvest_proxy_count"`
-	HarvestProxyURLs  []string                        `json:"harvest_proxy_urls,omitempty"`
-	Probed            int64                           `json:"probed"`
-	Harvested         int64                           `json:"harvested"`
-	Buckets           int                             `json:"buckets"`
-	HealthyTickets    int                             `json:"healthy_tickets"`
-	PersistentStore   bool                            `json:"persistent_store"`
-	RestoredTickets   int                             `json:"restored_tickets"`
-	BucketStates      []CodexTurnTicketBucketSnapshot `json:"bucket_states,omitempty"`
+	Configured           bool                            `json:"configured"`
+	Enabled              bool                            `json:"enabled"`
+	InjectionEnabled     bool                            `json:"injection_enabled"`
+	AdaptiveInjection    bool                            `json:"adaptive_injection"`
+	FailClosed           bool                            `json:"fail_closed"`
+	HarvesterActive      bool                            `json:"harvester_active"`
+	Models               []string                        `json:"models"`
+	AuthIDScoped         bool                            `json:"auth_id_scoped"`
+	TargetLength         int                             `json:"target_length"`
+	TTLSeconds           int                             `json:"ttl_seconds"`
+	RefreshBefore        int                             `json:"refresh_before_seconds"`
+	ProbeInterval        int                             `json:"probe_interval_seconds"`
+	ProbeCooldown        int                             `json:"probe_cooldown_seconds"`
+	RejectBackoff        int                             `json:"reject_backoff_seconds"`
+	HarvestRejectBackoff int                             `json:"harvest_reject_backoff_seconds"`
+	RoutingCookieTTL     int                             `json:"routing_cookie_ttl_seconds"`
+	RoutingRefresh       int                             `json:"routing_refresh_before_seconds"`
+	RoutingInterval      int                             `json:"routing_probe_interval_seconds"`
+	HarvestAttempts      int                             `json:"harvest_attempts"`
+	HarvestProxyCount    int                             `json:"harvest_proxy_count"`
+	HarvestProxyURLs     []string                        `json:"harvest_proxy_urls,omitempty"`
+	Probed               int64                           `json:"probed"`
+	Harvested            int64                           `json:"harvested"`
+	Buckets              int                             `json:"buckets"`
+	HealthyTickets       int                             `json:"healthy_tickets"`
+	PersistentStore      bool                            `json:"persistent_store"`
+	RestoredTickets      int                             `json:"restored_tickets"`
+	BucketStates         []CodexTurnTicketBucketSnapshot `json:"bucket_states,omitempty"`
 }
 
 // CodexTurnTicketBucketSnapshot is a credential-safe per-model view. AuthHint is either
 // a masked OAuth email or a short one-way hash; raw IDs and ticket material are omitted.
 type CodexTurnTicketBucketSnapshot struct {
+	CodexTurnTicketProbeSnapshot
 	TargetLength        int       `json:"target_length"`
 	Plan                string    `json:"plan"`
 	AuthHint            string    `json:"auth_hint"`
@@ -1589,6 +1600,7 @@ type CodexTurnTicketCredentialSnapshot struct {
 // CodexTurnTicketModelSnapshot describes one model bucket without repeating the
 // credential hint used by the global redacted snapshot.
 type CodexTurnTicketModelSnapshot struct {
+	CodexTurnTicketProbeSnapshot
 	Model               string    `json:"model"`
 	TicketState         string    `json:"ticket_state"`
 	RoutingMode         string    `json:"routing_mode,omitempty"`
@@ -1613,27 +1625,28 @@ func SnapshotCodexTurnTickets() CodexTurnTicketSnapshot {
 	harvester := process.Harvester
 	effective := codexTurnTicketEffectiveConfig(harvester.cfgProvider)
 	snapshot := CodexTurnTicketSnapshot{
-		Configured:        true,
-		Enabled:           effective.Enabled,
-		InjectionEnabled:  effective.Enabled && effective.InjectionEnabled,
-		AdaptiveInjection: effective.AdaptiveInjection,
-		FailClosed:        effective.FailClosed,
-		HarvesterActive:   harvester.Running(),
-		Models:            append([]string(nil), effective.Models...),
-		AuthIDScoped:      len(effective.AuthIDs) > 0,
-		TargetLength:      effective.TargetLength,
-		TTLSeconds:        effective.TTLSeconds,
-		RefreshBefore:     effective.RefreshBeforeSeconds,
-		ProbeInterval:     effective.ProbeIntervalSeconds,
-		ProbeCooldown:     effective.ProbeCooldownSeconds,
-		RejectBackoff:     effective.RejectBackoffSeconds,
-		RoutingCookieTTL:  effective.RoutingCookieTTLSeconds,
-		RoutingRefresh:    effective.RoutingRefreshBeforeSeconds,
-		RoutingInterval:   effective.RoutingProbeIntervalSeconds,
-		HarvestAttempts:   effective.HarvestAttempts,
-		HarvestProxyCount: len(effective.HarvestProxyURLs),
-		PersistentStore:   process.Store.persistent(),
-		RestoredTickets:   process.Store.restoredCount(),
+		Configured:           true,
+		Enabled:              effective.Enabled,
+		InjectionEnabled:     effective.Enabled && effective.InjectionEnabled,
+		AdaptiveInjection:    effective.AdaptiveInjection,
+		FailClosed:           effective.FailClosed,
+		HarvesterActive:      harvester.Running(),
+		Models:               append([]string(nil), effective.Models...),
+		AuthIDScoped:         len(effective.AuthIDs) > 0,
+		TargetLength:         effective.TargetLength,
+		TTLSeconds:           effective.TTLSeconds,
+		RefreshBefore:        effective.RefreshBeforeSeconds,
+		ProbeInterval:        effective.ProbeIntervalSeconds,
+		ProbeCooldown:        effective.ProbeCooldownSeconds,
+		RejectBackoff:        effective.RejectBackoffSeconds,
+		HarvestRejectBackoff: effective.HarvestRejectBackoffSeconds,
+		RoutingCookieTTL:     effective.RoutingCookieTTLSeconds,
+		RoutingRefresh:       effective.RoutingRefreshBeforeSeconds,
+		RoutingInterval:      effective.RoutingProbeIntervalSeconds,
+		HarvestAttempts:      effective.HarvestAttempts,
+		HarvestProxyCount:    len(effective.HarvestProxyURLs),
+		PersistentStore:      process.Store.persistent(),
+		RestoredTickets:      process.Store.restoredCount(),
 	}
 	// Harvest proxy URLs may embed credentials; only redacted forms are ever reported.
 	for _, egress := range effective.HarvestProxyURLs {
@@ -1689,19 +1702,20 @@ func SnapshotCodexTurnTicketForAuth(auth *cliproxyauth.Auth) *CodexTurnTicketCre
 	for _, model := range effective.Models {
 		bucket := harvester.bucketSnapshot(auth, model, effective)
 		modelState := CodexTurnTicketModelSnapshot{
-			Model:               bucket.Model,
-			TicketState:         bucket.TicketState,
-			RoutingMode:         bucket.RoutingMode,
-			RoutingCookieNames:  append([]string(nil), bucket.RoutingCookieNames...),
-			RoutingValidatedAt:  bucket.RoutingValidatedAt,
-			RoutingExpiresAt:    bucket.RoutingExpiresAt,
-			TicketLength:        bucket.TicketLength,
-			ExpiresAt:           bucket.ExpiresAt,
-			LastObservedAt:      bucket.LastObservedAt,
-			LastHTTPStatus:      bucket.LastHTTPStatus,
-			LastObservedLength:  bucket.LastObservedLength,
-			LastObservedHealthy: bucket.LastObservedHealthy,
-			LastResult:          bucket.LastResult,
+			CodexTurnTicketProbeSnapshot: bucket.CodexTurnTicketProbeSnapshot,
+			Model:                        bucket.Model,
+			TicketState:                  bucket.TicketState,
+			RoutingMode:                  bucket.RoutingMode,
+			RoutingCookieNames:           append([]string(nil), bucket.RoutingCookieNames...),
+			RoutingValidatedAt:           bucket.RoutingValidatedAt,
+			RoutingExpiresAt:             bucket.RoutingExpiresAt,
+			TicketLength:                 bucket.TicketLength,
+			ExpiresAt:                    bucket.ExpiresAt,
+			LastObservedAt:               bucket.LastObservedAt,
+			LastHTTPStatus:               bucket.LastHTTPStatus,
+			LastObservedLength:           bucket.LastObservedLength,
+			LastObservedHealthy:          bucket.LastObservedHealthy,
+			LastResult:                   bucket.LastResult,
 		}
 		snapshot.ModelStates = append(snapshot.ModelStates, modelState)
 		snapshot.TotalModels++
@@ -1772,6 +1786,7 @@ func (h *CodexTurnTicketHarvester) bucketSnapshotAt(auth *cliproxyauth.Auth, mod
 	if h == nil || h.store == nil || auth == nil {
 		return entry
 	}
+	entry.CodexTurnTicketProbeSnapshot = h.probeSnapshot(auth.ID, model)
 	if effective.AdaptiveInjection {
 		route, ticket := h.store.adaptiveSnapshot(auth, model, effective)
 		entry.RoutingMode = route.Mode
