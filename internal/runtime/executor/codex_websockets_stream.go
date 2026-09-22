@@ -108,7 +108,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	var errDial error
 	dialCtx := ctx
 	if cliproxyexecutor.RequiredUpstreamWebsocket(ctx) {
-		conn, closer = existingWebsocketSessionConn(sess, authID, wsURL, routingFingerprint)
+		conn, closer = existingWebsocketSessionConn(sess, authID, wsURL, executionProxyURL(ctx, e.cfg, auth), routingFingerprint)
 		if conn == nil {
 			unlockStreamSession()
 			return nil, cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError()
@@ -118,7 +118,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		conn, closer, respHS, errDial = e.ensureUpstreamConnWithRoutingFingerprint(dialCtx, auth, sess, authID, wsURL, wsHeaders, routingFingerprint)
 	}
 	recordCodexWebsocketTurnState(reporter, sess, conn, respHS, wsHeaders, ticketInjected)
-	observeCodexWebsocketTurnTicketResponse(respHS, errDial, wsHeaders, auth, baseModel, ticketInjected)
+	observeCodexWebsocketTurnTicketResponse(ctx, respHS, errDial, wsHeaders, auth, baseModel, ticketInjected)
 	var upstreamHeaders http.Header
 	if respHS != nil {
 		upstreamHeaders = respHS.Header.Clone()
@@ -191,7 +191,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			// Retry once with a new websocket connection for the same execution session.
 			connRetry, closerRetry, respHSRetry, errDialRetry := e.ensureUpstreamConnWithRoutingFingerprint(ctx, auth, sess, authID, wsURL, wsHeaders, routingFingerprint)
 			recordCodexWebsocketTurnState(reporter, sess, connRetry, respHSRetry, wsHeaders, ticketInjected)
-			observeCodexWebsocketTurnTicketResponse(respHSRetry, errDialRetry, wsHeaders, auth, baseModel, ticketInjected)
+			observeCodexWebsocketTurnTicketResponse(ctx, respHSRetry, errDialRetry, wsHeaders, auth, baseModel, ticketInjected)
 			if errDialRetry != nil || connRetry == nil {
 				closeHTTPResponseBody(respHSRetry, "codex websockets executor: close handshake response body error")
 				helps.RecordAPIWebsocketError(ctx, e.cfg, "dial_retry", errDialRetry)
@@ -842,7 +842,7 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 	}
 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg, preserveNativeOutput, opts.Headers)
 	applyModelHeaderOverrides(wsHeaders, baseModel)
-	ticketInjected := applyCodexTurnTicket(wsHeaders, auth, baseModel)
+	ticketInjected := applyCodexTurnTicket(ctx, wsHeaders, auth, baseModel)
 	applyCodexIdentityConfuseHeaders(wsHeaders, &identityState)
 	routingFingerprint := codexWebsocketRoutingFingerprint(wsHeaders, ticketInjected)
 

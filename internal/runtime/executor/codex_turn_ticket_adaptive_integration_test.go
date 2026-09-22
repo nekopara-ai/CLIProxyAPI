@@ -151,6 +151,80 @@ func TestCodexExecutorAdaptiveObservesActualOutboundRoutingHeaders(t *testing.T)
 	}
 }
 
+// A request-level egress must not classify the background harvester's business route.
+func TestCodexExecutorAdaptiveRequestProxyDoesNotChangeBusinessRoute(t *testing.T) {
+	degraded := integrationTurnState(t, time.Now().Unix(), 312)
+	for _, mode := range []string{"nonstream", "stream", "compact", "websocket", "websocket-stream"} {
+		t.Run(mode, func(t *testing.T) {
+			var requests atomic.Int32
+			upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				if websocket.IsWebSocketUpgrade(r) {
+					conn, err := upgrader.Upgrade(w, r, http.Header{helps.CodexTurnStateHeader: []string{degraded}})
+					if err != nil {
+						return
+					}
+					defer func() { _ = conn.Close() }()
+					if _, _, err := conn.ReadMessage(); err == nil {
+						_ = conn.WriteMessage(websocket.TextMessage, []byte(ticketUsageTerminal))
+					}
+					return
+				}
+				w.Header().Set(helps.CodexTurnStateHeader, degraded)
+				if mode == "compact" {
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(`{"id":"resp_compact","object":"response.compaction","output":[]}`))
+					return
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte(adaptiveTicketSSEBody))
+			}))
+			defer server.Close()
+			cfg := turnTicketIntegrationConfig("gpt-5.5")
+			cfg.ProxyURL = "http://business-proxy.invalid:8080"
+			cfg.DisableImageGeneration = config.DisableImageGenerationAll
+			helps.ConfigureCodexTurnTickets(func() *config.Config { return cfg }, nil)
+			defer helps.ConfigureCodexTurnTickets(nil, nil)
+			auth := adaptiveTicketAuth("request-proxy-"+mode, server.URL)
+			ctx := cliproxyexecutor.WithRequestProxyURL(context.Background(), "direct")
+			req := cliproxyexecutor.Request{Model: "gpt-5.5", Payload: []byte(`{"model":"gpt-5.5","input":"hello"}`)}
+			opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai-response")}
+			var err error
+			switch mode {
+			case "stream":
+				opts.Stream = true
+				var result *cliproxyexecutor.StreamResult
+				result, err = NewCodexExecutor(cfg).ExecuteStream(ctx, auth, req, opts)
+				if err == nil {
+					drainAdaptiveTicketStream(t, result)
+				}
+			case "websocket-stream":
+				opts.Stream = true
+				var result *cliproxyexecutor.StreamResult
+				result, err = NewCodexWebsocketsExecutor(cfg).ExecuteStream(ctx, auth, req, opts)
+				if err == nil {
+					drainAdaptiveTicketStream(t, result)
+				}
+			case "websocket":
+				_, err = NewCodexWebsocketsExecutor(cfg).Execute(ctx, auth, req, opts)
+			default:
+				if mode == "compact" {
+					opts.Alt = "responses/compact"
+				}
+				_, err = NewCodexExecutor(cfg).Execute(ctx, auth, req, opts)
+			}
+			if err != nil || requests.Load() != 1 {
+				t.Fatalf("request override: error=%v requests=%d", err, requests.Load())
+			}
+			snapshot := helps.SnapshotCodexTurnTicketForAuth(auth)
+			if snapshot == nil || len(snapshot.ModelStates) != 1 || snapshot.ModelStates[0].RoutingMode != "unknown" {
+				t.Fatalf("request proxy changed the business route: %+v", snapshot)
+			}
+		})
+	}
+}
+
 // TestCodexExecutorObserveIgnoresNonSuccessStatus pins the 2xx/101 guard: a rejected
 // request must not transition the bucket even if the response carries a degraded token.
 func TestCodexExecutorObserveIgnoresNonSuccessStatus(t *testing.T) {

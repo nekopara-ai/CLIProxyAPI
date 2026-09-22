@@ -509,17 +509,17 @@ func TestExistingWebsocketSessionConnRequiresMatchingHealthyConnection(t *testin
 		wsURL:      "ws://example.test/responses",
 	}
 	sess.resetUpstreamDisconnectError(conn)
-	if gotConn, gotCloser := existingWebsocketSessionConn(sess, "auth-a", "ws://example.test/responses"); gotConn != conn || gotCloser != closer {
+	if gotConn, gotCloser := existingWebsocketSessionConn(sess, "auth-a", "ws://example.test/responses", ""); gotConn != conn || gotCloser != closer {
 		t.Fatal("matching healthy websocket session was not reusable")
 	}
-	if got, _ := existingWebsocketSessionConn(sess, "auth-b", "ws://example.test/responses"); got != nil {
+	if got, _ := existingWebsocketSessionConn(sess, "auth-b", "ws://example.test/responses", ""); got != nil {
 		t.Fatal("websocket session matched a different auth")
 	}
-	if got, _ := existingWebsocketSessionConn(sess, "auth-a", "ws://other.test/responses"); got != nil {
+	if got, _ := existingWebsocketSessionConn(sess, "auth-a", "ws://other.test/responses", ""); got != nil {
 		t.Fatal("websocket session matched a different URL")
 	}
 	sess.setUpstreamDisconnectError(conn, errors.New("upstream disconnected"))
-	if got, _ := existingWebsocketSessionConn(sess, "auth-a", "ws://example.test/responses"); got != nil {
+	if got, _ := existingWebsocketSessionConn(sess, "auth-a", "ws://example.test/responses", ""); got != nil {
 		t.Fatal("disconnected websocket session remained reusable")
 	}
 }
@@ -562,10 +562,10 @@ func TestCodexWebsocketRoutingFingerprintChangesRequireReconnect(t *testing.T) {
 		routingFingerprint: first,
 	}
 	sess.resetUpstreamDisconnectError(conn)
-	if got, _ := existingWebsocketSessionConn(sess, "auth-a", "ws://example.test/responses", second); got != nil {
+	if got, _ := existingWebsocketSessionConn(sess, "auth-a", "ws://example.test/responses", "", second); got != nil {
 		t.Fatal("changed routing bundle reused the stale websocket handshake")
 	}
-	if got, _ := existingWebsocketSessionConn(sess, "auth-a", "ws://example.test/responses", first); got != conn {
+	if got, _ := existingWebsocketSessionConn(sess, "auth-a", "ws://example.test/responses", "", first); got != conn {
 		t.Fatal("unchanged routing bundle was not reusable")
 	}
 
@@ -2227,6 +2227,7 @@ func TestNewProxyAwareWebsocketDialerDirectDisablesProxy(t *testing.T) {
 	t.Parallel()
 
 	dialer := newProxyAwareWebsocketDialer(
+		context.Background(),
 		&config.Config{SDKConfig: sdkconfig.SDKConfig{ProxyURL: "http://global-proxy.example.com:8080"}},
 		&cliproxyauth.Auth{ProxyURL: "direct"},
 	)

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -367,13 +368,26 @@ func CodexTurnTicketAdaptiveEnabled() bool {
 	return c.Enabled && c.AdaptiveInjection
 }
 
-func ObserveCodexTurnTicketResponse(auth *cliproxyauth.Auth, model string, status int, responseHeaders, requestHeaders http.Header, injected bool) {
+// A request-scoped proxy has not been classified by the background business probe.
+// Do not replay a canonical-egress bundle or let another egress change its decision.
+func codexAdaptiveRequestEgressMatches(auth *cliproxyauth.Auth, effective CodexTurnTicketConfig, requestContext ...context.Context) bool {
+	if len(requestContext) == 0 {
+		return true
+	}
+	override := cliproxyexecutor.RequestProxyURL(requestContext[0])
+	return override == "" || override == strings.TrimSpace(codexBusinessEgress(auth, effective))
+}
+
+func ObserveCodexTurnTicketResponse(auth *cliproxyauth.Auth, model string, status int, responseHeaders, requestHeaders http.Header, injected bool, requestContext ...context.Context) {
 	p := CurrentCodexTurnTickets()
 	if p == nil || p.Harvester == nil {
 		return
 	}
 	effective := codexTurnTicketEffectiveConfig(p.Harvester.cfgProvider)
 	if effective.AdaptiveInjection {
+		if !codexAdaptiveRequestEgressMatches(auth, effective, requestContext...) {
+			return
+		}
 		p.Harvester.observeAdaptive(auth, model, status, responseHeaders, requestHeaders, injected, effective)
 	} else if status == http.StatusSwitchingProtocols || (status >= 200 && status < 300) {
 		p.Harvester.HarvestCodexTurnStatePassively(auth, model, responseHeaders)

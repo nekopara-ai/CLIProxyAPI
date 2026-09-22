@@ -65,6 +65,7 @@ type codexWebsocketSession struct {
 	routingFingerprint        string
 	wsURL                     string
 	authID                    string
+	proxyURL                  string
 	multiAgentV2OptimizedConn *websocket.Conn
 	lifecycleBindMu           sync.Mutex
 	lifecycle                 cliproxyexecutor.ExecutionLifecycle
@@ -409,7 +410,7 @@ func closeWebsocketAfterBindFailure(sess *codexWebsocketSession, conn *websocket
 	}
 }
 
-func websocketSessionTargetChanged(sess *codexWebsocketSession, authID string, wsURL string) bool {
+func websocketSessionTargetChanged(sess *codexWebsocketSession, authID string, wsURL string, proxyURL string) bool {
 	if sess == nil {
 		return false
 	}
@@ -419,7 +420,7 @@ func websocketSessionTargetChanged(sess *codexWebsocketSession, authID string, w
 	if strings.TrimSpace(sess.authID) == "" && strings.TrimSpace(sess.wsURL) == "" {
 		return false
 	}
-	return strings.TrimSpace(sess.authID) != strings.TrimSpace(authID) || strings.TrimSpace(sess.wsURL) != strings.TrimSpace(wsURL)
+	return !websocketSessionTargetMatches(sess, authID, wsURL, proxyURL)
 }
 
 func codexWebsocketRoutingFingerprint(headers http.Header, injected bool) string {
@@ -444,7 +445,7 @@ func codexWebsocketRoutingFingerprint(headers http.Header, injected bool) string
 	return hex.EncodeToString(sum[:])
 }
 
-func existingWebsocketSessionConn(sess *codexWebsocketSession, authID string, wsURL string, routingFingerprint ...string) (*websocket.Conn, *websocketConnectionCloser) {
+func existingWebsocketSessionConn(sess *codexWebsocketSession, authID string, wsURL string, proxyURL string, routingFingerprint ...string) (*websocket.Conn, *websocketConnectionCloser) {
 	if sess == nil {
 		return nil, nil
 	}
@@ -455,9 +456,7 @@ func existingWebsocketSessionConn(sess *codexWebsocketSession, authID string, ws
 	sess.connMu.Lock()
 	conn := sess.conn
 	closer := sess.connCloser
-	matches := conn != nil && closer != nil &&
-		strings.TrimSpace(sess.authID) == strings.TrimSpace(authID) &&
-		strings.TrimSpace(sess.wsURL) == strings.TrimSpace(wsURL)
+	matches := conn != nil && closer != nil && websocketSessionTargetMatches(sess, authID, wsURL, proxyURL)
 	if matches && expectedFingerprint != "" {
 		matches = strings.TrimSpace(sess.routingFingerprint) == expectedFingerprint
 	}
@@ -468,7 +467,13 @@ func existingWebsocketSessionConn(sess *codexWebsocketSession, authID string, ws
 	return conn, closer
 }
 
-func detachMismatchedWebsocketSessionConn(sess *codexWebsocketSession, authID string, wsURL string, routingFingerprint ...string) (*websocket.Conn, *websocketConnectionCloser, string, string, cliproxyexecutor.ExecutionLifecycle) {
+func websocketSessionTargetMatches(sess *codexWebsocketSession, authID string, wsURL string, proxyURL string) bool {
+	return strings.TrimSpace(sess.authID) == strings.TrimSpace(authID) &&
+		strings.TrimSpace(sess.wsURL) == strings.TrimSpace(wsURL) &&
+		strings.TrimSpace(sess.proxyURL) == strings.TrimSpace(proxyURL)
+}
+
+func detachMismatchedWebsocketSessionConn(sess *codexWebsocketSession, authID string, wsURL string, proxyURL string, routingFingerprint ...string) (*websocket.Conn, *websocketConnectionCloser, string, string, cliproxyexecutor.ExecutionLifecycle) {
 	if sess == nil {
 		return nil, nil, "", "", nil
 	}
@@ -480,7 +485,7 @@ func detachMismatchedWebsocketSessionConn(sess *codexWebsocketSession, authID st
 	sess.connMu.Lock()
 	defer sess.connMu.Unlock()
 	conn := sess.conn
-	targetMatches := strings.TrimSpace(sess.authID) == strings.TrimSpace(authID) && strings.TrimSpace(sess.wsURL) == strings.TrimSpace(wsURL)
+	targetMatches := websocketSessionTargetMatches(sess, authID, wsURL, proxyURL)
 	fingerprintMismatch := targetMatches && expectedFingerprint != "" && strings.TrimSpace(sess.routingFingerprint) != expectedFingerprint
 	if conn == nil || (targetMatches && !fingerprintMismatch) {
 		return nil, nil, "", "", nil
@@ -672,7 +677,8 @@ func (e *CodexWebsocketsExecutor) ensureUpstreamConnWithRoutingFingerprint(ctx c
 		return conn, closer, resp, err
 	}
 
-	if staleConn, staleCloser, staleAuthID, staleWSURL, staleLifecycle := detachMismatchedWebsocketSessionConn(sess, authID, wsURL, expectedFingerprint); staleConn != nil {
+	proxyURL := executionProxyURL(ctx, e.cfg, auth)
+	if staleConn, staleCloser, staleAuthID, staleWSURL, staleLifecycle := detachMismatchedWebsocketSessionConn(sess, authID, wsURL, proxyURL, expectedFingerprint); staleConn != nil {
 		staleLastEvent := sess.getLastEventType(staleConn)
 		reason := "target_changed"
 		if strings.TrimSpace(staleAuthID) == strings.TrimSpace(authID) && strings.TrimSpace(staleWSURL) == strings.TrimSpace(wsURL) {
@@ -728,6 +734,7 @@ func (e *CodexWebsocketsExecutor) ensureUpstreamConnWithRoutingFingerprint(ctx c
 	sess.multiAgentV2OptimizedConn = nil
 	sess.wsURL = wsURL
 	sess.authID = authID
+	sess.proxyURL = proxyURL
 	sess.readerConn = conn
 	sess.connMu.Unlock()
 

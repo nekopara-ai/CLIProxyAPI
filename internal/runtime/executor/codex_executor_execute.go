@@ -85,7 +85,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	}
 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg, opts.Headers)
 	applyModelHeaderOverrides(httpReq.Header, baseModel)
-	ticketInjected := applyCodexTurnTicket(httpReq.Header, auth, baseModel)
+	ticketInjected := applyCodexTurnTicket(ctx, httpReq.Header, auth, baseModel)
 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
 	requestHeaders := httpReq.Header.Clone()
 	reporter.SetCodexTurnState(helps.CodexRequestTurnState(httpReq.Header, ticketInjected))
@@ -119,7 +119,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		}
 	}()
 	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
-	observeCodexTurnTicketResponse(httpResp.StatusCode, httpResp.Header, requestHeaders, auth, baseModel, ticketInjected)
+	observeCodexTurnTicketResponse(ctx, httpResp.StatusCode, httpResp.Header, requestHeaders, auth, baseModel, ticketInjected)
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		b, _ := io.ReadAll(httpResp.Body)
 		b = applyCodexIdentityConfuseResponsePayload(b, identityState)
@@ -263,7 +263,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	}
 	applyCodexHeaders(httpReq, auth, apiKey, false, e.cfg, opts.Headers)
 	applyModelHeaderOverrides(httpReq.Header, baseModel)
-	ticketInjected := applyCodexTurnTicket(httpReq.Header, auth, baseModel)
+	ticketInjected := applyCodexTurnTicket(ctx, httpReq.Header, auth, baseModel)
 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
 	requestHeaders := httpReq.Header.Clone()
 	reporter.SetCodexTurnState(helps.CodexRequestTurnState(httpReq.Header, ticketInjected))
@@ -297,7 +297,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 		}
 	}()
 	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
-	observeCodexTurnTicketResponse(httpResp.StatusCode, httpResp.Header, requestHeaders, auth, baseModel, ticketInjected)
+	observeCodexTurnTicketResponse(ctx, httpResp.StatusCode, httpResp.Header, requestHeaders, auth, baseModel, ticketInjected)
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		b, _ := io.ReadAll(httpResp.Body)
 		b = applyCodexIdentityConfuseResponsePayload(b, identityState)

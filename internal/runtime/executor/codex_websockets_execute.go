@@ -93,7 +93,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	reporter.SetTranslatedReasoningEffort(clientBody, to.String())
 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg, nativeRequest, opts.Headers)
 	applyModelHeaderOverrides(wsHeaders, baseModel)
-	ticketInjected := applyCodexTurnTicket(wsHeaders, auth, baseModel)
+	ticketInjected := applyCodexTurnTicket(ctx, wsHeaders, auth, baseModel)
 	applyCodexIdentityConfuseHeaders(wsHeaders, &identityState)
 	routingFingerprint := codexWebsocketRoutingFingerprint(wsHeaders, ticketInjected)
 
@@ -144,7 +144,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	var errDial error
 	dialCtx := ctx
 	if cliproxyexecutor.RequiredUpstreamWebsocket(ctx) {
-		conn, closer = existingWebsocketSessionConn(sess, authID, wsURL, routingFingerprint)
+		conn, closer = existingWebsocketSessionConn(sess, authID, wsURL, executionProxyURL(ctx, e.cfg, auth), routingFingerprint)
 		if conn == nil {
 			return resp, cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError()
 		}
@@ -153,7 +153,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		conn, closer, respHS, errDial = e.ensureUpstreamConnWithRoutingFingerprint(dialCtx, auth, sess, authID, wsURL, wsHeaders, routingFingerprint)
 	}
 	recordCodexWebsocketTurnState(reporter, sess, conn, respHS, wsHeaders, ticketInjected)
-	observeCodexWebsocketTurnTicketResponse(respHS, errDial, wsHeaders, auth, baseModel, ticketInjected)
+	observeCodexWebsocketTurnTicketResponse(ctx, respHS, errDial, wsHeaders, auth, baseModel, ticketInjected)
 	if errDial != nil {
 		bodyErr := websocketHandshakeBody(respHS)
 		if respHS != nil {
@@ -226,7 +226,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			// execution session.
 			connRetry, closerRetry, respHSRetry, errDialRetry := e.ensureUpstreamConnWithRoutingFingerprint(ctx, auth, sess, authID, wsURL, wsHeaders, routingFingerprint)
 			recordCodexWebsocketTurnState(reporter, sess, connRetry, respHSRetry, wsHeaders, ticketInjected)
-			observeCodexWebsocketTurnTicketResponse(respHSRetry, errDialRetry, wsHeaders, auth, baseModel, ticketInjected)
+			observeCodexWebsocketTurnTicketResponse(ctx, respHSRetry, errDialRetry, wsHeaders, auth, baseModel, ticketInjected)
 			if errDialRetry == nil && connRetry != nil {
 				previousConn, previousReadCh := conn, readCh
 				conn = connRetry

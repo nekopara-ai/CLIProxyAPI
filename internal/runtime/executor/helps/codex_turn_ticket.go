@@ -644,7 +644,7 @@ func NewCodexTurnTicketInjector(store *CodexTurnTicketStore, cfgProvider func() 
 // for this (auth, model) bucket. It is a no-op unless injection is enabled and the
 // model participates; when no usable ticket exists the client-supplied header is left
 // untouched, matching pass-through behaviour.
-func (i *CodexTurnTicketInjector) Apply(auth *cliproxyauth.Auth, model string, headers http.Header) bool {
+func (i *CodexTurnTicketInjector) Apply(auth *cliproxyauth.Auth, model string, headers http.Header, requestContext ...context.Context) bool {
 	if i == nil || i.store == nil || headers == nil || auth == nil {
 		return false
 	}
@@ -653,6 +653,9 @@ func (i *CodexTurnTicketInjector) Apply(auth *cliproxyauth.Auth, model string, h
 		return false
 	}
 	if effective.AdaptiveInjection {
+		if !codexAdaptiveRequestEgressMatches(auth, effective, requestContext...) {
+			return false
+		}
 		return i.applyAdaptive(auth, model, headers, effective)
 	}
 	ticket := i.store.Lookup(auth.ID, model)
@@ -1473,12 +1476,12 @@ func CurrentCodexTurnTickets() *CodexTurnTicketProcess {
 }
 
 // ApplyCodexTurnTicket injects a stored ticket when the process store is wired.
-func ApplyCodexTurnTicket(auth *cliproxyauth.Auth, model string, headers http.Header) bool {
+func ApplyCodexTurnTicket(auth *cliproxyauth.Auth, model string, headers http.Header, requestContext ...context.Context) bool {
 	process := CurrentCodexTurnTickets()
 	if process == nil || process.Injector == nil {
 		return false
 	}
-	return process.Injector.Apply(auth, model, headers)
+	return process.Injector.Apply(auth, model, headers, requestContext...)
 }
 
 // CodexTurnTicketAllowsExecution is installed into the auth manager as a resolved-model

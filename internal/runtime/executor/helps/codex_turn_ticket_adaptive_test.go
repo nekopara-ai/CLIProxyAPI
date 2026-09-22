@@ -13,6 +13,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
 type codexAdaptiveRoundTripFunc func(*http.Request) (*http.Response, error)
@@ -165,6 +166,38 @@ func TestCodexAdaptiveRoutingCookiesAreAllowlistedAndCaseSafe(t *testing.T) {
 	}
 	if len(got) != 2 || got["theme"] != "dark" || got["__oailb"] != "route-o" {
 		t.Fatalf("case-insensitive cookie replacement = %#v", got)
+	}
+}
+
+func TestCodexAdaptiveRequestProxyIsolatesValidatedBundle(t *testing.T) {
+	auth, effective, process := adaptiveTurnTicketTestConfig()
+	t.Cleanup(func() { ConfigureCodexTurnTickets(nil, nil) })
+	auth.ProxyURL = "http://business.example:8080"
+	model := "gpt-5.5"
+	process.Store.setRoute(auth, model, effective, codexRouteInject, true)
+	ticket := adaptiveRoutingBundle(t, process.Store, auth, model, effective, "business-cookie")
+	other := cliproxyexecutor.WithRequestProxyURL(context.Background(), "http://other.example:8080")
+	request := http.Header{}
+	if ApplyCodexTurnTicket(auth, model, request, other) || len(request) != 0 {
+		t.Fatal("validated business bundle was injected on a different request proxy")
+	}
+	degraded := http.Header{CodexTurnStateHeader: []string{testTurnState(t, time.Now().Unix(), 312)}}
+	routeBefore := process.Store.route(auth, model, effective)
+	ObserveCodexTurnTicketResponse(auth, model, http.StatusOK, degraded, request, false, other)
+	if route := process.Store.route(auth, model, effective); route != routeBefore {
+		t.Fatal("different request proxy changed the canonical business classification")
+	}
+	matching := cliproxyexecutor.WithRequestProxyURL(context.Background(), auth.ProxyURL)
+	if !ApplyCodexTurnTicket(auth, model, request, matching) || request.Get(CodexTurnStateHeader) != ticket.State {
+		t.Fatal("matching request proxy could not use the validated business bundle")
+	}
+	ObserveCodexTurnTicketResponse(auth, model, http.StatusOK, degraded, request, true, other)
+	if process.Store.Lookup(auth.ID, model) == nil {
+		t.Fatal("different request proxy retired the canonical business bundle")
+	}
+	ObserveCodexTurnTicketResponse(auth, model, http.StatusOK, degraded, request, true, matching)
+	if process.Store.Lookup(auth.ID, model) != nil {
+		t.Fatal("matching proxy degradation failed to retire the active bundle")
 	}
 }
 
