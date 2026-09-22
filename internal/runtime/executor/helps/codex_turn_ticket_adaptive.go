@@ -538,7 +538,7 @@ func probeCodexRouting(ctx context.Context, auth *cliproxyauth.Auth, model, egre
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("OpenAI-Beta", "responses=experimental")
-	applyCodexTurnTicketProbeIdentity(req.Header, auth, model)
+	applyCodexTurnTicketProbeIdentity(req.Header, auth, model, effective.Identity)
 	if ticket != nil {
 		req.Header.Set(CodexTurnStateHeader, ticket.State)
 		setCodexRoutingCookies(req.Header, ticket.RoutingCookies, effective)

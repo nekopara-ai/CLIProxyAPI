@@ -405,6 +405,10 @@ type CodexTurnTicketConfig struct {
 	HarvestProxyURLs            []string
 	Models                      []string
 	AuthIDs                     []string
+	// Identity is the outbound Codex client identity the synthetic probes present upstream.
+	// It is resolved from the live config so a configured Version/Originator reaches the
+	// probe just like ordinary traffic.
+	Identity config.CodexIdentity
 }
 
 // CodexTurnTicketDefaults lists the model buckets probed when the operator does not
@@ -433,8 +437,11 @@ func EffectiveCodexTurnTicketConfig(cfg *config.Config) CodexTurnTicketConfig {
 	}
 	if cfg == nil {
 		effective.Models = append([]string(nil), CodexTurnTicketDefaults...)
+		var defaultCfg *config.Config
+		effective.Identity = defaultCfg.ResolveCodexIdentity()
 		return effective
 	}
+	effective.Identity = cfg.ResolveCodexIdentity()
 	effective.BusinessProxyURL = strings.TrimSpace(cfg.ProxyURL)
 	raw := cfg.Codex.TurnTicket
 	effective.Enabled = raw.Enabled
@@ -1150,7 +1157,7 @@ func probeCodexTurnStateWithTimeout(ctx context.Context, auth *cliproxyauth.Auth
 	}
 	probeCtx, cancel := context.WithTimeout(probeCtx, timeout)
 	defer cancel()
-	return probeCodexTurnStateWithClient(probeCtx, auth, token, model, egress)
+	return probeCodexTurnStateWithClient(probeCtx, auth, token, model, egress, effective.Identity)
 }
 
 // chooseCodexTurnTicketHarvestEgress selects one configured egress independently for each
@@ -1202,7 +1209,7 @@ var codexTurnTicketProbeClient = func(ctx context.Context, auth *cliproxyauth.Au
 // model did not mint a healthy ticket right now, and the next cycle may succeed. The
 // response body is discarded without being read, which keeps the probe from paying for
 // generation.
-func probeCodexTurnStateWithClient(ctx context.Context, auth *cliproxyauth.Auth, token, model, proxyURL string) (string, int, error) {
+func probeCodexTurnStateWithClient(ctx context.Context, auth *cliproxyauth.Auth, token, model, proxyURL string, identities ...config.CodexIdentity) (string, int, error) {
 	baseURL := codexTurnTicketBaseURL(auth)
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
 	probeCtx := ctx
@@ -1222,7 +1229,7 @@ func probeCodexTurnStateWithClient(ctx context.Context, auth *cliproxyauth.Auth,
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("OpenAI-Beta", "responses=experimental")
-	applyCodexTurnTicketProbeIdentity(req.Header, auth, model)
+	applyCodexTurnTicketProbeIdentity(req.Header, auth, model, identities...)
 
 	client, errClient := codexTurnTicketProbeClient(probeCtx, auth, proxyURL, 0)
 	if errClient != nil {
@@ -1266,22 +1273,32 @@ func codexTurnTicketBaseURL(auth *cliproxyauth.Auth) string {
 // applyCodexTurnTicketProbeIdentity dresses the probe as the official Codex client. The
 // upstream mints turn-state only for recognized client identities, and the account ID
 // header is required for OAuth credentials that belong to a workspace.
-func applyCodexTurnTicketProbeIdentity(headers http.Header, auth *cliproxyauth.Auth, model string) {
+func applyCodexTurnTicketProbeIdentity(headers http.Header, auth *cliproxyauth.Auth, model string, identities ...config.CodexIdentity) {
 	if headers == nil {
 		return
+	}
+	identity := (*config.Config)(nil).ResolveCodexIdentity()
+	if len(identities) > 0 {
+		identity = identities[0]
 	}
 	// Codex builds newer than the catalog default gate the newest models behind a minimum
 	// version, so an older advertised version silently turns the probe into a rejection
 	// instead of a ticket.
-	version := constant.CodexClientVersion
+	version := identity.Version
+	originator := identity.Originator
 	if codexTurnTicketNeedsMinimumVersion(model) && codexTurnTicketVersionLess(version, codexTurnTicketAstraMinVersion) {
 		version = codexTurnTicketAstraMinVersion
+		originator = constant.CodexOriginator
 	}
 	// Version and User-Agent are written together from one value so the upstream never sees
 	// a client that contradicts itself.
 	headers.Set("Version", version)
-	headers.Set("User-Agent", constant.CodexOriginator+"/"+version+" (Linux 7.0.0-28; x86_64) rust")
-	headers.Set("Originator", constant.CodexOriginator)
+	if identity.UserAgent != "" && version == identity.Version && originator == identity.Originator {
+		headers.Set("User-Agent", identity.UserAgent)
+	} else {
+		headers.Set("User-Agent", constant.CodexUserAgentFor(originator, version))
+	}
+	headers.Set("Originator", originator)
 	headers.Set("session_id", uuid.NewString())
 	if auth != nil && auth.Metadata != nil {
 		if accountID, ok := auth.Metadata["account_id"].(string); ok {
@@ -1293,8 +1310,11 @@ func applyCodexTurnTicketProbeIdentity(headers http.Header, auth *cliproxyauth.A
 }
 
 // codexTurnTicketAstraMinVersion is the oldest Codex client version that the newest
-// models accept, mirroring the version the upstream documents for gpt-6 assets.
-const codexTurnTicketAstraMinVersion = "0.153.4"
+// models accept. Measured against the upstream: gpt-6 family requests carrying a Version
+// header of 0.153.4 or 0.154.0 are rejected with "model is not supported when using Codex
+// with a ChatGPT account" regardless of account entitlement, while 0.155.0 reaches the
+// real entitlement check. Keep this at or above the catalog's minimal_client_version.
+const codexTurnTicketAstraMinVersion = "0.155.0"
 
 // codexTurnTicketVersionLess compares two dotted numeric versions. It returns true only
 // when left is a well-formed version strictly older than right; anything it cannot parse

@@ -1210,7 +1210,7 @@ func TestApplyCodexWebsocketHeadersDefaultsToCurrentResponsesBeta(t *testing.T) 
 	if !strings.HasPrefix(codexUserAgent, codexOriginator+"/") {
 		t.Fatalf("default Codex User-Agent = %s, want prefix %s/", codexUserAgent, codexOriginator)
 	}
-	if got, want := codexUserAgent, "codex_cli_rs/0.153.4 (Linux 7.0.0-28; x86_64) rust"; got != want {
+	if got, want := codexUserAgent, "codex_cli_rs/0.155.0 (Linux 7.0.0-28; x86_64) rust"; got != want {
 		t.Fatalf("default Codex User-Agent = %s, want %s", got, want)
 	}
 	if got := headers.Get("Originator"); got != codexOriginator {
@@ -2046,7 +2046,7 @@ func TestApplyCodexWebsocketHeaders_EmptyAPIKey_OmitsAuthorizationAndOAuthHeader
 }
 
 func TestApplyModelHeaderOverridesFromModelConfig(t *testing.T) {
-	const wantUA = "codex_cli_rs/0.153.4 (Linux 7.0.0-28; x86_64) rust"
+	const wantUA = "codex_cli_rs/0.155.0 (Linux 7.0.0-28; x86_64) rust"
 	req, err := http.NewRequest(http.MethodPost, "https://example.com/responses", nil)
 	if err != nil {
 		t.Fatalf("NewRequest() error = %v", err)
@@ -2070,8 +2070,8 @@ func TestApplyModelHeaderOverridesFromModelConfig(t *testing.T) {
 	if got := req.Header.Get("Originator"); got != "codex_cli_rs" {
 		t.Fatalf("Originator = %q, want codex_cli_rs", got)
 	}
-	if got := req.Header.Get("Version"); got != "0.153.4" {
-		t.Fatalf("Version = %q, want 0.153.4", got)
+	if got := req.Header.Get("Version"); got != "0.155.0" {
+		t.Fatalf("Version = %q, want 0.155.0", got)
 	}
 	if got := codexSessionHeaderValue(req.Header); got != "" {
 		t.Fatalf("Session_id = %q, want no Mac OS session fallback for Linux User-Agent", got)
@@ -2104,9 +2104,9 @@ func TestApplyModelHeaderOverridesMigratesLegacyCodexIdentity(t *testing.T) {
 	applyModelHeaderOverrides(headers, "test-legacy-codex-model")
 
 	for key, want := range map[string]string{
-		"User-Agent":    "codex_cli_rs/0.153.4 (Linux 7.0.0-28; x86_64) rust",
+		"User-Agent":    "codex_cli_rs/0.155.0 (Linux 7.0.0-28; x86_64) rust",
 		"Originator":    "codex_cli_rs",
-		"Version":       "0.153.4",
+		"Version":       "0.155.0",
 		"Session_id":    "existing-session",
 		"X-Test-Header": "preserved-value",
 	} {

@@ -41,6 +41,9 @@ func (cfg *Config) SanitizeCodexHeaderDefaults() {
 	}
 	cfg.CodexHeaderDefaults.UserAgent = strings.TrimSpace(cfg.CodexHeaderDefaults.UserAgent)
 	cfg.CodexHeaderDefaults.BetaFeatures = strings.TrimSpace(cfg.CodexHeaderDefaults.BetaFeatures)
+	cfg.Codex.ClientIdentity.Version = strings.TrimSpace(cfg.Codex.ClientIdentity.Version)
+	cfg.Codex.ClientIdentity.Originator = strings.TrimSpace(cfg.Codex.ClientIdentity.Originator)
+	cfg.Codex.ClientIdentity.UserAgent = strings.TrimSpace(cfg.Codex.ClientIdentity.UserAgent)
 }
 
 // SanitizeClaudeHeaderDefaults trims surrounding whitespace from the

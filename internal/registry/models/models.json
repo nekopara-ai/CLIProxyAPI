@@ -2659,9 +2659,9 @@
       },
       "config": {
         "override_header": {
-          "user-agent": "codex_cli_rs/0.153.4 (Linux 7.0.0-28; x86_64) rust",
+          "user-agent": "codex_cli_rs/0.155.0 (Linux 7.0.0-28; x86_64) rust",
           "originator": "codex_cli_rs",
-          "version": "0.153.4"
+          "version": "0.155.0"
         }
       },
       "supportedInputModalities": [
@@ -2938,9 +2938,9 @@
       },
       "config": {
         "override_header": {
-          "user-agent": "codex_cli_rs/0.153.4 (Linux 7.0.0-28; x86_64) rust",
+          "user-agent": "codex_cli_rs/0.155.0 (Linux 7.0.0-28; x86_64) rust",
           "originator": "codex_cli_rs",
-          "version": "0.153.4"
+          "version": "0.155.0"
         }
       },
       "supportedInputModalities": [
@@ -3217,9 +3217,9 @@
       },
       "config": {
         "override_header": {
-          "user-agent": "codex_cli_rs/0.153.4 (Linux 7.0.0-28; x86_64) rust",
+          "user-agent": "codex_cli_rs/0.155.0 (Linux 7.0.0-28; x86_64) rust",
           "originator": "codex_cli_rs",
-          "version": "0.153.4"
+          "version": "0.155.0"
         }
       },
       "supportedInputModalities": [
@@ -3496,9 +3496,9 @@
       },
       "config": {
         "override_header": {
-          "user-agent": "codex_cli_rs/0.153.4 (Linux 7.0.0-28; x86_64) rust",
+          "user-agent": "codex_cli_rs/0.155.0 (Linux 7.0.0-28; x86_64) rust",
           "originator": "codex_cli_rs",
-          "version": "0.153.4"
+          "version": "0.155.0"
         }
       },
       "supportedInputModalities": [

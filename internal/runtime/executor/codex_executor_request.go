@@ -27,10 +27,13 @@ import (
 const (
 	codexVersion               = constant.CodexClientVersion
 	codexOriginator            = constant.CodexOriginator
-	codexUserAgent             = constant.CodexUserAgent
 	codexDefaultImageToolModel = "gpt-image-2"
 	codexResponsesLiteHeader   = "X-OpenAI-Internal-Codex-Responses-Lite"
 )
+
+// codexUserAgent is the built-in default identity, kept as a variable so it can mirror the
+// canonical helper without duplicating the device string.
+var codexUserAgent = constant.CodexUserAgent
 
 var dataTag = []byte("data:")
 
@@ -427,7 +430,11 @@ func harvestCodexTurnTicket(headers http.Header, auth *cliproxyauth.Auth, model 
 }
 
 // applyModelHeaderOverrides forces models.json config.override_header onto upstream headers.
-func applyModelHeaderOverrides(headers http.Header, modelName string) {
+// When a config is supplied and the override carries a catalog-managed Codex identity, the
+// identity fields are rewritten from that config so a configured Version/Originator reaches
+// upstream instead of the catalog's pinned snapshot. Bespoke per-model identities are kept,
+// as is an explicit per-credential cloaking opt-out.
+func applyModelHeaderOverrides(headers http.Header, modelName string, identityOpts ...codexOverrideIdentity) {
 	if headers == nil {
 		return
 	}
@@ -435,12 +442,45 @@ func applyModelHeaderOverrides(headers http.Header, modelName string) {
 	if len(overrides) == 0 {
 		return
 	}
+	var identity config.CodexIdentity
+	managed := false
+	if len(identityOpts) > 0 && identityOpts[0].cfg != nil && !isCodexCloakingDisabled(identityOpts[0].cfg, identityOpts[0].auth) {
+		identity = identityOpts[0].cfg.ResolveCodexIdentity()
+		managed = isManagedCodexIdentity(overrides)
+	}
 	for key, value := range overrides {
 		headers.Set(key, value)
+	}
+	if managed {
+		headers.Set("User-Agent", identity.UserAgent)
+		headers.Set("Originator", identity.Originator)
+		headers.Set("Version", identity.Version)
 	}
 	if strings.Contains(headers.Get("User-Agent"), "Mac OS") && codexSessionHeaderValue(headers) == "" {
 		headers.Set("Session_id", uuid.NewString())
 	}
+}
+
+// codexOverrideIdentity bundles the live config with the credential under request so the
+// catalog identity rewrite can honor a per-credential cloaking opt-out.
+type codexOverrideIdentity struct {
+	cfg  *config.Config
+	auth *cliproxyauth.Auth
+}
+
+// legacyCodexTUIOriginator is the upstream macOS TUI originator the catalog still carries
+// for a few models; it is a managed Codex identity, just an older shape.
+const legacyCodexTUIOriginator = "codex-tui"
+
+// isManagedCodexIdentity reports whether a catalog override carries one of the Codex client
+// identities this project manages, rather than a bespoke per-model identity.
+func isManagedCodexIdentity(overrides map[string]string) bool {
+	originator := strings.TrimSpace(overrides["originator"])
+	if originator == constant.CodexOriginator || originator == legacyCodexTUIOriginator {
+		return true
+	}
+	userAgent := strings.TrimSpace(overrides["user-agent"])
+	return strings.HasPrefix(userAgent, constant.CodexOriginator+"/") || strings.HasPrefix(userAgent, legacyCodexTUIOriginator+"/")
 }
 
 // applyCodexDirectImageHeaders sets Codex upstream headers for direct /images/* calls.
@@ -478,7 +518,7 @@ func applyCodexHeadersFromSources(r *http.Request, auth *cliproxyauth.Auth, toke
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Openai-Internal-Codex-Responses-Lite", "")
 
 	cfgUserAgent, _ := codexHeaderDefaults(cfg, auth)
-	ensureHeaderWithConfigPrecedence(r.Header, ginHeaders, "User-Agent", cfgUserAgent, codexUserAgent)
+	ensureHeaderWithConfigPrecedence(r.Header, ginHeaders, "User-Agent", cfgUserAgent, codexIdentityFromConfig(cfg).UserAgent)
 
 	if stream {
 		r.Header.Set("Accept", "text/event-stream")
@@ -490,7 +530,7 @@ func applyCodexHeadersFromSources(r *http.Request, auth *cliproxyauth.Auth, toke
 	if originator := strings.TrimSpace(ginHeaders.Get("Originator")); originator != "" {
 		r.Header.Set("Originator", originator)
 	} else if !isAPIKey {
-		r.Header.Set("Originator", codexOriginator)
+		r.Header.Set("Originator", codexIdentityFromConfig(cfg).Originator)
 	}
 	if !isAPIKey {
 		if auth != nil && auth.Metadata != nil {
@@ -550,9 +590,16 @@ func applyCodexCloakingHeaders(headers http.Header, cfg *config.Config, auth *cl
 	if headers == nil || cfg == nil || isCodexCloakingDisabled(cfg, auth) {
 		return
 	}
-	headers.Set("User-Agent", codexUserAgent)
-	headers.Set("Originator", codexOriginator)
-	headers.Set("Version", codexVersion)
+	identity := codexIdentityFromConfig(cfg)
+	headers.Set("User-Agent", identity.UserAgent)
+	headers.Set("Originator", identity.Originator)
+	headers.Set("Version", identity.Version)
+}
+
+// codexIdentityFromConfig resolves the outbound Codex identity from the live config, falling
+// back to the built-in defaults when no configuration is available.
+func codexIdentityFromConfig(cfg *config.Config) config.CodexIdentity {
+	return cfg.ResolveCodexIdentity()
 }
 
 func normalizeCodexInstructions(body []byte, nativeRequest ...bool) []byte {

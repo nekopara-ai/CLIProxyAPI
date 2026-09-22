@@ -95,7 +95,7 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 	if isAPIKey {
 		ensureHeaderWithPriority(headers, ginHeaders, "User-Agent", "", "")
 	} else {
-		ensureHeaderWithConfigPrecedence(headers, ginHeaders, "User-Agent", cfgUserAgent, codexUserAgent)
+		ensureHeaderWithConfigPrecedence(headers, ginHeaders, "User-Agent", cfgUserAgent, codexIdentityFromConfig(cfg).UserAgent)
 	}
 
 	betaHeader := strings.TrimSpace(headers.Get("OpenAI-Beta"))
@@ -125,7 +125,7 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 	if originator := strings.TrimSpace(ginHeaders.Get("Originator")); originator != "" {
 		headers.Set("Originator", originator)
 	} else if !isAPIKey {
-		headers.Set("Originator", codexOriginator)
+		headers.Set("Originator", codexIdentityFromConfig(cfg).Originator)
 	}
 	if !isAPIKey {
 		if auth != nil && auth.Metadata != nil {

@@ -183,6 +183,11 @@ type CodexConfig struct {
 	IdentityConfuse bool `yaml:"identity-confuse" json:"identity-confuse"`
 	// DisableCodexCloaking disables forcing the official Codex User-Agent, Originator, and Version headers on HTTP/SSE and WebSocket requests.
 	DisableCodexCloaking bool `yaml:"disable-codex-cloaking" json:"disable-codex-cloaking"`
+	// ClientIdentity overrides the Codex client identity (Version/Originator/User-Agent) the
+	// proxy presents upstream when cloaking is active. Leave empty to use the built-in
+	// defaults. Because it is read from the live config, changing it only needs a config
+	// reload - no rebuild or restart.
+	ClientIdentity CodexClientIdentity `yaml:"client-identity" json:"client-identity"`
 	// StreamBootstrapBuffering holds back the frames that arrive before generation starts, none of
 	// which the client has seen anything from - the handshake (response.created, response.in_progress,
 	// the websocket metadata frames), keepalive heartbeats, and the *.added announcements of an item
@@ -223,6 +228,18 @@ type CodexConfig struct {
 	// replay a healthy token instead of the degraded state the upstream would otherwise
 	// assign. Disabled by default.
 	TurnTicket CodexTurnTicketSettings `yaml:"turn-ticket" json:"turn-ticket"`
+}
+
+// CodexClientIdentity overrides the outbound Codex client identity. Empty fields fall
+// back to the built-in defaults (constant.CodexClientVersion / CodexOriginator / CodexUserAgent).
+type CodexClientIdentity struct {
+	// Version is the value sent in the Version header and embedded in the default User-Agent.
+	Version string `yaml:"version" json:"version"`
+	// Originator is the value sent in the Originator header and embedded in the default User-Agent.
+	Originator string `yaml:"originator" json:"originator"`
+	// UserAgent overrides the full User-Agent. When empty it is derived from Originator/Version
+	// so the identity stays self-consistent.
+	UserAgent string `yaml:"user-agent" json:"user-agent"`
 }
 
 // CodexTurnTicketSettings configures the Codex turn-state ticket harvester.

@@ -275,6 +275,16 @@ codex:
   identity-confuse: false
   # Disable forcing the official Codex User-Agent, Originator, and Version headers on HTTP/SSE and WebSocket requests.
   disable-codex-cloaking: false
+  # Optional override for the outbound Codex client identity presented upstream when
+  # cloaking is active (Version/Originator/User-Agent headers plus any catalog-managed
+  # per-model identity). Read from the live config, so raising the version after an
+  # upstream model gate only needs a config reload - no rebuild or restart.
+  # Empty fields inherit the built-in defaults; when user-agent is empty it is derived
+  # from originator/version to keep the identity self-consistent.
+  # client-identity:
+  #   version: "0.155.0"
+  #   originator: "codex_cli_rs"
+  #   user-agent: "codex_cli_rs/0.155.0 (Linux 7.0.0-28; x86_64) rust"
   # Hold back the frames that carry nothing the client has seen - the handshake (response.created,
   # response.in_progress, the websocket metadata frames), keepalive heartbeats, and the *.added
   # announcements of an item or part that is still empty - until the upstream emits its first

@@ -45,9 +45,10 @@ const (
 	codexModelsPath          = "/models"
 	defaultClientVersion     = constant.CodexClientVersion
 	defaultCodexOriginator   = constant.CodexOriginator
-	defaultCodexUserAgent    = constant.CodexUserAgent
 	accessTokenRefreshLeeway = 30 * time.Second
 )
+
+var defaultCodexUserAgent = constant.CodexUserAgent
 
 func init() {
 	logging.SetupBaseLogger()

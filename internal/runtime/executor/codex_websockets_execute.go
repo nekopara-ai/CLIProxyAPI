@@ -92,7 +92,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	}
 	reporter.SetTranslatedReasoningEffort(clientBody, to.String())
 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg, nativeRequest, opts.Headers)
-	applyModelHeaderOverrides(wsHeaders, baseModel)
+	applyModelHeaderOverrides(wsHeaders, baseModel, codexOverrideIdentity{cfg: e.cfg, auth: auth})
 	ticketInjected := applyCodexTurnTicket(ctx, wsHeaders, auth, baseModel)
 	applyCodexIdentityConfuseHeaders(wsHeaders, &identityState)
 	routingFingerprint := codexWebsocketRoutingFingerprint(wsHeaders, ticketInjected)

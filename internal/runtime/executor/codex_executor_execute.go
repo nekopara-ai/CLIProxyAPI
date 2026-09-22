@@ -84,7 +84,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		return resp, err
 	}
 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg, opts.Headers)
-	applyModelHeaderOverrides(httpReq.Header, baseModel)
+	applyModelHeaderOverrides(httpReq.Header, baseModel, codexOverrideIdentity{cfg: e.cfg, auth: auth})
 	ticketInjected := applyCodexTurnTicket(ctx, httpReq.Header, auth, baseModel)
 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
 	requestHeaders := httpReq.Header.Clone()
@@ -262,7 +262,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 		return resp, err
 	}
 	applyCodexHeaders(httpReq, auth, apiKey, false, e.cfg, opts.Headers)
-	applyModelHeaderOverrides(httpReq.Header, baseModel)
+	applyModelHeaderOverrides(httpReq.Header, baseModel, codexOverrideIdentity{cfg: e.cfg, auth: auth})
 	ticketInjected := applyCodexTurnTicket(ctx, httpReq.Header, auth, baseModel)
 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
 	requestHeaders := httpReq.Header.Clone()
