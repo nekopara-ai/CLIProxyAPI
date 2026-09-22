@@ -380,7 +380,7 @@ codex:
     #     username: "user"
     #     credential: "secret"
   # Harvest and replay upstream-minted X-Codex-Turn-State tokens.
-  # Experimental turn-state routing: personal accounts use 292, Team/Business use 332.
+  # Experimental turn-state routing: personal and Team lengths are configured separately.
   # Per-auth JSON codex_turn_ticket_plan: auto|pro|team overrides token plan hints;
   # imported opaque access tokens can select team without ID/refresh tokens. Auto uses
   # only claims matching account_id, otherwise target-length below remains the fallback.
@@ -392,7 +392,7 @@ codex:
     # When true, adaptive direct routes need no captured ticket; degraded routes require
     # a validated routing-cookie+ticket bundle before they can be served.
     enabled: false
-    # Replay cached personal (292) or Team (332) tickets on outbound requests. Defaults
+    # Replay cached personal or Team tickets on outbound requests. Defaults
     # to true when omitted. Set false to keep probing, passive capture, and fail-closed
     # scheduling while preserving client-supplied turn-state headers. Hot-reloadable;
     # existing WebSocket handshakes are unchanged until the connection is replaced.
@@ -406,7 +406,7 @@ codex:
     #
     # Adaptive mode classifies a gated request with a synthetic business-egress probe:
     #   - natural healthy probe -> passthrough (no injection required)
-    #   - explicitly degraded probe (personal 312 / team 356) -> injection enabled for
+    #   - explicitly degraded probe (configured personal/team degraded lengths) -> injection enabled for
     #     the auth+model bundle
     #   - transport errors such as 401/403/429/timeouts -> no mode toggle
     # Injection state is isolated per auth+model, never per router. Cookie names are
@@ -416,7 +416,7 @@ codex:
     #
     # A validated bundle is activated under a short freshness lease. The lease is capped
     # at routing-cookie-ttl-seconds, renewed routing-refresh-before-seconds early, and
-    # invalidated on an explicit degraded 312/356. It is a local routing lease, not the upstream token's own
+    # invalidated on an explicit degraded configured degraded lengths. It is a local routing lease, not the upstream token's own
     # TTL. Unknown bundles are not retained across a restart.
     adaptive-injection: true
     # Maximum freshness lease for an adaptive-mode routing-cookie bundle, in seconds.
@@ -440,7 +440,32 @@ codex:
     # pass-through behavior, which may allow a 312 degraded turn state onto live traffic.
     fail-closed: true
     # Fallback length for accounts without an explicit policy or matching token hint.
-    target-length: 292
+    target-length: 780
+    # Four independent lengths. Recognized plans do not use target-length.
+    personal-healthy-length: 780
+    personal-degraded-length: 312
+    team-healthy-length: 780
+    team-degraded-length: 312
+    # Pause only this auth+model until direct recovery or usable injection.
+    # false: continue traffic while background recovery runs. Omitted: inherit fail-closed.
+    block-on-degraded: true
+    # Unknown/missing state (or unusable HTTP 200): retain, harvest, or block.
+    # block pauses admission independently of fail-closed; probing continues.
+    unknown-state-action: retain
+    # Non-200/transport failures may trigger acquisition. Rejection backoff takes priority.
+    harvest-on-business-error: false
+    # Accept a reissued healthy response but cache only the submitted, tested bundle.
+    # Core default is same-or-empty; healthy-or-empty also accepts a new healthy ticket.
+    validation-ticket-policy: healthy-or-empty
+    require-complete-response: true
+    require-model-match: true
+    routing-expiry-margin-seconds: 5
+    legacy-expiry-margin-seconds: 30
+    routing-cookie-names: [__cflb, __oailb]
+    # Explicit [] disables a status list; null/omitted uses defaults.
+    reject-status-codes: [401, 403, 429]
+    # Takes priority only during acquisition; other phases use reject-status-codes.
+    harvest-reject-status-codes: [403]
     # How long a captured token may be replayed, measured from the token's own issue time.
     ttl-seconds: 3600
     # Probe again when a ticket is this close to expiry.

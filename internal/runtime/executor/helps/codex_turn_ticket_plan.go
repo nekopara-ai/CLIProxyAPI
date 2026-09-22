@@ -22,7 +22,11 @@ type CodexTurnTicketPlan struct {
 
 // ResolveCodexTurnTicketPlan never infers a subscription from a filename or state
 // length. JWT claims are routing hints only and must refer to the selected workspace.
-func ResolveCodexTurnTicketPlan(auth *cliproxyauth.Auth, fallback int) CodexTurnTicketPlan {
+func ResolveCodexTurnTicketPlan(auth *cliproxyauth.Auth, fallback int, configs ...CodexTurnTicketConfig) CodexTurnTicketPlan {
+	effective := EffectiveCodexTurnTicketConfig(nil)
+	if len(configs) > 0 {
+		effective = configs[0]
+	}
 	p := CodexTurnTicketPlan{Plan: "default", Source: "config", TargetLength: fallback}
 	if auth == nil || auth.Metadata == nil {
 		return p
@@ -34,10 +38,10 @@ func ResolveCodexTurnTicketPlan(auth *cliproxyauth.Auth, fallback int) CodexTurn
 			return CodexTurnTicketPlan{Plan: "invalid", Source: "manual", TargetLength: 1}
 		}
 		if mode == "pro" {
-			return CodexTurnTicketPlan{Plan: "pro", Source: "manual", TargetLength: 292}
+			return CodexTurnTicketPlan{Plan: "pro", Source: "manual", TargetLength: effective.PersonalHealthyLength}
 		}
 		if mode == "team" {
-			return CodexTurnTicketPlan{Plan: "team", Source: "manual", TargetLength: 332}
+			return CodexTurnTicketPlan{Plan: "team", Source: "manual", TargetLength: effective.TeamHealthyLength}
 		}
 	}
 	account, _ := auth.Metadata["account_id"].(string)
@@ -62,23 +66,23 @@ func ResolveCodexTurnTicketPlan(auth *cliproxyauth.Auth, fallback int) CodexTurn
 		}
 		switch strings.ToLower(strings.TrimSpace(claims.Auth.Plan)) {
 		case "team", "business":
-			return CodexTurnTicketPlan{Plan: "team", Source: field, TargetLength: 332}
+			return CodexTurnTicketPlan{Plan: "team", Source: field, TargetLength: effective.TeamHealthyLength}
 		case "free", "plus", "pro":
-			return CodexTurnTicketPlan{Plan: "pro", Source: field, TargetLength: 292}
+			return CodexTurnTicketPlan{Plan: "pro", Source: field, TargetLength: effective.PersonalHealthyLength}
 		}
 	}
 	return p
 }
 
 func codexTurnTicketTargetLength(auth *cliproxyauth.Auth, effective CodexTurnTicketConfig) int {
-	return ResolveCodexTurnTicketPlan(auth, effective.TargetLength).TargetLength
+	return ResolveCodexTurnTicketPlan(auth, effective.TargetLength, effective).TargetLength
 }
 
-func codexTurnTicketDegradedLength(target int) int {
-	if target == 332 {
-		return 356
+func codexTurnTicketDegradedLength(auth *cliproxyauth.Auth, effective CodexTurnTicketConfig) int {
+	if ResolveCodexTurnTicketPlan(auth, effective.TargetLength, effective).Plan == "team" {
+		return effective.TeamDegradedLength
 	}
-	return 312
+	return effective.PersonalDegradedLength
 }
 
 // InvalidateCodexTurnTicketsForAuth runs after a persisted manual policy change.
@@ -166,7 +170,7 @@ func (h *CodexTurnTicketHarvester) policyHealthyCount(effective CodexTurnTicketC
 			if ticket.valid(now, length) {
 				count++
 			}
-		} else if ticket.valid(now, effective.TargetLength) || ticket.valid(now, 332) {
+		} else if ticket.valid(now, effective.TargetLength) || ticket.valid(now, effective.PersonalHealthyLength) || ticket.valid(now, effective.TeamHealthyLength) {
 			count++
 		}
 	}

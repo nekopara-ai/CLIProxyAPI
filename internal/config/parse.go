@@ -45,6 +45,9 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 		return nil, fmt.Errorf("parse config payload: %w", err)
 	}
 
+	if errValidate := cfg.Codex.TurnTicket.Validate(); errValidate != nil {
+		return nil, errValidate
+	}
 	cfg.CredentialConcurrency = cfg.CredentialConcurrency.WithDefaults()
 	if errValidate := cfg.CredentialInFlight.Validate(); errValidate != nil {
 		return nil, errValidate

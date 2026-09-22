@@ -9,7 +9,32 @@ codex:
     injection-enabled: true
     adaptive-injection: true
     fail-closed: true
-    target-length: 292
+    target-length: 780
+    # Four independent lengths. Recognized plans do not use target-length.
+    personal-healthy-length: 780
+    personal-degraded-length: 312
+    team-healthy-length: 780
+    team-degraded-length: 312
+    # Pause only this auth+model until direct recovery or usable injection.
+    # false: continue traffic while background recovery runs. Omitted: inherit fail-closed.
+    block-on-degraded: true
+    # Unknown/missing state (or unusable HTTP 200): retain, harvest, or block.
+    # block pauses admission independently of fail-closed; probing continues.
+    unknown-state-action: retain
+    # Non-200/transport failures may trigger acquisition. Rejection backoff takes priority.
+    harvest-on-business-error: false
+    # Accept a reissued healthy response but cache only the submitted, tested bundle.
+    # Core default is same-or-empty; healthy-or-empty also accepts a new healthy ticket.
+    validation-ticket-policy: healthy-or-empty
+    require-complete-response: true
+    require-model-match: true
+    routing-expiry-margin-seconds: 5
+    legacy-expiry-margin-seconds: 30
+    routing-cookie-names: [__cflb, __oailb]
+    # Explicit [] disables a status list; null/omitted uses defaults.
+    reject-status-codes: [401, 403, 429]
+    # Takes priority only during acquisition; other phases use reject-status-codes.
+    harvest-reject-status-codes: [403]
     models:
       - gpt-5.6-sol
       - gpt-6-astra

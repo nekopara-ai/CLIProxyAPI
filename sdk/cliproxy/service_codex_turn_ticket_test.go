@@ -18,6 +18,7 @@ import (
 // the feature still disabled, which is the state operators start from.
 func turnTicketServiceConfig() *config.Config {
 	cfg := &config.Config{}
+	cfg.Codex.TurnTicket.TargetLength = 292
 	adaptive := false
 	cfg.Codex.TurnTicket.AdaptiveInjection = &adaptive
 	cfg.Codex.TurnTicket.Models = []string{"gpt-5.5"}

@@ -328,7 +328,10 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 		return
 	}
 	coreauth.NormalizeCredentialMetadata(targetAuth.Metadata)
-	oldTicketPlan := helps.ResolveCodexTurnTicketPlan(targetAuth, 292)
+	h.mu.Lock()
+	ticketPolicy := helps.EffectiveCodexTurnTicketConfig(h.cfg)
+	h.mu.Unlock()
+	oldTicketPlan := helps.ResolveCodexTurnTicketPlan(targetAuth, ticketPolicy.TargetLength, ticketPolicy)
 
 	changed := false
 	touchedRoots := make(map[string]struct{}, len(req))
@@ -403,7 +406,7 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update auth: %v", err)})
 		return
 	}
-	if oldTicketPlan != helps.ResolveCodexTurnTicketPlan(targetAuth, 292) {
+	if oldTicketPlan != helps.ResolveCodexTurnTicketPlan(targetAuth, ticketPolicy.TargetLength, ticketPolicy) {
 		helps.InvalidateCodexTurnTicketsForAuth(targetAuth.ID)
 	}
 	if h.postAuthPersistHook != nil {

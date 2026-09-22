@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -28,6 +29,7 @@ type CodexRoutingCookie struct {
 
 const (
 	codexRouteUnknown = "unknown"
+	codexRouteBlocked = "blocked"
 	codexRouteDirect  = "direct"
 	codexRouteInject  = "inject"
 )
@@ -45,7 +47,7 @@ func codexRoutingContext(auth *cliproxyauth.Auth, effective CodexTurnTicketConfi
 		return ""
 	}
 	account, _ := auth.Metadata["account_id"].(string)
-	source := auth.ID + "\x00" + account + "\x00" + codexTurnTicketBaseURL(auth) + "\x00" + codexBusinessEgress(auth, effective) + fmt.Sprintf("\x00%d", codexTurnTicketTargetLength(auth, effective))
+	source := auth.ID + "\x00" + account + "\x00" + codexTurnTicketBaseURL(auth) + "\x00" + codexBusinessEgress(auth, effective) + fmt.Sprintf("\x00%d\x00%s", codexTurnTicketTargetLength(auth, effective), codexRoutingPolicyContext(auth, effective))
 	sum := sha256.Sum256([]byte(source))
 	return hex.EncodeToString(sum[:])
 }
@@ -128,6 +130,10 @@ func (s *CodexTurnTicketStore) publishAdaptive(auth *cliproxyauth.Auth, model st
 // injected, the outbound bundle must still be the current one; a late response from an
 // older request cannot invalidate a freshly renewed bundle.
 func (s *CodexTurnTicketStore) markAdaptiveDegraded(auth *cliproxyauth.Auth, model string, effective CodexTurnTicketConfig, request http.Header, injected bool) bool {
+	return s.markAdaptiveResponseMode(auth, model, effective, request, injected, codexRouteInject)
+}
+
+func (s *CodexTurnTicketStore) markAdaptiveResponseMode(auth *cliproxyauth.Auth, model string, effective CodexTurnTicketConfig, request http.Header, injected bool, mode string) bool {
 	key := codexTurnTicketKey(auth.ID, model)
 	contextID := codexRoutingContext(auth, effective)
 	s.mu.Lock()
@@ -139,10 +145,10 @@ func (s *CodexTurnTicketStore) markAdaptiveDegraded(auth *cliproxyauth.Auth, mod
 			return false
 		}
 	}
-	s.routes[key] = codexTurnTicketRoute{Mode: codexRouteInject, Context: contextID, Generation: current.Generation + 1}
+	s.routes[key] = codexTurnTicketRoute{Mode: mode, Context: contextID, Generation: current.Generation + 1}
 	// A clean request may have started before activation and completed afterward.
 	// Its degradation says nothing about the validated bundle it never used.
-	if injected || current.Mode != codexRouteInject {
+	if injected || current.Mode != codexRouteInject || mode != codexRouteInject {
 		delete(s.tickets, key)
 	}
 	if err := s.persistLocked(); err != nil {
@@ -196,11 +202,11 @@ func (t *CodexTurnTicket) routingValid(auth *cliproxyauth.Auth, effective CodexT
 		return false
 	}
 	until := minTime(t.RoutingExpiresAt, t.RoutingCapturedAt.Add(time.Duration(effective.RoutingCookieTTLSeconds)*time.Second))
-	if !until.After(now.Add(5 * time.Second)) {
+	if !until.After(now.Add(time.Duration(effective.RoutingExpiryMarginSeconds) * time.Second)) {
 		return false
 	}
 	for _, c := range t.RoutingCookies {
-		if !codexRoutingCookieName(c.Name) || c.Value == "" || !c.ExpiresAt.After(now.Add(5*time.Second)) || (&http.Cookie{Name: c.Name, Value: c.Value}).Valid() != nil {
+		if !codexRoutingCookieName(c.Name, effective) || c.Value == "" || !c.ExpiresAt.After(now.Add(time.Duration(effective.RoutingExpiryMarginSeconds)*time.Second)) || (&http.Cookie{Name: c.Name, Value: c.Value}).Valid() != nil {
 			return false
 		}
 	}
@@ -214,13 +220,18 @@ func minTime(a, b time.Time) time.Time {
 	return b
 }
 
-func codexRoutingCookieName(name string) bool { return name == "__cflb" || name == "__oailb" }
+func codexRoutingCookieName(name string, configs ...CodexTurnTicketConfig) bool {
+	if len(configs) > 0 {
+		return slices.Contains(configs[0].RoutingCookieNames, name)
+	}
+	return name == "__cflb" || name == "__oailb"
+}
 
 func codexRoutingCookies(header http.Header, now time.Time, effective CodexTurnTicketConfig) []CodexRoutingCookie {
 	response := &http.Response{Header: header}
 	byName := make(map[string]CodexRoutingCookie)
 	for _, c := range response.Cookies() {
-		if !codexRoutingCookieName(c.Name) {
+		if !codexRoutingCookieName(c.Name, effective) {
 			continue
 		}
 		if c.Value == "" || c.MaxAge < 0 {
@@ -250,7 +261,7 @@ func codexRoutingCookies(header http.Header, now time.Time, effective CodexTurnT
 		}
 	}
 	var cookies []CodexRoutingCookie
-	for _, name := range []string{"__cflb", "__oailb"} {
+	for _, name := range effective.RoutingCookieNames {
 		if c, ok := byName[name]; ok {
 			cookies = append(cookies, c)
 		}
@@ -258,10 +269,14 @@ func codexRoutingCookies(header http.Header, now time.Time, effective CodexTurnT
 	return cookies
 }
 
-func setCodexRoutingCookies(headers http.Header, cookies []CodexRoutingCookie) {
+func setCodexRoutingCookies(headers http.Header, cookies []CodexRoutingCookie, configs ...CodexTurnTicketConfig) {
+	effective := EffectiveCodexTurnTicketConfig(nil)
+	if len(configs) > 0 {
+		effective = configs[0]
+	}
 	var keep []*http.Cookie
 	for _, c := range codexRequestCookies(headers) {
-		if !codexRoutingCookieName(c.Name) {
+		if !codexRoutingCookieName(c.Name, effective) {
 			keep = append(keep, c)
 		}
 	}
@@ -323,7 +338,7 @@ func (i *CodexTurnTicketInjector) applyAdaptive(auth *cliproxyauth.Auth, model s
 		}
 	}
 	headers.Set(CodexTurnStateHeader, ticket.State)
-	setCodexRoutingCookies(headers, ticket.RoutingCookies)
+	setCodexRoutingCookies(headers, ticket.RoutingCookies, effective)
 	return true
 }
 
@@ -420,7 +435,7 @@ func (h *CodexTurnTicketHarvester) observeAdaptive(auth *cliproxyauth.Auth, mode
 	}
 	state := ExtractCodexTurnState(response)
 	target := codexTurnTicketTargetLength(auth, effective)
-	if IsHealthyCodexTurnState(state, codexTurnTicketDegradedLength(target)) {
+	if IsHealthyCodexTurnState(state, codexTurnTicketDegradedLength(auth, effective)) {
 		if !h.store.markAdaptiveDegraded(auth, model, effective, request, injected) {
 			return
 		}
@@ -428,7 +443,20 @@ func (h *CodexTurnTicketHarvester) observeAdaptive(auth *cliproxyauth.Auth, mode
 		h.wakeAdaptive(auth.ID, model)
 		return
 	}
-	if IsHealthyCodexTurnState(state, target) && !injected && codexHeaderValue(request, CodexTurnStateHeader) == "" && !codexHasRoutingCookie(request) {
+	if !IsHealthyCodexTurnState(state, target) {
+		mode := ""
+		switch effective.UnknownStateAction {
+		case "block":
+			mode = codexRouteBlocked
+		case "harvest":
+			mode = codexRouteInject
+		}
+		if mode != "" && h.store.markAdaptiveResponseMode(auth, model, effective, request, injected, mode) {
+			h.wakeAdaptive(auth.ID, model)
+		}
+		return
+	}
+	if IsHealthyCodexTurnState(state, target) && !injected && codexHeaderValue(request, CodexTurnStateHeader) == "" && !codexHasRoutingCookie(request, effective) {
 		route, ok := h.store.markAdaptiveDirectFromResponse(auth, model, effective)
 		if !ok {
 			return
@@ -440,9 +468,9 @@ func (h *CodexTurnTicketHarvester) observeAdaptive(auth *cliproxyauth.Auth, mode
 	// extend the fixed routing lease. Only a clean business probe may turn injection off.
 }
 
-func codexHasRoutingCookie(headers http.Header) bool {
+func codexHasRoutingCookie(headers http.Header, effective CodexTurnTicketConfig) bool {
 	for _, c := range codexRequestCookies(headers) {
-		if codexRoutingCookieName(c.Name) {
+		if codexRoutingCookieName(c.Name, effective) {
 			return true
 		}
 	}
@@ -513,7 +541,7 @@ func probeCodexRouting(ctx context.Context, auth *cliproxyauth.Auth, model, egre
 	applyCodexTurnTicketProbeIdentity(req.Header, auth, model)
 	if ticket != nil {
 		req.Header.Set(CodexTurnStateHeader, ticket.State)
-		setCodexRoutingCookies(req.Header, ticket.RoutingCookies)
+		setCodexRoutingCookies(req.Header, ticket.RoutingCookies, effective)
 	}
 	client, err := codexTurnTicketProbeClient(ctx, auth, egress, 0)
 	if err != nil {
@@ -525,7 +553,7 @@ func probeCodexRouting(ctx context.Context, auth *cliproxyauth.Auth, model, egre
 	}
 	defer func() { _ = response.Body.Close() }()
 	result.Header, result.Status, result.ObservedAt = response.Header.Clone(), response.StatusCode, time.Now()
-	if result.Status != http.StatusOK || IsHealthyCodexTurnState(ExtractCodexTurnState(result.Header), codexTurnTicketDegradedLength(codexTurnTicketTargetLength(auth, effective))) {
+	if result.Status != http.StatusOK || IsHealthyCodexTurnState(ExtractCodexTurnState(result.Header), codexTurnTicketDegradedLength(auth, effective)) {
 		return result, nil
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, codexTurnTicketProbeDrainLimit+1))
@@ -636,7 +664,7 @@ func (h *CodexTurnTicketHarvester) routingProbe(ctx context.Context, auth *clipr
 }
 
 func (h *CodexTurnTicketHarvester) routingRejected(authID, model string, result codexRoutingProbe, effective CodexTurnTicketConfig) bool {
-	if result.Status == 401 || result.Status == 403 || result.Status == 429 {
+	if slices.Contains(effective.RejectStatusCodes, result.Status) {
 		h.parkBucket(authID, model, time.Now().Add(time.Duration(effective.RejectBackoffSeconds)*time.Second))
 		return true
 	}
@@ -693,7 +721,11 @@ func (h *CodexTurnTicketHarvester) probeAdaptive(ctx context.Context, auth *clip
 	h.setAdaptiveCooldown(auth, model, effective, route, time.Now().Add(time.Duration(effective.RoutingProbeIntervalSeconds)*time.Second))
 	business := codexBusinessEgress(auth, effective)
 	result, err := h.routingProbe(ctx, auth, model, "business", business, nil, effective)
-	if h.routingRejected(auth.ID, model, result, effective) || err != nil || result.Status != http.StatusOK {
+	if h.routingRejected(auth.ID, model, result, effective) {
+		return
+	}
+	businessFailed := err != nil || result.Status != http.StatusOK
+	if businessFailed && !effective.HarvestOnBusinessError {
 		return
 	}
 	if !h.adaptiveProbeContextCurrent(auth, model, effective) {
@@ -701,7 +733,7 @@ func (h *CodexTurnTicketHarvester) probeAdaptive(ctx context.Context, auth *clip
 	}
 	state := ExtractCodexTurnState(result.Header)
 	target := codexTurnTicketTargetLength(auth, effective)
-	if IsHealthyCodexTurnState(state, target) && result.Complete && result.Model == model {
+	if !businessFailed && IsHealthyCodexTurnState(state, target) && codexRoutingResponseAcceptable(result, model, effective) {
 		// Do not overwrite an explicit live degradation observed while probing. A
 		// successful clean business probe is the only transition from inject to direct.
 		updated, ok := h.store.setRouteIf(auth, model, effective, &route, codexRouteDirect, true)
@@ -712,8 +744,15 @@ func (h *CodexTurnTicketHarvester) probeAdaptive(ctx context.Context, auth *clip
 		h.setAdaptiveCooldown(auth, model, effective, updated, time.Now().Add(time.Duration(effective.ProbeCooldownSeconds)*time.Second))
 		return
 	}
-	if !IsHealthyCodexTurnState(state, codexTurnTicketDegradedLength(target)) {
-		return
+	if !businessFailed && !IsHealthyCodexTurnState(state, codexTurnTicketDegradedLength(auth, effective)) {
+		switch effective.UnknownStateAction {
+		case "block":
+			h.store.setRouteIf(auth, model, effective, &route, codexRouteBlocked, true)
+			return
+		case "harvest":
+		default:
+			return
+		}
 	}
 	if route.Mode != codexRouteInject {
 		var ok bool
@@ -737,7 +776,7 @@ func (h *CodexTurnTicketHarvester) probeAdaptive(ctx context.Context, auth *clip
 			return
 		}
 		fresh, err := h.routingProbe(ctx, auth, model, "harvest", egress, nil, effective)
-		if fresh.Status == http.StatusForbidden {
+		if slices.Contains(effective.HarvestRejectStatusCodes, fresh.Status) {
 			// A pool exit can be forbidden while the credential's business route
 			// remains usable. Do not let it suppress renewal for the whole bucket.
 			h.parkRoutingHarvestEgress(auth.ID, model, egress, time.Now())
@@ -746,7 +785,7 @@ func (h *CodexTurnTicketHarvester) probeAdaptive(ctx context.Context, auth *clip
 		if h.routingRejected(auth.ID, model, fresh, effective) {
 			return
 		}
-		if err != nil || fresh.Status != 200 || !fresh.Complete || fresh.Model != model || !IsHealthyCodexTurnState(ExtractCodexTurnState(fresh.Header), target) {
+		if err != nil || fresh.Status != 200 || !codexRoutingResponseAcceptable(fresh, model, effective) || !IsHealthyCodexTurnState(ExtractCodexTurnState(fresh.Header), target) {
 			continue
 		}
 		candidate := newCodexRoutingTicket(ExtractCodexTurnState(fresh.Header), fresh.Header, fresh.ObservedAt, effective)
@@ -758,7 +797,7 @@ func (h *CodexTurnTicketHarvester) probeAdaptive(ctx context.Context, auth *clip
 			return
 		}
 		validationState := ExtractCodexTurnState(verified.Header)
-		if err != nil || verified.Status != 200 || !verified.Complete || verified.Model != model || (validationState != "" && validationState != candidate.State) {
+		if err != nil || verified.Status != 200 || !codexRoutingResponseAcceptable(verified, model, effective) || !codexValidationStateAcceptable(validationState, candidate, target, effective) {
 			continue
 		}
 		// Activate only the bundle that was actually replayed. A different response
@@ -804,4 +843,36 @@ func codexRoutingCookieNames(ticket *CodexTurnTicket) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// Policy changes invalidate classification and bundles, but admission-only switches
+// are evaluated immediately without erasing evidence of degradation.
+func codexRoutingPolicyContext(auth *cliproxyauth.Auth, effective CodexTurnTicketConfig) string {
+	policy := struct {
+		Plan            string
+		DegradedLength  int
+		Validation      string
+		Complete, Model bool
+		Cookies         []string
+	}{ResolveCodexTurnTicketPlan(auth, effective.TargetLength, effective).Plan,
+		codexTurnTicketDegradedLength(auth, effective), effective.ValidationTicketPolicy,
+		effective.RequireCompleteResponse, effective.RequireModelMatch, effective.RoutingCookieNames}
+	encoded, _ := json.Marshal(policy)
+	return string(encoded)
+}
+
+func (s *CodexTurnTicketStore) adaptiveAdmissionAllows(auth *cliproxyauth.Auth, model string, effective CodexTurnTicketConfig, now time.Time) bool {
+	key, contextID := codexTurnTicketKey(auth.ID, model), codexRoutingContext(auth, effective)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	switch s.routeLocked(key, contextID).Mode {
+	case codexRouteDirect:
+		return true
+	case codexRouteBlocked:
+		return false
+	case codexRouteInject:
+		return !effective.BlockOnDegraded || (effective.InjectionEnabled && s.tickets[key].routingValid(auth, effective, now))
+	default:
+		return !effective.FailClosed
+	}
 }

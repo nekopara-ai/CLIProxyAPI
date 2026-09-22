@@ -34,7 +34,7 @@ func TestCodexTurnTicketPlanSources(t *testing.T) {
 		{"filename and plan metadata not authoritative", map[string]any{"email": "team@example.invalid", "plan_type": "team"}, 292, "config"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p := ResolveCodexTurnTicketPlan(&auth.Auth{Metadata: tc.metadata}, 292)
+			p := ResolveCodexTurnTicketPlan(&auth.Auth{Metadata: tc.metadata}, 292, EffectiveCodexTurnTicketConfig(turnTicketTestConfig()))
 			if p.TargetLength != tc.want || p.Source != tc.source {
 				t.Fatalf("policy=%+v", p)
 			}
@@ -47,7 +47,7 @@ func TestCodexTeamTicketRestoreInjectionAndPolicyChange(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tickets")
 	store := NewPersistentCodexTurnTicketStore(path, 292, time.Hour)
 	a := &auth.Auth{ID: "imported-team", Provider: "codex", Status: auth.StatusActive, Metadata: map[string]any{"access_token": "opaque", CodexTurnTicketPlanField: "team"}}
-	cfg := &config.Config{}
+	cfg := turnTicketTestConfig()
 	cfg.Codex.TurnTicket.Enabled = true
 	adaptive := false
 	cfg.Codex.TurnTicket.AdaptiveInjection = &adaptive
@@ -86,7 +86,7 @@ func TestCodexTeamTicketRestoreInjectionAndPolicyChange(t *testing.T) {
 
 func TestCodexTeamPassiveCaptureRejectsPersonalAndDegraded(t *testing.T) {
 	a := &auth.Auth{ID: "team", Provider: "codex", Metadata: map[string]any{"access_token": "opaque", CodexTurnTicketPlanField: "team"}}
-	cfg := &config.Config{}
+	cfg := turnTicketTestConfig()
 	cfg.Codex.TurnTicket.Enabled = true
 	adaptive := false
 	cfg.Codex.TurnTicket.AdaptiveInjection = &adaptive
