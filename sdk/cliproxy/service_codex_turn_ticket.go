@@ -19,8 +19,9 @@ var codexTurnTicketLifecycleMu sync.Mutex
 // capture both check the live config on every call, so the feature costs nothing until an
 // operator opts in. Once enabled, passive capture from live traffic records any healthy
 // token the upstream mints for a real request at no extra quota; only the synthetic probe
-// loop additionally needs one or more explicit fallback proxy URLs and/or the "direct"
-// setting. It tries the business egress first, falling back only on a 312 turn state.
+// loop first classifies the business egress. Adaptive mode can pass a natural healthy
+// route without any fallback URL; an explicitly degraded route needs one or more fallback
+// URLs to acquire a candidate bundle for business-egress validation.
 //
 // The harvester is always started when the wiring is installed. Its loop re-reads the live
 // config every cycle, so an operator can enable the feature through a config reload and the
@@ -46,12 +47,20 @@ func (s *Service) startCodexTurnTicketHarvester(ctx context.Context) {
 		return
 	}
 	if len(effective.HarvestProxyURLs) == 0 {
-		log.Warnf("codex turn tickets: enabled but codex.turn-ticket.harvest-proxy-urls is empty; synthetic probing stays off")
-		return
+		if effective.AdaptiveInjection {
+			log.Warnf("codex turn tickets: adaptive mode has no harvest proxy URLs; business-egress classification remains active but degraded routes cannot acquire an injection bundle")
+		} else {
+			log.Warnf("codex turn tickets: legacy mode has no harvest proxy URLs; synthetic probing stays off")
+			return
+		}
 	}
 	snapshot := helps.SnapshotCodexTurnTickets()
-	log.Infof("codex turn tickets: harvester started (models=%v harvest_egresses=%d target_length=%d ttl_seconds=%d interval_seconds=%d fail_closed=%t persistent=%t restored=%d)",
-		effective.Models, len(effective.HarvestProxyURLs), effective.TargetLength, effective.TTLSeconds, effective.ProbeIntervalSeconds, effective.FailClosed, snapshot.PersistentStore, snapshot.RestoredTickets)
+	interval := effective.ProbeIntervalSeconds
+	if effective.AdaptiveInjection {
+		interval = effective.RoutingProbeIntervalSeconds
+	}
+	log.Infof("codex turn tickets: harvester started (models=%v adaptive=%t harvest_egresses=%d target_length=%d ttl_seconds=%d interval_seconds=%d routing_lease_seconds=%d fail_closed=%t persistent=%t restored=%d)",
+		effective.Models, effective.AdaptiveInjection, len(effective.HarvestProxyURLs), effective.TargetLength, effective.TTLSeconds, interval, effective.RoutingCookieTTLSeconds, effective.FailClosed, snapshot.PersistentStore, snapshot.RestoredTickets)
 }
 
 // currentConfig returns the live configuration pointer under the config lock. Every

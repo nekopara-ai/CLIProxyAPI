@@ -400,6 +400,24 @@ func applyCodexTurnTicket(headers http.Header, auth *cliproxyauth.Auth, model st
 	return helps.ApplyCodexTurnTicket(auth, model, headers)
 }
 
+// observeCodexTurnTicketResponse feeds the actual upstream status and both sides of
+// the wire to the adaptive ticket policy. The response side is deliberately separate
+// from the legacy passive harvester so 312/degraded responses can become sticky without
+// replaying the request that discovered them.
+func observeCodexTurnTicketResponse(status int, responseHeaders, requestHeaders http.Header, auth *cliproxyauth.Auth, model string, injected bool) {
+	helps.ObserveCodexTurnTicketResponse(auth, model, status, responseHeaders, requestHeaders, injected)
+}
+
+// observeCodexWebsocketTurnTicketResponse observes a successful physical websocket
+// handshake. An HTTP response from a failed upgrade is not a WebSocket 101 and must not
+// transition adaptive state. Reused sockets have no handshake response and are skipped.
+func observeCodexWebsocketTurnTicketResponse(response *http.Response, errDial error, requestHeaders http.Header, auth *cliproxyauth.Auth, model string, injected bool) {
+	if errDial != nil || response == nil || response.StatusCode != http.StatusSwitchingProtocols {
+		return
+	}
+	observeCodexTurnTicketResponse(response.StatusCode, response.Header, requestHeaders, auth, model, injected)
+}
+
 // harvestCodexTurnTicket records a healthy turn-state the upstream minted for live
 // traffic. Passive capture costs no extra quota and keeps the bucket fresh without
 // waiting for the next synthetic probe cycle.

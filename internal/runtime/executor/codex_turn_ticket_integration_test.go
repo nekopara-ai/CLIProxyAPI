@@ -47,6 +47,13 @@ func turnTicketIntegrationConfig(model string) *config.Config {
 	return cfg
 }
 
+func turnTicketLegacyIntegrationConfig(model string) *config.Config {
+	cfg := turnTicketIntegrationConfig(model)
+	legacy := false
+	cfg.Codex.TurnTicket.AdaptiveInjection = &legacy
+	return cfg
+}
+
 // TestCodexExecutorStreamInjectsHarvestedTurnTicket exercises the real executor path: a
 // credential with a stored healthy ticket must send that ticket upstream even when the
 // client supplied a degraded one, and the upstream's healthy response token must be
@@ -65,7 +72,7 @@ func TestCodexExecutorStreamInjectsHarvestedTurnTicket(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cfg := turnTicketIntegrationConfig("gpt-5.5")
+	cfg := turnTicketLegacyIntegrationConfig("gpt-5.5")
 	process := helps.ConfigureCodexTurnTickets(func() *config.Config { return cfg }, nil)
 	defer helps.ConfigureCodexTurnTickets(nil, nil)
 	process.Store.Store("integration-auth", "gpt-5.5", helps.NewCodexTurnTicket(healthy, time.Now(), time.Hour))
@@ -175,7 +182,7 @@ func TestCodexExecutorStreamInjectsImportedTeamTicket(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cfg := turnTicketIntegrationConfig("gpt-5.5")
+	cfg := turnTicketLegacyIntegrationConfig("gpt-5.5")
 	process := helps.ConfigureCodexTurnTickets(func() *config.Config { return cfg }, nil)
 	defer helps.ConfigureCodexTurnTickets(nil, nil)
 	process.Store.Store("integration-auth", "gpt-5.5", helps.NewCodexTurnTicket(healthy, time.Now(), time.Hour))

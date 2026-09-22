@@ -196,7 +196,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				fail(errPrepare)
 				return false
 			}
-			if prepared.wsURL != initial.wsURL {
+			if prepared.wsURL != initial.wsURL || prepared.routingFingerprint != initial.routingFingerprint {
 				fail(cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError())
 				return false
 			}

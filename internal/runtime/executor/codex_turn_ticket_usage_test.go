@@ -53,7 +53,7 @@ func TestCodexHTTPUsageRecordsActualRequestTicketWithoutResponseTicket(t *testin
 					_, _ = fmt.Fprintf(w, "data: %s\n\n", ticketUsageTerminal)
 				}))
 				defer server.Close()
-				cfg := turnTicketIntegrationConfig("gpt-5.5")
+				cfg := turnTicketLegacyIntegrationConfig("gpt-5.5")
 				cfg.DisableImageGeneration = config.DisableImageGenerationAll
 				injectionOff := strings.HasPrefix(source, "injection_off_")
 				wantSource := strings.TrimPrefix(source, "injection_off_")
@@ -139,7 +139,7 @@ func TestCodexWebsocketUsageKeepsPhysicalHandshakeTicketOnReuse(t *testing.T) {
 				}
 			}))
 			defer server.Close()
-			cfg := turnTicketIntegrationConfig("gpt-5.5")
+			cfg := turnTicketLegacyIntegrationConfig("gpt-5.5")
 			cfg.DisableImageGeneration = config.DisableImageGenerationAll
 			process := helps.ConfigureCodexTurnTickets(func() *config.Config { return cfg }, nil)
 			defer helps.ConfigureCodexTurnTickets(nil, nil)
@@ -247,7 +247,7 @@ func TestCodexWebsocketInjectionOffKeepsCachedTicketOutOfHandshake(t *testing.T)
 				}
 			}))
 			defer server.Close()
-			cfg := turnTicketIntegrationConfig("gpt-5.5")
+			cfg := turnTicketLegacyIntegrationConfig("gpt-5.5")
 			cfg.DisableImageGeneration = config.DisableImageGenerationAll
 			off := false
 			cfg.Codex.TurnTicket.InjectionEnabled = &off

@@ -49,6 +49,8 @@ func TestCodexTeamTicketRestoreInjectionAndPolicyChange(t *testing.T) {
 	a := &auth.Auth{ID: "imported-team", Provider: "codex", Status: auth.StatusActive, Metadata: map[string]any{"access_token": "opaque", CodexTurnTicketPlanField: "team"}}
 	cfg := &config.Config{}
 	cfg.Codex.TurnTicket.Enabled = true
+	adaptive := false
+	cfg.Codex.TurnTicket.AdaptiveInjection = &adaptive
 	cfg.Codex.TurnTicket.Models = []string{"gpt-6-astra"}
 	store.Store(a.ID, "gpt-6-astra", NewCodexTurnTicket(testTurnState(t, now.Unix(), 332), now, time.Hour))
 	store = NewPersistentCodexTurnTicketStore(path, 292, time.Hour)
@@ -86,6 +88,8 @@ func TestCodexTeamPassiveCaptureRejectsPersonalAndDegraded(t *testing.T) {
 	a := &auth.Auth{ID: "team", Provider: "codex", Metadata: map[string]any{"access_token": "opaque", CodexTurnTicketPlanField: "team"}}
 	cfg := &config.Config{}
 	cfg.Codex.TurnTicket.Enabled = true
+	adaptive := false
+	cfg.Codex.TurnTicket.AdaptiveInjection = &adaptive
 	cfg.Codex.TurnTicket.Models = []string{"gpt-6-astra"}
 	store := NewCodexTurnTicketStore()
 	h := NewCodexTurnTicketHarvester(store, func() *config.Config { return cfg }, nil)

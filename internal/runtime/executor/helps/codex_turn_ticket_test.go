@@ -158,6 +158,8 @@ func TestCodexTurnTicketKeySeparatesAuthFromModel(t *testing.T) {
 func turnTicketTestConfig() *config.Config {
 	cfg := &config.Config{}
 	cfg.Codex.TurnTicket.Enabled = true
+	adaptive := false
+	cfg.Codex.TurnTicket.AdaptiveInjection = &adaptive
 	cfg.Codex.TurnTicket.HarvestProxyURLs = []string{"http://127.0.0.1:1"}
 	cfg.Codex.TurnTicket.Models = []string{"gpt-5.5"}
 	return cfg
@@ -909,6 +911,8 @@ func TestCodexTurnTicketHarvesterPicksUpEnabledConfigHotReload(t *testing.T) {
 	// cycle must see the new value without the harvester being rebuilt.
 	reloaded := &config.Config{}
 	reloaded.Codex.TurnTicket.Enabled = true
+	adaptive := false
+	reloaded.Codex.TurnTicket.AdaptiveInjection = &adaptive
 	reloaded.Codex.TurnTicket.HarvestProxyURLs = []string{proxyURL}
 	reloaded.Codex.TurnTicket.Models = []string{"gpt-5.5"}
 	current = reloaded
@@ -987,6 +991,8 @@ func TestProcessWideTurnTicketWiringFollowsConfigReload(t *testing.T) {
 	// Hot-reload the live config to enabled: injection must start on the very next call.
 	reloaded := &config.Config{}
 	reloaded.Codex.TurnTicket.Enabled = true
+	adaptive := false
+	reloaded.Codex.TurnTicket.AdaptiveInjection = &adaptive
 	reloaded.Codex.TurnTicket.Models = []string{"gpt-5.5"}
 	current = reloaded
 

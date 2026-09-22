@@ -95,6 +95,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	applyModelHeaderOverrides(httpReq.Header, baseModel)
 	ticketInjected := applyCodexTurnTicket(httpReq.Header, auth, baseModel)
 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
+	requestHeaders := httpReq.Header.Clone()
 	reporter.SetCodexTurnState(helps.CodexRequestTurnState(httpReq.Header, ticketInjected))
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
@@ -122,7 +123,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		return nil, err
 	}
 	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
-	harvestCodexTurnTicket(httpResp.Header, auth, baseModel)
+	observeCodexTurnTicketResponse(httpResp.StatusCode, httpResp.Header, requestHeaders, auth, baseModel, ticketInjected)
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		data, readErr := io.ReadAll(httpResp.Body)
 		if errClose := httpResp.Body.Close(); errClose != nil {

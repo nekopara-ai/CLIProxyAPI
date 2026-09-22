@@ -95,6 +95,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	applyModelHeaderOverrides(wsHeaders, baseModel)
 	ticketInjected := applyCodexTurnTicket(wsHeaders, auth, baseModel)
 	applyCodexIdentityConfuseHeaders(wsHeaders, &identityState)
+	routingFingerprint := codexWebsocketRoutingFingerprint(wsHeaders, ticketInjected)
 
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
@@ -143,15 +144,16 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	var errDial error
 	dialCtx := ctx
 	if cliproxyexecutor.RequiredUpstreamWebsocket(ctx) {
-		conn, closer = existingWebsocketSessionConn(sess, authID, wsURL)
+		conn, closer = existingWebsocketSessionConn(sess, authID, wsURL, routingFingerprint)
 		if conn == nil {
 			return resp, cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError()
 		}
 	} else {
 		dialCtx = cliproxyexecutor.WithUpstreamAttemptTracker(ctx)
-		conn, closer, respHS, errDial = e.ensureUpstreamConn(dialCtx, auth, sess, authID, wsURL, wsHeaders)
+		conn, closer, respHS, errDial = e.ensureUpstreamConnWithRoutingFingerprint(dialCtx, auth, sess, authID, wsURL, wsHeaders, routingFingerprint)
 	}
 	recordCodexWebsocketTurnState(reporter, sess, conn, respHS, wsHeaders, ticketInjected)
+	observeCodexWebsocketTurnTicketResponse(respHS, errDial, wsHeaders, auth, baseModel, ticketInjected)
 	if errDial != nil {
 		bodyErr := websocketHandshakeBody(respHS)
 		if respHS != nil {
@@ -181,9 +183,6 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		return resp, errBind
 	}
 	recordAPIWebsocketHandshake(ctx, e.cfg, respHS)
-	if respHS != nil {
-		harvestCodexTurnTicket(respHS.Header, auth, baseModel)
-	}
 	reporter.StartResponseTTFT()
 	if isEphemeralSession {
 		defer func() {
@@ -225,8 +224,9 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			// Retry once with a fresh websocket connection. This is mainly to handle
 			// upstream closing the socket between sequential requests within the same
 			// execution session.
-			connRetry, closerRetry, respHSRetry, errDialRetry := e.ensureUpstreamConn(ctx, auth, sess, authID, wsURL, wsHeaders)
+			connRetry, closerRetry, respHSRetry, errDialRetry := e.ensureUpstreamConnWithRoutingFingerprint(ctx, auth, sess, authID, wsURL, wsHeaders, routingFingerprint)
 			recordCodexWebsocketTurnState(reporter, sess, connRetry, respHSRetry, wsHeaders, ticketInjected)
+			observeCodexWebsocketTurnTicketResponse(respHSRetry, errDialRetry, wsHeaders, auth, baseModel, ticketInjected)
 			if errDialRetry == nil && connRetry != nil {
 				previousConn, previousReadCh := conn, readCh
 				conn = connRetry

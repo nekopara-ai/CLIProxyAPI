@@ -211,10 +211,14 @@ func MaskAuthorizationHeader(value string) string {
 	return parts[0] + " " + HideAPIKey(parts[1])
 }
 
+// redactedHeaderValue replaces header values that must not expose any part of the original material.
+const redactedHeaderValue = "[REDACTED]"
+
 // MaskSensitiveHeaderValue masks sensitive header values while preserving expected formats.
 //
 // Behavior by header key (case-insensitive):
 //   - "Authorization": Preserve the auth type prefix (e.g., "Bearer ") and mask only the credential part.
+//   - "Cookie", "Set-Cookie", "X-Codex-Turn-State": Fully redact the value; these headers carry secret routing material.
 //   - Headers containing "api-key": Mask the entire value using HideAPIKey.
 //   - Others: Return the original value unchanged.
 //
@@ -229,6 +233,8 @@ func MaskSensitiveHeaderValue(key, value string) string {
 	switch {
 	case strings.Contains(lowerKey, "authorization"):
 		return MaskAuthorizationHeader(value)
+	case lowerKey == "cookie" || lowerKey == "set-cookie" || lowerKey == "x-codex-turn-state":
+		return redactedHeaderValue
 	case strings.Contains(lowerKey, "api-key"),
 		strings.Contains(lowerKey, "apikey"),
 		strings.Contains(lowerKey, "token"),

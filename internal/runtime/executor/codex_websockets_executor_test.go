@@ -20,6 +20,7 @@ import (
 	internalcache "github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
@@ -520,6 +521,119 @@ func TestExistingWebsocketSessionConnRequiresMatchingHealthyConnection(t *testin
 	sess.setUpstreamDisconnectError(conn, errors.New("upstream disconnected"))
 	if got, _ := existingWebsocketSessionConn(sess, "auth-a", "ws://example.test/responses"); got != nil {
 		t.Fatal("disconnected websocket session remained reusable")
+	}
+}
+
+func TestCodexWebsocketRoutingFingerprintChangesRequireReconnect(t *testing.T) {
+	cfg := turnTicketIntegrationConfig("gpt-5.5")
+	process := helps.ConfigureCodexTurnTickets(func() *config.Config { return cfg }, nil)
+	defer helps.ConfigureCodexTurnTickets(nil, nil)
+	if process == nil {
+		t.Fatal("adaptive process was not configured")
+	}
+	headers := http.Header{}
+	headers.Set(helps.CodexTurnStateHeader, "state-a")
+	headers.Set("Cookie", "__cflb=bundle-a; __oailb=bundle-b; login=keep")
+	direct := codexWebsocketRoutingFingerprint(headers, false)
+	headers.Set(helps.CodexTurnStateHeader, "state-b")
+	headers.Set("Cookie", "__cflb=bundle-z; __oailb=bundle-y; login=keep")
+	if got := codexWebsocketRoutingFingerprint(headers, false); got != direct {
+		t.Fatalf("non-injected fingerprint changed on client header churn: %q vs %q", got, direct)
+	}
+	headers.Set(helps.CodexTurnStateHeader, "state-a")
+	headers.Set("Cookie", "__cflb=bundle-a; __oailb=bundle-b; login=keep")
+	first := codexWebsocketRoutingFingerprint(headers, true)
+	headers.Set("Cookie", "__cflb=bundle-c; __oailb=bundle-b; login=keep")
+	second := codexWebsocketRoutingFingerprint(headers, true)
+	if first == "" || second == "" || first == second {
+		t.Fatalf("adaptive fingerprint did not change with the routing bundle: %q vs %q", first, second)
+	}
+	if got := codexWebsocketRoutingFingerprint(headers, false); got != direct {
+		t.Fatalf("direct fingerprint = %q, want stable marker %q", got, direct)
+	}
+
+	conn := &websocket.Conn{}
+	closer := newWebsocketConnectionCloser(conn)
+	sess := &codexWebsocketSession{
+		conn:               conn,
+		connCloser:         closer,
+		authID:             "auth-a",
+		wsURL:              "ws://example.test/responses",
+		routingFingerprint: first,
+	}
+	sess.resetUpstreamDisconnectError(conn)
+	if got, _ := existingWebsocketSessionConn(sess, "auth-a", "ws://example.test/responses", second); got != nil {
+		t.Fatal("changed routing bundle reused the stale websocket handshake")
+	}
+	if got, _ := existingWebsocketSessionConn(sess, "auth-a", "ws://example.test/responses", first); got != conn {
+		t.Fatal("unchanged routing bundle was not reusable")
+	}
+
+	cfg = turnTicketLegacyIntegrationConfig("gpt-5.5")
+	headers.Set("Cookie", "__cflb=legacy-b; __oailb=legacy-c; login=keep")
+	if got := codexWebsocketRoutingFingerprint(headers, true); got != "" {
+		t.Fatalf("legacy mode must not force a reconnect fingerprint: %q", got)
+	}
+	if got, _ := existingWebsocketSessionConn(sess, "auth-a", "ws://example.test/responses", ""); got != conn {
+		t.Fatal("legacy mode did not preserve connection reuse")
+	}
+}
+
+func TestCodexWebsocketRequiredUpstreamRejectsChangedRoutingBundle(t *testing.T) {
+	cfg := turnTicketIntegrationConfig("gpt-5.5")
+	process := helps.ConfigureCodexTurnTickets(func() *config.Config { return cfg }, nil)
+	defer helps.ConfigureCodexTurnTickets(nil, nil)
+	if process == nil {
+		t.Fatal("adaptive process was not configured")
+	}
+
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, errUpgrade := upgrader.Upgrade(w, r, nil)
+		if errUpgrade != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		for {
+			if _, _, errRead := conn.ReadMessage(); errRead != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+	exec := NewCodexWebsocketsExecutor(cfg)
+	exec.store = &codexWebsocketSessionStore{sessions: make(map[string]*codexWebsocketSession)}
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/responses"
+	sessionID := "required-routing-fingerprint"
+	sess := exec.getOrCreateSession(sessionID)
+	conn, physical := newCloseCountingWebsocketConn(t, wsURL)
+	closer := newWebsocketConnectionCloser(conn)
+	sess.connMu.Lock()
+	sess.conn = conn
+	sess.connCloser = closer
+	sess.authID = "required-routing-auth"
+	sess.wsURL = wsURL
+	sess.routingFingerprint = "old-bundle"
+	sess.readerConn = conn
+	sess.connMu.Unlock()
+	sess.resetUpstreamDisconnectError(conn)
+	defer func() {
+		if physical != nil {
+			_ = physical.Close()
+		}
+	}()
+
+	auth := &cliproxyauth.Auth{ID: "required-routing-auth", Provider: "codex", Status: cliproxyauth.StatusActive, Metadata: map[string]any{"access_token": "fixture", "auth_kind": "oauth"}, Attributes: map[string]string{"base_url": server.URL}}
+	ctx := cliproxyexecutor.WithRequiredUpstreamWebsocket(context.Background())
+	_, errExecute := exec.Execute(ctx, auth, cliproxyexecutor.Request{
+		Model:   "gpt-5.5",
+		Payload: []byte(`{"model":"gpt-5.5","input":"hello"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Metadata:     map[string]any{cliproxyexecutor.ExecutionSessionMetadataKey: sessionID},
+	})
+	if !cliproxyexecutor.IsUpstreamWebsocketReplayRequired(errExecute) {
+		t.Fatalf("Execute() error = %T %v, want replay-required", errExecute, errExecute)
 	}
 }
 

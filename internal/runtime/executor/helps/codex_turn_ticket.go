@@ -56,7 +56,12 @@ type CodexTurnTicket struct {
 	CapturedAt time.Time `json:"captured_at"`
 	// ExpiresAt is derived from the issue timestamp inside the token, not from the
 	// moment it was observed. See CodexTurnTicketIssueTime.
-	ExpiresAt time.Time `json:"expires_at"`
+	ExpiresAt          time.Time            `json:"expires_at"`
+	RoutingCookies     []CodexRoutingCookie `json:"routing_cookies,omitempty"`
+	RoutingCapturedAt  time.Time            `json:"routing_captured_at,omitempty"`
+	RoutingValidatedAt time.Time            `json:"routing_validated_at,omitempty"`
+	RoutingExpiresAt   time.Time            `json:"routing_expires_at,omitempty"`
+	RoutingContext     string               `json:"routing_context,omitempty"`
 }
 
 func (t *CodexTurnTicket) valid(now time.Time, targetLength int) bool {
@@ -105,6 +110,7 @@ type CodexTurnTicketStore struct {
 	persistedExpiry map[string]time.Time
 	persistencePath string
 	restored        int
+	routes          map[string]codexTurnTicketRoute
 }
 
 type codexTurnTicketDiskRecord struct {
@@ -132,6 +138,7 @@ func NewCodexTurnTicketStore() *CodexTurnTicketStore {
 	return &CodexTurnTicketStore{
 		tickets:         make(map[string]*CodexTurnTicket),
 		persistedExpiry: make(map[string]time.Time),
+		routes:          make(map[string]codexTurnTicketRoute),
 	}
 }
 
@@ -162,6 +169,7 @@ func (s *CodexTurnTicketStore) Store(authID, model string, ticket *CodexTurnTick
 		return
 	}
 	copied := *ticket
+	copied.RoutingCookies = append([]CodexRoutingCookie(nil), ticket.RoutingCookies...)
 	key := codexTurnTicketKey(authID, model)
 	s.mu.Lock()
 	if s.tickets == nil {
@@ -182,6 +190,9 @@ func (s *CodexTurnTicketStore) ticketNeedsCheckpointLocked(key string, ticket *C
 	if s == nil || ticket == nil || strings.TrimSpace(s.persistencePath) == "" {
 		return false
 	}
+	if len(ticket.RoutingCookies) > 0 {
+		return true
+	}
 	persisted := s.persistedExpiry[key]
 	if persisted.IsZero() {
 		return true
@@ -201,6 +212,7 @@ func (s *CodexTurnTicketStore) Lookup(authID, model string) *CodexTurnTicket {
 		return nil
 	}
 	copied := *ticket
+	copied.RoutingCookies = append([]CodexRoutingCookie(nil), ticket.RoutingCookies...)
 	return &copied
 }
 
@@ -211,6 +223,7 @@ func (s *CodexTurnTicketStore) Delete(authID, model string) {
 	}
 	s.mu.Lock()
 	delete(s.tickets, codexTurnTicketKey(authID, model))
+	delete(s.routes, codexTurnTicketKey(authID, model))
 	if errPersist := s.persistLocked(); errPersist != nil {
 		log.Errorf("codex turn tickets: persist ticket removal: %v", errPersist)
 	}
@@ -365,20 +378,25 @@ func (s *CodexTurnTicketStore) persistent() bool {
 
 // CodexTurnTicketConfig is the effective, normalized ticket configuration.
 type CodexTurnTicketConfig struct {
-	Enabled              bool
-	InjectionEnabled     bool
-	FailClosed           bool
-	TargetLength         int
-	TTLSeconds           int
-	RefreshBeforeSeconds int
-	ProbeIntervalSeconds int
-	ProbeTimeoutSeconds  int
-	ProbeCooldownSeconds int
-	RejectBackoffSeconds int
-	BusinessProxyURL     string
-	HarvestProxyURLs     []string
-	Models               []string
-	AuthIDs              []string
+	Enabled                     bool
+	InjectionEnabled            bool
+	AdaptiveInjection           bool
+	RoutingCookieTTLSeconds     int
+	RoutingRefreshBeforeSeconds int
+	RoutingProbeIntervalSeconds int
+	HarvestAttempts             int
+	FailClosed                  bool
+	TargetLength                int
+	TTLSeconds                  int
+	RefreshBeforeSeconds        int
+	ProbeIntervalSeconds        int
+	ProbeTimeoutSeconds         int
+	ProbeCooldownSeconds        int
+	RejectBackoffSeconds        int
+	BusinessProxyURL            string
+	HarvestProxyURLs            []string
+	Models                      []string
+	AuthIDs                     []string
 }
 
 // CodexTurnTicketDefaults lists the model buckets probed when the operator does not
@@ -388,15 +406,20 @@ var CodexTurnTicketDefaults = []string{"gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra"
 // EffectiveCodexTurnTicketConfig normalizes cfg.Codex.TurnTicket with defaults.
 func EffectiveCodexTurnTicketConfig(cfg *config.Config) CodexTurnTicketConfig {
 	effective := CodexTurnTicketConfig{
-		InjectionEnabled:     true,
-		FailClosed:           true,
-		TargetLength:         292,
-		TTLSeconds:           3600,
-		RefreshBeforeSeconds: 600,
-		ProbeIntervalSeconds: 60,
-		ProbeTimeoutSeconds:  25,
-		ProbeCooldownSeconds: 3300,
-		RejectBackoffSeconds: 600,
+		InjectionEnabled:            true,
+		AdaptiveInjection:           true,
+		RoutingCookieTTLSeconds:     180,
+		RoutingRefreshBeforeSeconds: 30,
+		RoutingProbeIntervalSeconds: 15,
+		HarvestAttempts:             3,
+		FailClosed:                  true,
+		TargetLength:                292,
+		TTLSeconds:                  3600,
+		RefreshBeforeSeconds:        600,
+		ProbeIntervalSeconds:        60,
+		ProbeTimeoutSeconds:         25,
+		ProbeCooldownSeconds:        3300,
+		RejectBackoffSeconds:        600,
 	}
 	if cfg == nil {
 		effective.Models = append([]string(nil), CodexTurnTicketDefaults...)
@@ -407,6 +430,23 @@ func EffectiveCodexTurnTicketConfig(cfg *config.Config) CodexTurnTicketConfig {
 	effective.Enabled = raw.Enabled
 	if raw.InjectionEnabled != nil {
 		effective.InjectionEnabled = *raw.InjectionEnabled
+	}
+	if raw.AdaptiveInjection != nil {
+		effective.AdaptiveInjection = *raw.AdaptiveInjection
+	}
+	if raw.RoutingCookieTTLSeconds > 0 {
+		effective.RoutingCookieTTLSeconds = min(raw.RoutingCookieTTLSeconds, 180)
+	}
+	if raw.RoutingRefreshBeforeSeconds > 0 {
+		effective.RoutingRefreshBeforeSeconds = raw.RoutingRefreshBeforeSeconds
+	}
+	effective.RoutingRefreshBeforeSeconds = min(effective.RoutingRefreshBeforeSeconds, max(1, effective.RoutingCookieTTLSeconds/2))
+	if raw.RoutingProbeIntervalSeconds > 0 {
+		effective.RoutingProbeIntervalSeconds = raw.RoutingProbeIntervalSeconds
+	}
+	effective.RoutingProbeIntervalSeconds = min(effective.RoutingProbeIntervalSeconds, max(1, effective.RoutingRefreshBeforeSeconds/2))
+	if raw.HarvestAttempts > 0 {
+		effective.HarvestAttempts = min(raw.HarvestAttempts, 8)
 	}
 	if raw.FailClosed != nil {
 		effective.FailClosed = *raw.FailClosed
@@ -612,6 +652,9 @@ func (i *CodexTurnTicketInjector) Apply(auth *cliproxyauth.Auth, model string, h
 	if !effective.Enabled || !effective.InjectionEnabled || !codexTurnTicketModelGated(effective, model) || !codexTurnTicketAuthScoped(effective, auth.ID) {
 		return false
 	}
+	if effective.AdaptiveInjection {
+		return i.applyAdaptive(auth, model, headers, effective)
+	}
 	ticket := i.store.Lookup(auth.ID, model)
 	if !ticket.validForExecution(time.Now(), codexTurnTicketTargetLength(auth, effective)) {
 		return false
@@ -639,6 +682,7 @@ type CodexTurnTicketHarvester struct {
 	running bool
 	stop    chan struct{}
 	done    chan struct{}
+	wake    chan struct{}
 
 	// schedule guards the per-bucket probe pacing. A bucket is skipped while it is inside
 	// its cooldown, and parked while it is backing off from an upstream rejection.
@@ -664,6 +708,7 @@ func NewCodexTurnTicketHarvester(store *CodexTurnTicketStore, cfgProvider func()
 		nextProbe:    make(map[string]time.Time),
 		backoffRun:   make(map[string]time.Time),
 		observations: make(map[string]CodexTurnTicketObservation),
+		wake:         make(chan struct{}, 1),
 	}
 }
 
@@ -720,6 +765,9 @@ func (h *CodexTurnTicketHarvester) run(ctx context.Context, stop <-chan struct{}
 		// turn probing on and off, without restarting the service.
 		effective := codexTurnTicketEffectiveConfig(h.cfgProvider)
 		interval := time.Duration(effective.ProbeIntervalSeconds) * time.Second
+		if effective.AdaptiveInjection {
+			interval = time.Duration(effective.RoutingProbeIntervalSeconds) * time.Second
+		}
 		if interval <= 0 {
 			interval = time.Minute
 		}
@@ -732,6 +780,8 @@ func (h *CodexTurnTicketHarvester) run(ctx context.Context, stop <-chan struct{}
 		case <-stop:
 			timer.Stop()
 			return
+		case <-h.wake:
+			timer.Stop()
 		case <-timer.C:
 		}
 	}
@@ -742,7 +792,7 @@ func (h *CodexTurnTicketHarvester) probeAll(ctx context.Context) {
 		return
 	}
 	effective := codexTurnTicketEffectiveConfig(h.cfgProvider)
-	if !effective.Enabled || len(effective.HarvestProxyURLs) == 0 {
+	if !effective.Enabled || (!effective.AdaptiveInjection && len(effective.HarvestProxyURLs) == 0) {
 		return
 	}
 	scope := make(map[string]struct{}, len(effective.AuthIDs))
@@ -761,6 +811,10 @@ func (h *CodexTurnTicketHarvester) probeAll(ctx context.Context) {
 			}
 		}
 		for _, model := range effective.Models {
+			if effective.AdaptiveInjection {
+				h.probeAdaptive(ctx, auth, model, effective)
+				continue
+			}
 			if ticket := h.store.Lookup(auth.ID, model); ticket.valid(now, codexTurnTicketTargetLength(auth, effective)) && !ticket.needsRefresh(now, refreshBefore) {
 				continue
 			}
@@ -1293,6 +1347,12 @@ func (h *CodexTurnTicketHarvester) HarvestCodexTurnStatePassively(auth *cliproxy
 		return
 	}
 	effective := codexTurnTicketEffectiveConfig(h.cfgProvider)
+	if effective.AdaptiveInjection {
+		// The legacy callback has neither status nor outbound headers. It cannot
+		// distinguish a clean business response from an injected one safely.
+		// Adaptive executors use ObserveCodexTurnTicketResponse instead.
+		return
+	}
 	if !effective.Enabled || !codexTurnTicketModelGated(effective, model) || !codexTurnTicketAuthScoped(effective, auth.ID) {
 		return
 	}
@@ -1435,6 +1495,9 @@ func CodexTurnTicketAllowsExecution(auth *cliproxyauth.Auth, model string) bool 
 		!codexTurnTicketModelGated(effective, model) || !codexTurnTicketAuthScoped(effective, auth.ID) {
 		return true
 	}
+	if effective.AdaptiveInjection {
+		return process.Store.adaptiveAllows(auth, model, effective, time.Now())
+	}
 	return process.Store.Lookup(auth.ID, model).validForExecution(time.Now(), codexTurnTicketTargetLength(auth, effective))
 }
 
@@ -1453,6 +1516,7 @@ type CodexTurnTicketSnapshot struct {
 	Configured        bool                            `json:"configured"`
 	Enabled           bool                            `json:"enabled"`
 	InjectionEnabled  bool                            `json:"injection_enabled"`
+	AdaptiveInjection bool                            `json:"adaptive_injection"`
 	FailClosed        bool                            `json:"fail_closed"`
 	HarvesterActive   bool                            `json:"harvester_active"`
 	Models            []string                        `json:"models"`
@@ -1463,6 +1527,10 @@ type CodexTurnTicketSnapshot struct {
 	ProbeInterval     int                             `json:"probe_interval_seconds"`
 	ProbeCooldown     int                             `json:"probe_cooldown_seconds"`
 	RejectBackoff     int                             `json:"reject_backoff_seconds"`
+	RoutingCookieTTL  int                             `json:"routing_cookie_ttl_seconds"`
+	RoutingRefresh    int                             `json:"routing_refresh_before_seconds"`
+	RoutingInterval   int                             `json:"routing_probe_interval_seconds"`
+	HarvestAttempts   int                             `json:"harvest_attempts"`
 	HarvestProxyCount int                             `json:"harvest_proxy_count"`
 	HarvestProxyURLs  []string                        `json:"harvest_proxy_urls,omitempty"`
 	Probed            int64                           `json:"probed"`
@@ -1482,6 +1550,10 @@ type CodexTurnTicketBucketSnapshot struct {
 	AuthHint            string    `json:"auth_hint"`
 	Model               string    `json:"model"`
 	TicketState         string    `json:"ticket_state"`
+	RoutingMode         string    `json:"routing_mode,omitempty"`
+	RoutingCookieNames  []string  `json:"routing_cookie_names,omitempty"`
+	RoutingValidatedAt  time.Time `json:"routing_validated_at,omitempty"`
+	RoutingExpiresAt    time.Time `json:"routing_expires_at,omitempty"`
 	TicketLength        int       `json:"ticket_length,omitempty"`
 	ExpiresAt           time.Time `json:"expires_at,omitempty"`
 	LastObservedAt      time.Time `json:"last_observed_at,omitempty"`
@@ -1501,6 +1573,7 @@ type CodexTurnTicketCredentialSnapshot struct {
 	Configured        bool                           `json:"configured"`
 	Enabled           bool                           `json:"enabled"`
 	InjectionEnabled  bool                           `json:"injection_enabled"`
+	AdaptiveInjection bool                           `json:"adaptive_injection"`
 	HarvesterActive   bool                           `json:"harvester_active"`
 	TargetLength      int                            `json:"target_length"`
 	State             string                         `json:"state"`
@@ -1515,6 +1588,10 @@ type CodexTurnTicketCredentialSnapshot struct {
 type CodexTurnTicketModelSnapshot struct {
 	Model               string    `json:"model"`
 	TicketState         string    `json:"ticket_state"`
+	RoutingMode         string    `json:"routing_mode,omitempty"`
+	RoutingCookieNames  []string  `json:"routing_cookie_names,omitempty"`
+	RoutingValidatedAt  time.Time `json:"routing_validated_at,omitempty"`
+	RoutingExpiresAt    time.Time `json:"routing_expires_at,omitempty"`
 	TicketLength        int       `json:"ticket_length,omitempty"`
 	ExpiresAt           time.Time `json:"expires_at,omitempty"`
 	LastObservedAt      time.Time `json:"last_observed_at,omitempty"`
@@ -1536,6 +1613,7 @@ func SnapshotCodexTurnTickets() CodexTurnTicketSnapshot {
 		Configured:        true,
 		Enabled:           effective.Enabled,
 		InjectionEnabled:  effective.Enabled && effective.InjectionEnabled,
+		AdaptiveInjection: effective.AdaptiveInjection,
 		FailClosed:        effective.FailClosed,
 		HarvesterActive:   harvester.Running(),
 		Models:            append([]string(nil), effective.Models...),
@@ -1546,6 +1624,10 @@ func SnapshotCodexTurnTickets() CodexTurnTicketSnapshot {
 		ProbeInterval:     effective.ProbeIntervalSeconds,
 		ProbeCooldown:     effective.ProbeCooldownSeconds,
 		RejectBackoff:     effective.RejectBackoffSeconds,
+		RoutingCookieTTL:  effective.RoutingCookieTTLSeconds,
+		RoutingRefresh:    effective.RoutingRefreshBeforeSeconds,
+		RoutingInterval:   effective.RoutingProbeIntervalSeconds,
+		HarvestAttempts:   effective.HarvestAttempts,
 		HarvestProxyCount: len(effective.HarvestProxyURLs),
 		PersistentStore:   process.Store.persistent(),
 		RestoredTickets:   process.Store.restoredCount(),
@@ -1560,6 +1642,9 @@ func SnapshotCodexTurnTickets() CodexTurnTicketSnapshot {
 	snapshot.Buckets = stats.Buckets
 	snapshot.HealthyTickets = stats.Healthy
 	snapshot.BucketStates = harvester.bucketSnapshots(effective)
+	if effective.AdaptiveInjection {
+		snapshot.Buckets = len(snapshot.BucketStates)
+	}
 	snapshot.HealthyTickets = harvester.policyHealthyCount(effective)
 	return snapshot
 }
@@ -1578,14 +1663,15 @@ func SnapshotCodexTurnTicketForAuth(auth *cliproxyauth.Auth) *CodexTurnTicketCre
 	harvester := process.Harvester
 	effective := codexTurnTicketEffectiveConfig(harvester.cfgProvider)
 	snapshot := &CodexTurnTicketCredentialSnapshot{
-		Configured:       true,
-		Enabled:          effective.Enabled,
-		InjectionEnabled: effective.Enabled && effective.InjectionEnabled,
-		HarvesterActive:  harvester.Running(),
-		TargetLength:     codexTurnTicketTargetLength(auth, effective),
-		Plan:             ResolveCodexTurnTicketPlan(auth, effective.TargetLength).Plan,
-		PlanSource:       ResolveCodexTurnTicketPlan(auth, effective.TargetLength).Source,
-		State:            "missing",
+		Configured:        true,
+		Enabled:           effective.Enabled,
+		InjectionEnabled:  effective.Enabled && effective.InjectionEnabled,
+		AdaptiveInjection: effective.AdaptiveInjection,
+		HarvesterActive:   harvester.Running(),
+		TargetLength:      codexTurnTicketTargetLength(auth, effective),
+		Plan:              ResolveCodexTurnTicketPlan(auth, effective.TargetLength).Plan,
+		PlanSource:        ResolveCodexTurnTicketPlan(auth, effective.TargetLength).Source,
+		State:             "missing",
 	}
 	if !effective.Enabled {
 		snapshot.State = "disabled"
@@ -1596,12 +1682,16 @@ func SnapshotCodexTurnTicketForAuth(auth *cliproxyauth.Auth) *CodexTurnTicketCre
 		return snapshot
 	}
 
-	var expiringModels, invalidModels int
+	var expiringModels, invalidModels, unclassifiedModels int
 	for _, model := range effective.Models {
 		bucket := harvester.bucketSnapshot(auth, model, effective)
 		modelState := CodexTurnTicketModelSnapshot{
 			Model:               bucket.Model,
 			TicketState:         bucket.TicketState,
+			RoutingMode:         bucket.RoutingMode,
+			RoutingCookieNames:  append([]string(nil), bucket.RoutingCookieNames...),
+			RoutingValidatedAt:  bucket.RoutingValidatedAt,
+			RoutingExpiresAt:    bucket.RoutingExpiresAt,
 			TicketLength:        bucket.TicketLength,
 			ExpiresAt:           bucket.ExpiresAt,
 			LastObservedAt:      bucket.LastObservedAt,
@@ -1613,9 +1703,9 @@ func SnapshotCodexTurnTicketForAuth(auth *cliproxyauth.Auth) *CodexTurnTicketCre
 		snapshot.ModelStates = append(snapshot.ModelStates, modelState)
 		snapshot.TotalModels++
 		switch bucket.TicketState {
-		case "healthy":
+		case "healthy", "direct":
 			snapshot.HealthyModels++
-			if snapshot.EarliestExpiresAt.IsZero() || bucket.ExpiresAt.Before(snapshot.EarliestExpiresAt) {
+			if !bucket.ExpiresAt.IsZero() && (snapshot.EarliestExpiresAt.IsZero() || bucket.ExpiresAt.Before(snapshot.EarliestExpiresAt)) {
 				snapshot.EarliestExpiresAt = bucket.ExpiresAt
 			}
 		case "expiring":
@@ -1625,6 +1715,8 @@ func SnapshotCodexTurnTicketForAuth(auth *cliproxyauth.Auth) *CodexTurnTicketCre
 			}
 		case "expired_or_invalid":
 			invalidModels++
+		case "unclassified":
+			unclassifiedModels++
 		}
 	}
 
@@ -1637,6 +1729,8 @@ func SnapshotCodexTurnTicketForAuth(auth *cliproxyauth.Auth) *CodexTurnTicketCre
 		snapshot.State = "expiring"
 	case invalidModels > 0:
 		snapshot.State = "expired_or_invalid"
+	case unclassifiedModels > 0:
+		snapshot.State = "unclassified"
 	default:
 		snapshot.State = "missing"
 	}
@@ -1673,6 +1767,38 @@ func (h *CodexTurnTicketHarvester) bucketSnapshot(auth *cliproxyauth.Auth, model
 func (h *CodexTurnTicketHarvester) bucketSnapshotAt(auth *cliproxyauth.Auth, model string, effective CodexTurnTicketConfig, now time.Time) CodexTurnTicketBucketSnapshot {
 	entry := CodexTurnTicketBucketSnapshot{TargetLength: codexTurnTicketTargetLength(auth, effective), Plan: ResolveCodexTurnTicketPlan(auth, effective.TargetLength).Plan, AuthHint: codexTurnTicketAuthHint(auth), Model: model, TicketState: "missing"}
 	if h == nil || h.store == nil || auth == nil {
+		return entry
+	}
+	if effective.AdaptiveInjection {
+		route, ticket := h.store.adaptiveSnapshot(auth, model, effective)
+		entry.RoutingMode = route.Mode
+		switch route.Mode {
+		case codexRouteDirect:
+			entry.TicketState = "direct"
+		case codexRouteInject:
+			if ticket == nil {
+				entry.TicketState = "missing"
+				break
+			}
+			entry.TicketLength = ticket.Length
+			entry.ExpiresAt = ticket.RoutingExpiresAt
+			entry.RoutingCookieNames = codexRoutingCookieNames(ticket)
+			entry.RoutingValidatedAt = ticket.RoutingValidatedAt
+			entry.RoutingExpiresAt = ticket.RoutingExpiresAt
+			if ticket.routingValid(auth, effective, now) {
+				entry.TicketState = "healthy"
+			} else {
+				entry.TicketState = "expired_or_invalid"
+			}
+		default:
+			entry.TicketState = "unclassified"
+		}
+		observation := h.observation(auth.ID, model)
+		entry.LastObservedAt = observation.ObservedAt
+		entry.LastHTTPStatus = observation.StatusCode
+		entry.LastObservedLength = observation.StateLength
+		entry.LastObservedHealthy = observation.Healthy
+		entry.LastResult = observation.Result
 		return entry
 	}
 	if ticket := h.store.Lookup(auth.ID, model); ticket != nil {
@@ -1733,8 +1859,8 @@ func DescribeCodexTurnTickets() string {
 		return "codex turn tickets: not configured"
 	}
 	return fmt.Sprintf(
-		"codex turn tickets: enabled=%t injection_enabled=%t fail_closed=%t harvester_active=%t harvest_egresses=%d persistent=%t restored=%d probed=%d harvested=%d buckets=%d healthy=%d",
-		snapshot.Enabled, snapshot.InjectionEnabled, snapshot.FailClosed, snapshot.HarvesterActive, snapshot.HarvestProxyCount, snapshot.PersistentStore, snapshot.RestoredTickets,
+		"codex turn tickets: enabled=%t injection_enabled=%t adaptive=%t fail_closed=%t harvester_active=%t harvest_egresses=%d routing_lease_seconds=%d persistent=%t restored=%d probed=%d harvested=%d buckets=%d healthy=%d",
+		snapshot.Enabled, snapshot.InjectionEnabled, snapshot.AdaptiveInjection, snapshot.FailClosed, snapshot.HarvesterActive, snapshot.HarvestProxyCount, snapshot.RoutingCookieTTL, snapshot.PersistentStore, snapshot.RestoredTickets,
 		snapshot.Probed, snapshot.Harvested, snapshot.Buckets, snapshot.HealthyTickets,
 	)
 }

@@ -21,6 +21,8 @@ func TestGetCodexTurnTicketReportsRedactedState(t *testing.T) {
 	const accessToken = "test-access-token-must-not-leak"
 	cfg := &config.Config{}
 	cfg.Codex.TurnTicket.Enabled = true
+	adaptive := false
+	cfg.Codex.TurnTicket.AdaptiveInjection = &adaptive
 	cfg.Codex.TurnTicket.Models = []string{"gpt-5.5"}
 	cfg.Codex.TurnTicket.HarvestProxyURLs = []string{"direct", "http://user:proxy-secret@127.0.0.1:8080"}
 	process := helps.ConfigureCodexTurnTickets(func() *config.Config { return cfg }, nil)

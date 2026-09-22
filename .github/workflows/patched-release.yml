@@ -218,6 +218,13 @@ jobs:
             ./sdk/cliproxy/... \
             ./sdk/pluginapi
 
+      - name: Check adaptive routing races
+        if: steps.metadata.outputs.already_released != 'true'
+        run: |
+          go test -race -count=1 \
+            -run 'TestCodexAdaptive|TestCodexRoutingCompleted|TestEffectiveCodexAdaptive|TestCodexExecutorAdaptive|TestCodexWebsocket.*(Adaptive|Routing)' \
+            ./internal/runtime/executor/helps ./internal/runtime/executor
+
       - name: Verify server build
         if: steps.metadata.outputs.already_released != 'true'
         run: |

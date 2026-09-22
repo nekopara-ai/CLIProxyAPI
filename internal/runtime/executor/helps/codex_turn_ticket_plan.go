@@ -7,6 +7,7 @@ import (
 	"time"
 
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	log "github.com/sirupsen/logrus"
 )
 
 // CodexTurnTicketPlanField is an explicit routing policy, not an authentication
@@ -90,18 +91,23 @@ func InvalidateCodexTurnTicketsForAuth(authID string) {
 	h := p.Harvester
 	h.probeInFlight.Lock()
 	defer h.probeInFlight.Unlock()
-	p.Store.mu.RLock()
-	var models []string
+	p.Store.mu.Lock()
 	for key := range p.Store.tickets {
-		id, model, ok := splitCodexTurnTicketKey(key)
+		id, _, ok := splitCodexTurnTicketKey(key)
 		if ok && id == authID {
-			models = append(models, model)
+			delete(p.Store.tickets, key)
 		}
 	}
-	p.Store.mu.RUnlock()
-	for _, model := range models {
-		p.Store.Delete(authID, model)
+	for key := range p.Store.routes {
+		id, _, ok := splitCodexTurnTicketKey(key)
+		if ok && id == authID {
+			delete(p.Store.routes, key)
+		}
 	}
+	if err := p.Store.persistLocked(); err != nil {
+		log.Errorf("codex turn tickets: persist auth invalidation: %v", err)
+	}
+	p.Store.mu.Unlock()
 	h.scheduleMu.Lock()
 	for key := range h.nextProbe {
 		id, _, ok := splitCodexTurnTicketKey(key)
@@ -124,6 +130,24 @@ func InvalidateCodexTurnTicketsForAuth(authID string) {
 // Count cached buckets using their current account policy, including disabled
 // accounts. Cache occupancy does not imply that an account is schedulable.
 func (h *CodexTurnTicketHarvester) policyHealthyCount(effective CodexTurnTicketConfig) int {
+	if effective.AdaptiveInjection {
+		count := 0
+		now := time.Now()
+		if h.listAuths == nil {
+			return count
+		}
+		for _, auth := range h.listAuths() {
+			if auth == nil {
+				continue
+			}
+			for _, model := range effective.Models {
+				if h.store.adaptiveAllows(auth, model, effective, now) {
+					count++
+				}
+			}
+		}
+		return count
+	}
 	lengths := make(map[string]int)
 	if h.listAuths != nil {
 		for _, a := range h.listAuths() {

@@ -239,6 +239,26 @@ type CodexTurnTicketSettings struct {
 	// to true when omitted. False preserves client headers and leaves harvesting,
 	// passive capture, and FailClosed scheduling unchanged.
 	InjectionEnabled *bool `yaml:"injection-enabled,omitempty" json:"injection-enabled,omitempty"`
+	// AdaptiveInjection selects adaptive routing-cookie mode for the ticket subsystem.
+	// The effective default is true, resolved in the core runtime rather than here, so a
+	// missing field keeps the adaptive behavior. Set false to fall back to the legacy
+	// behavior, which replays only a cached healthy ticket and never classifies traffic
+	// through a business-egress probe.
+	AdaptiveInjection *bool `yaml:"adaptive-injection,omitempty" json:"adaptive-injection,omitempty"`
+	// RoutingCookieTTLSeconds caps the freshness lease granted to a validated routing
+	// cookie bundle in adaptive mode. The core default is 180 and the core also caps the
+	// value at 180; this is a local routing lease, not the upstream token's own lifetime.
+	RoutingCookieTTLSeconds int `yaml:"routing-cookie-ttl-seconds,omitempty" json:"routing-cookie-ttl-seconds,omitempty"`
+	// RoutingRefreshBeforeSeconds is how close to lease expiry a validated bundle is
+	// renewed. The core default is 30.
+	RoutingRefreshBeforeSeconds int `yaml:"routing-refresh-before-seconds,omitempty" json:"routing-refresh-before-seconds,omitempty"`
+	// RoutingProbeIntervalSeconds is the delay between adaptive business-egress
+	// classification probes. The core default is 15.
+	RoutingProbeIntervalSeconds int `yaml:"routing-probe-interval-seconds,omitempty" json:"routing-probe-interval-seconds,omitempty"`
+	// HarvestAttempts bounds how many acquisition candidates the adaptive harvester
+	// tries before giving up on a bucket. The core default is 3 and the core caps the
+	// value at 8.
+	HarvestAttempts int `yaml:"harvest-attempts,omitempty" json:"harvest-attempts,omitempty"`
 	// FailClosed prevents a Codex OAuth credential from serving a gated model until that
 	// exact (credential, model) bucket has a valid healthy ticket. It defaults to true when
 	// omitted so a missing ticket can never silently fall back to a degraded turn state.
@@ -267,8 +287,10 @@ type CodexTurnTicketSettings struct {
 	// HarvestProxyURLs lists fallback egress choices used only by synthetic probes.
 	// Each entry may be a concrete proxy URL or "direct", which explicitly bypasses process
 	// environment proxies. Background probes try the business egress first and select one
-	// random fallback only after an HTTP 200 with a 312 turn state. Harvesting stays
-	// disabled while this list is empty.
+	// random fallback only after an HTTP 200 with a 312 turn state. An empty list disables
+	// only the fallback acquisition pool: adaptive mode still runs business-egress
+	// classification and can still pass natural healthy traffic through. It never disables
+	// classification itself.
 	HarvestProxyURLs []string `yaml:"harvest-proxy-urls,omitempty" json:"harvest-proxy-urls,omitempty"`
 	// Models lists the buckets to harvest and inject for. Defaults to the Codex models the
 	// upstream mints tickets for.
