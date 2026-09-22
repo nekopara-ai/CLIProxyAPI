@@ -196,6 +196,10 @@ func (s *Service) commitConfigUpdate(newCfg *config.Config) configCommit {
 	if newCfg == nil {
 		return configCommit{}
 	}
+	if errValidate := newCfg.Codex.TurnTicket.Validate(); errValidate != nil {
+		log.WithError(errValidate).Warn("rejected config update with invalid turn-ticket policy")
+		return configCommit{}
+	}
 	if errValidate := newCfg.ValidateCredentialWeights(); errValidate != nil {
 		log.WithError(errValidate).Warn("rejected config update with invalid credential weights")
 		return configCommit{}

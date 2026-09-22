@@ -227,12 +227,10 @@ type CodexConfig struct {
 
 // CodexTurnTicketSettings configures the Codex turn-state ticket harvester.
 //
-// The upstream mints a healthy X-Codex-Turn-State token (normally 292 characters,
-// prefixed gAAAAA) for credentials and models that are not currently degraded, and a
-// longer degraded variant under capacity pressure. Replaying a harvested healthy token
-// lets an account skip the degraded state, so this feature probes each eligible
-// credential out of band through its own egress and keeps only healthy tokens.
+// Header lengths are configurable empirical routing rules. Acquired tokens remain
+// isolated by credential and model; adaptive replay also requires business validation.
 type CodexTurnTicketSettings struct {
+	CodexTurnTicketPolicySettings `yaml:",inline"`
 	// Enabled is the master switch for harvesting, injection, and ticket-based gating.
 	Enabled bool `yaml:"enabled" json:"enabled"`
 	// InjectionEnabled controls replay of cached tickets on outbound requests. Defaults
@@ -263,7 +261,7 @@ type CodexTurnTicketSettings struct {
 	// exact (credential, model) bucket has a valid healthy ticket. It defaults to true when
 	// omitted so a missing ticket can never silently fall back to a degraded turn state.
 	FailClosed *bool `yaml:"fail-closed,omitempty" json:"fail-closed,omitempty"`
-	// TargetLength is the token length treated as healthy. Defaults to 292.
+	// TargetLength is the healthy length for unclassified plans only. Defaults to 780.
 	TargetLength int `yaml:"target-length,omitempty" json:"target-length,omitempty"`
 	// TTLSeconds bounds how long a captured token is replayed, measured from the issue
 	// timestamp encoded in the token itself. Defaults to 3600.
@@ -301,6 +299,30 @@ type CodexTurnTicketSettings struct {
 	// AuthIDs optionally restricts harvesting to specific credentials. Empty harvests
 	// every eligible Codex OAuth credential.
 	AuthIDs []string `yaml:"auth-ids,omitempty" json:"auth-ids,omitempty"`
+}
+
+// CodexTurnTicketPolicySettings controls classification and adaptive recovery.
+// Lengths describe empirical header shapes, not an upstream quality guarantee.
+type CodexTurnTicketPolicySettings struct {
+	PersonalHealthyLength  int `yaml:"personal-healthy-length,omitempty" json:"personal-healthy-length,omitempty"`
+	PersonalDegradedLength int `yaml:"personal-degraded-length,omitempty" json:"personal-degraded-length,omitempty"`
+	TeamHealthyLength      int `yaml:"team-healthy-length,omitempty" json:"team-healthy-length,omitempty"`
+	TeamDegradedLength     int `yaml:"team-degraded-length,omitempty" json:"team-degraded-length,omitempty"`
+	// BlockOnDegraded defaults to FailClosed. Explicit values override it for inject mode only.
+	BlockOnDegraded *bool `yaml:"block-on-degraded,omitempty" json:"block-on-degraded,omitempty"`
+	// UnknownStateAction is retain (default), harvest, or block. Adaptive mode only.
+	UnknownStateAction string `yaml:"unknown-state-action,omitempty" json:"unknown-state-action,omitempty"`
+	// HarvestOnBusinessError excludes statuses assigned to rejection backoff.
+	HarvestOnBusinessError bool `yaml:"harvest-on-business-error,omitempty" json:"harvest-on-business-error,omitempty"`
+	// ValidationTicketPolicy is same-or-empty (default) or healthy-or-empty.
+	ValidationTicketPolicy     string   `yaml:"validation-ticket-policy,omitempty" json:"validation-ticket-policy,omitempty"`
+	RequireCompleteResponse    *bool    `yaml:"require-complete-response,omitempty" json:"require-complete-response,omitempty"`
+	RequireModelMatch          *bool    `yaml:"require-model-match,omitempty" json:"require-model-match,omitempty"`
+	RoutingExpiryMarginSeconds *int     `yaml:"routing-expiry-margin-seconds,omitempty" json:"routing-expiry-margin-seconds,omitempty"`
+	LegacyExpiryMarginSeconds  *int     `yaml:"legacy-expiry-margin-seconds,omitempty" json:"legacy-expiry-margin-seconds,omitempty"`
+	RoutingCookieNames         []string `yaml:"routing-cookie-names" json:"routing-cookie-names"`
+	RejectStatusCodes          []int    `yaml:"reject-status-codes" json:"reject-status-codes"`
+	HarvestRejectStatusCodes   []int    `yaml:"harvest-reject-status-codes" json:"harvest-reject-status-codes"`
 }
 
 // DefaultCodexStreamBootstrapTimeout is the default maximum duration to buffer bootstrap events.

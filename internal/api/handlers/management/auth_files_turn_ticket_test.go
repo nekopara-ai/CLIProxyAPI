@@ -14,6 +14,7 @@ import (
 func TestBuildAuthFileEntryIncludesCodexTurnTicketSnapshot(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Codex.TurnTicket.Enabled = true
+	cfg.Codex.TurnTicket.TargetLength = 292
 	adaptive := false
 	cfg.Codex.TurnTicket.AdaptiveInjection = &adaptive
 	cfg.Codex.TurnTicket.Models = []string{"gpt-5.5"}

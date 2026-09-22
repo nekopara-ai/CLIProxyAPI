@@ -157,6 +157,11 @@ func TestCodexTurnTicketKeySeparatesAuthFromModel(t *testing.T) {
 
 func turnTicketTestConfig() *config.Config {
 	cfg := &config.Config{}
+	cfg.Codex.TurnTicket.TargetLength = 292
+	cfg.Codex.TurnTicket.PersonalHealthyLength = 292
+	cfg.Codex.TurnTicket.PersonalDegradedLength = 312
+	cfg.Codex.TurnTicket.TeamHealthyLength = 332
+	cfg.Codex.TurnTicket.TeamDegradedLength = 356
 	cfg.Codex.TurnTicket.Enabled = true
 	adaptive := false
 	cfg.Codex.TurnTicket.AdaptiveInjection = &adaptive
@@ -911,6 +916,7 @@ func TestCodexTurnTicketHarvesterPicksUpEnabledConfigHotReload(t *testing.T) {
 	// cycle must see the new value without the harvester being rebuilt.
 	reloaded := &config.Config{}
 	reloaded.Codex.TurnTicket.Enabled = true
+	reloaded.Codex.TurnTicket.TargetLength = 292
 	adaptive := false
 	reloaded.Codex.TurnTicket.AdaptiveInjection = &adaptive
 	reloaded.Codex.TurnTicket.HarvestProxyURLs = []string{proxyURL}
@@ -991,6 +997,7 @@ func TestProcessWideTurnTicketWiringFollowsConfigReload(t *testing.T) {
 	// Hot-reload the live config to enabled: injection must start on the very next call.
 	reloaded := &config.Config{}
 	reloaded.Codex.TurnTicket.Enabled = true
+	reloaded.Codex.TurnTicket.TargetLength = 292
 	adaptive := false
 	reloaded.Codex.TurnTicket.AdaptiveInjection = &adaptive
 	reloaded.Codex.TurnTicket.Models = []string{"gpt-5.5"}
@@ -1130,7 +1137,7 @@ func TestDescribeCodexTurnTicketsNeverLeaksTokenMaterial(t *testing.T) {
 
 func TestEffectiveCodexTurnTicketConfigDefaults(t *testing.T) {
 	effective := EffectiveCodexTurnTicketConfig(nil)
-	if effective.TargetLength != 292 || effective.TTLSeconds != 3600 || effective.RefreshBeforeSeconds != 600 {
+	if effective.TargetLength != 780 || effective.TTLSeconds != 3600 || effective.RefreshBeforeSeconds != 600 {
 		t.Fatalf("unexpected defaults: %+v", effective)
 	}
 	if effective.Enabled {

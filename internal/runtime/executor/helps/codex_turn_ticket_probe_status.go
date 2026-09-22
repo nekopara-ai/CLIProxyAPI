@@ -2,6 +2,7 @@ package helps
 
 import (
 	"net/http"
+	"slices"
 	"time"
 
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -93,21 +94,21 @@ func routingProbeObservation(auth *cliproxyauth.Auth, model, phase string, resul
 	switch {
 	case err != nil:
 		observation.Result = codexTurnTicketProbeErrorClass(err)
-	case phase == "harvest" && result.Status == http.StatusForbidden:
+	case phase == "harvest" && slices.Contains(effective.HarvestRejectStatusCodes, result.Status):
 		observation.Result = "harvest_egress_rejected"
-	case result.Status == http.StatusUnauthorized || result.Status == http.StatusForbidden || result.Status == http.StatusTooManyRequests:
+	case slices.Contains(effective.RejectStatusCodes, result.Status):
 		observation.Result = "rejected"
 	case result.Status != http.StatusOK:
 		observation.Result = "http_error"
-	case IsHealthyCodexTurnState(state, codexTurnTicketDegradedLength(codexTurnTicketTargetLength(auth, effective))):
+	case IsHealthyCodexTurnState(state, codexTurnTicketDegradedLength(auth, effective)):
 		observation.Result = "degraded"
-	case !result.Complete:
+	case effective.RequireCompleteResponse && !result.Complete:
 		observation.Result = "incomplete_response"
-	case result.Model != model:
+	case effective.RequireModelMatch && result.Model != model:
 		observation.Result = "model_mismatch"
 	case phase == "business_validation":
 		observation.Result = "validation_passed"
-		if ticket == nil || (state != "" && state != ticket.State) {
+		if !codexValidationStateAcceptable(state, ticket, codexTurnTicketTargetLength(auth, effective), effective) {
 			observation.Result = "validation_ticket_changed"
 		}
 	case !IsHealthyCodexTurnState(state, codexTurnTicketTargetLength(auth, effective)):
