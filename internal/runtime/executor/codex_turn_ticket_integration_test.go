@@ -43,6 +43,7 @@ func integrationTurnState(t *testing.T, issueUnix int64, length int) string {
 func turnTicketIntegrationConfig(model string) *config.Config {
 	cfg := &config.Config{}
 	cfg.Codex.TurnTicket.Enabled = true
+	cfg.Codex.TurnTicket.GatewayMint = func() *bool { v := false; return &v }() // Exercise the rollback engine.
 	cfg.Codex.TurnTicket.TargetLength = 292
 	cfg.Codex.TurnTicket.PersonalHealthyLength = 292
 	cfg.Codex.TurnTicket.TeamHealthyLength = 332

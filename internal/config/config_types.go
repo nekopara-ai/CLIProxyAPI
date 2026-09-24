@@ -321,6 +321,21 @@ type CodexTurnTicketSettings struct {
 // CodexTurnTicketPolicySettings controls classification and adaptive recovery.
 // Lengths describe empirical header shapes, not an upstream quality guarantee.
 type CodexTurnTicketPolicySettings struct {
+	// Nil uses the existing per-plan length policy; zero disables the format-length check.
+	MintTicketLength *int `yaml:"mint-ticket-length,omitempty" json:"mint-ticket-length,omitempty"`
+	// Gateway minting is the default acquisition engine. False explicitly selects
+	// the previous adaptive engine for rollback; the master switch stays unchanged.
+	GatewayMint              *bool    `yaml:"gateway-mint,omitempty" json:"gateway-mint,omitempty"`
+	MintGateway              string   `yaml:"mint-gateway,omitempty" json:"mint-gateway,omitempty"`
+	MintTicketTTLSeconds     int      `yaml:"mint-ticket-ttl-seconds,omitempty" json:"mint-ticket-ttl-seconds,omitempty"`
+	MintPairTTLSeconds       int      `yaml:"mint-pair-ttl-seconds,omitempty" json:"mint-pair-ttl-seconds,omitempty"`
+	MintMaxAttempts          int      `yaml:"mint-max-attempts,omitempty" json:"mint-max-attempts,omitempty"`
+	MintTotalTimeoutSeconds  int      `yaml:"mint-total-timeout-seconds,omitempty" json:"mint-total-timeout-seconds,omitempty"`
+	MintRetryCooldownSeconds int      `yaml:"mint-retry-cooldown-seconds,omitempty" json:"mint-retry-cooldown-seconds,omitempty"`
+	MintCacheCapacity        int      `yaml:"mint-cache-capacity,omitempty" json:"mint-cache-capacity,omitempty"`
+	MintWorkers              int      `yaml:"mint-workers,omitempty" json:"mint-workers,omitempty"`
+	MintTransports           []string `yaml:"mint-transports,omitempty" json:"mint-transports,omitempty"`
+
 	PersonalHealthyLength  int `yaml:"personal-healthy-length,omitempty" json:"personal-healthy-length,omitempty"`
 	PersonalDegradedLength int `yaml:"personal-degraded-length,omitempty" json:"personal-degraded-length,omitempty"`
 	TeamHealthyLength      int `yaml:"team-healthy-length,omitempty" json:"team-healthy-length,omitempty"`

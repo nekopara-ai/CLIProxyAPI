@@ -842,7 +842,10 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 	}
 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg, preserveNativeOutput, opts.Headers)
 	applyModelHeaderOverrides(wsHeaders, baseModel, codexOverrideIdentity{cfg: e.cfg, auth: auth})
-	ticketInjected := applyCodexTurnTicket(ctx, wsHeaders, auth, baseModel)
+	ticketInjected := applyCodexTurnTicket(helps.WithCodexMintTransport(ctx, "websocket"), wsHeaders, auth, baseModel)
+	if !helps.CodexGatewayRequestAllowed(auth, baseModel, ticketInjected) {
+		return nil, statusErr{code: http.StatusServiceUnavailable, msg: "codex mint: no live ticket and route for the selected transport"}
+	}
 	applyCodexIdentityConfuseHeaders(wsHeaders, &identityState)
 	routingFingerprint := codexWebsocketRoutingFingerprint(wsHeaders, ticketInjected)
 

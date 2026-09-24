@@ -27,6 +27,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps/codexmint"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/proxyutil"
 	log "github.com/sirupsen/logrus"
@@ -110,6 +111,7 @@ func codexTurnTicketKey(authID, model string) string {
 // and optionally mirrors them to one private atomic file so restarts do not discard a
 // healthy ticket that the upstream may no longer be willing to mint.
 type CodexTurnTicketStore struct {
+	mint            *codexmint.Manager
 	mu              sync.RWMutex
 	tickets         map[string]*CodexTurnTicket
 	persistedExpiry map[string]time.Time
@@ -141,6 +143,7 @@ const codexTurnTicketPersistAdvance = time.Minute
 // NewCodexTurnTicketStore returns an empty in-memory ticket store.
 func NewCodexTurnTicketStore() *CodexTurnTicketStore {
 	return &CodexTurnTicketStore{
+		mint:            codexmint.New(nil),
 		tickets:         make(map[string]*CodexTurnTicket),
 		persistedExpiry: make(map[string]time.Time),
 		routes:          make(map[string]codexTurnTicketRoute),
@@ -673,6 +676,9 @@ func (i *CodexTurnTicketInjector) Apply(auth *cliproxyauth.Auth, model string, h
 	if !effective.Enabled || !effective.InjectionEnabled || !codexTurnTicketModelGated(effective, model) || !codexTurnTicketAuthScoped(effective, auth.ID) {
 		return false
 	}
+	if codexGatewayEnabled(effective) {
+		return i.applyGateway(auth, model, headers, effective, requestContext...)
+	}
 	if effective.AdaptiveInjection {
 		if !codexAdaptiveRequestEgressMatches(auth, effective, requestContext...) {
 			return false
@@ -704,6 +710,7 @@ type CodexTurnTicketHarvester struct {
 
 	mu      sync.Mutex
 	running bool
+	cancel  context.CancelFunc
 	stop    chan struct{}
 	done    chan struct{}
 	wake    chan struct{}
@@ -762,6 +769,7 @@ func (h *CodexTurnTicketHarvester) Start(ctx context.Context) {
 	if parent == nil {
 		parent = context.Background()
 	}
+	parent, h.cancel = context.WithCancel(parent)
 	go func() {
 		defer close(done)
 		h.run(parent, stop)
@@ -781,6 +789,9 @@ func (h *CodexTurnTicketHarvester) Stop() {
 	stop, done := h.stop, h.done
 	h.running = false
 	close(stop)
+	if h.cancel != nil {
+		h.cancel()
+	}
 	h.mu.Unlock()
 	if done != nil {
 		<-done
@@ -821,6 +832,10 @@ func (h *CodexTurnTicketHarvester) probeAll(ctx context.Context) {
 	}
 	effective := codexTurnTicketEffectiveConfig(h.cfgProvider)
 	if !effective.Enabled || (!effective.AdaptiveInjection && len(effective.HarvestProxyURLs) == 0) {
+		return
+	}
+	if codexGatewayEnabled(effective) {
+		h.probeGatewayAll(ctx, effective)
 		return
 	}
 	scope := make(map[string]struct{}, len(effective.AuthIDs))
@@ -1536,6 +1551,9 @@ func CodexTurnTicketAllowsExecution(auth *cliproxyauth.Auth, model string) bool 
 		!codexTurnTicketModelGated(effective, model) || !codexTurnTicketAuthScoped(effective, auth.ID) {
 		return true
 	}
+	if codexGatewayEnabled(effective) {
+		return process.Store.gatewayAllows(auth, model, effective)
+	}
 	if effective.AdaptiveInjection {
 		return process.Store.adaptiveAdmissionAllows(auth, model, effective, time.Now())
 	}
@@ -1591,7 +1609,8 @@ type CodexTurnTicketSnapshot struct {
 // CodexTurnTicketBucketSnapshot is a credential-safe per-model view. AuthHint is either
 // a masked OAuth email or a short one-way hash; raw IDs and ticket material are omitted.
 type CodexTurnTicketBucketSnapshot struct {
-	DegradedLength int `json:"degraded_length"`
+	MintStates     map[string]codexmint.Snapshot `json:"mint_states,omitempty"`
+	DegradedLength int                           `json:"degraded_length"`
 	CodexTurnTicketProbeSnapshot
 	TargetLength        int       `json:"target_length"`
 	Plan                string    `json:"plan"`
@@ -1636,6 +1655,7 @@ type CodexTurnTicketCredentialSnapshot struct {
 // CodexTurnTicketModelSnapshot describes one model bucket without repeating the
 // credential hint used by the global redacted snapshot.
 type CodexTurnTicketModelSnapshot struct {
+	MintStates map[string]codexmint.Snapshot `json:"mint_states,omitempty"`
 	CodexTurnTicketProbeSnapshot
 	Model               string    `json:"model"`
 	TicketState         string    `json:"ticket_state"`
@@ -1698,6 +1718,15 @@ func SnapshotCodexTurnTickets() CodexTurnTicketSnapshot {
 	if effective.AdaptiveInjection {
 		snapshot.Buckets = len(snapshot.BucketStates)
 	}
+
+	if codexGatewayEnabled(effective) {
+		snapshot.TTLSeconds = effective.MintTicketTTLSeconds
+		snapshot.RoutingCookieTTL = effective.MintPairTTLSeconds
+		snapshot.HarvestAttempts = effective.MintMaxAttempts
+		snapshot.ProbeCooldown = effective.MintRetryCooldownSeconds
+		snapshot.PersistentStore = false
+		snapshot.RestoredTickets = 0
+	}
 	snapshot.HealthyTickets = harvester.policyHealthyCount(effective)
 	return snapshot
 }
@@ -1743,6 +1772,7 @@ func SnapshotCodexTurnTicketForAuth(auth *cliproxyauth.Auth) *CodexTurnTicketCre
 		modelState := CodexTurnTicketModelSnapshot{
 			CodexTurnTicketProbeSnapshot: bucket.CodexTurnTicketProbeSnapshot,
 			Model:                        bucket.Model,
+			MintStates:                   bucket.MintStates,
 			TicketState:                  bucket.TicketState,
 			RoutingMode:                  bucket.RoutingMode,
 			RoutingCookieNames:           append([]string(nil), bucket.RoutingCookieNames...),
@@ -1823,6 +1853,37 @@ func (h *CodexTurnTicketHarvester) bucketSnapshot(auth *cliproxyauth.Auth, model
 func (h *CodexTurnTicketHarvester) bucketSnapshotAt(auth *cliproxyauth.Auth, model string, effective CodexTurnTicketConfig, now time.Time) CodexTurnTicketBucketSnapshot {
 	entry := CodexTurnTicketBucketSnapshot{DegradedLength: codexTurnTicketDegradedLength(auth, effective), TargetLength: codexTurnTicketTargetLength(auth, effective), Plan: ResolveCodexTurnTicketPlan(auth, effective.TargetLength, effective).Plan, AuthHint: codexTurnTicketAuthHint(auth), Model: model, TicketState: "missing"}
 	if h == nil || h.store == nil || auth == nil {
+		return entry
+	}
+
+	entry.CodexTurnTicketProbeSnapshot = h.probeSnapshot(auth.ID, model)
+	if codexGatewayEnabled(effective) {
+		entry.TargetLength = codexGatewayConfig(auth, effective).TicketLength
+		entry.RoutingMode = "gateway"
+		entry.TicketState = "unclassified"
+		entry.MintStates = h.gatewaySnapshots(auth, model, effective)
+		for _, transport := range []string{"sse", "websocket"} {
+			s, exists := entry.MintStates[transport]
+			if !exists {
+				continue
+			}
+			if entry.LastObservedAt.Before(s.ObservedAt) {
+				entry.LastObservedAt = s.ObservedAt
+				entry.LastHTTPStatus = s.Status
+				entry.LastResult = s.Reason
+			}
+			if s.Ready {
+				entry.TicketState = "healthy"
+				entry.TicketLength = s.TicketLength
+				entry.ExpiresAt = s.TicketExpiresAt
+				entry.RoutingExpiresAt = s.PairExpiresAt
+				entry.RoutingCookieNames = []string{"__cflb", "__oailb"}
+			} else if entry.TicketState != "healthy" && s.TicketLength > 0 {
+				entry.TicketState = "expired_or_invalid"
+			}
+			entry.ProbeInFlight = entry.ProbeInFlight || s.InFlight
+		}
+		entry.LastObservedHealthy = entry.TicketState == "healthy"
 		return entry
 	}
 	entry.CodexTurnTicketProbeSnapshot = h.probeSnapshot(auth.ID, model)

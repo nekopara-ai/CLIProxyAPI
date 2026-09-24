@@ -405,6 +405,18 @@ codex:
   # Length is not a model-quality guarantee. Tickets remain isolated by auth and model.
   # Manual policy changes through PATCH auth-files/fields invalidate cached tickets.
   turn-ticket:
+    # Gateway-scoped probe/injection engine; see docs/codex-gateway-mint.md.
+    # The existing master enabled switch below remains authoritative.
+    gateway-mint: true
+    mint-gateway: "unified-88"
+    mint-ticket-ttl-seconds: 240
+    mint-pair-ttl-seconds: 3900
+    mint-max-attempts: 24
+    mint-total-timeout-seconds: 75
+    mint-retry-cooldown-seconds: 30
+    mint-cache-capacity: 256
+    mint-workers: 4
+    mint-transports: [sse, websocket]
     # Disabled by default. When false the wiring is inert: injection and passive capture
     # both check this flag, so nothing is stored or replayed until an operator opts in.
     # When true, adaptive direct routes need no captured ticket; degraded routes require

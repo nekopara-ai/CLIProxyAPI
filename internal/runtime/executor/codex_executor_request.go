@@ -419,7 +419,7 @@ func observeCodexWebsocketTurnTicketResponse(ctx context.Context, response *http
 	if errDial != nil || response == nil || response.StatusCode != http.StatusSwitchingProtocols {
 		return
 	}
-	observeCodexTurnTicketResponse(ctx, response.StatusCode, response.Header, requestHeaders, auth, model, injected)
+	observeCodexTurnTicketResponse(helps.WithCodexMintTransport(ctx, "websocket"), response.StatusCode, response.Header, requestHeaders, auth, model, injected)
 }
 
 // harvestCodexTurnTicket records a healthy turn-state the upstream minted for live

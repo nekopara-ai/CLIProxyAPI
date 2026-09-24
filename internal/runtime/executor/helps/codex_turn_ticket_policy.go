@@ -9,6 +9,18 @@ import (
 
 // CodexTurnTicketPolicy is the effective, credential-safe policy exposed in diagnostics.
 type CodexTurnTicketPolicy struct {
+	MintTicketLength         *int     `json:"mint-ticket-length,omitempty"`
+	GatewayMint              bool     `json:"gateway-mint"`
+	MintGateway              string   `json:"mint-gateway"`
+	MintTicketTTLSeconds     int      `json:"mint-ticket-ttl-seconds"`
+	MintPairTTLSeconds       int      `json:"mint-pair-ttl-seconds"`
+	MintMaxAttempts          int      `json:"mint-max-attempts"`
+	MintTotalTimeoutSeconds  int      `json:"mint-total-timeout-seconds"`
+	MintRetryCooldownSeconds int      `json:"mint-retry-cooldown-seconds"`
+	MintCacheCapacity        int      `json:"mint-cache-capacity"`
+	MintWorkers              int      `json:"mint-workers"`
+	MintTransports           []string `json:"mint-transports"`
+
 	PersonalHealthyLength      int      `json:"personal-healthy-length"`
 	PersonalDegradedLength     int      `json:"personal-degraded-length"`
 	TeamHealthyLength          int      `json:"team-healthy-length"`
@@ -79,6 +91,51 @@ func effectiveCodexTurnTicketPolicy(raw config.CodexTurnTicketPolicySettings, fa
 	}
 	if raw.HarvestRejectStatusCodes != nil {
 		p.HarvestRejectStatusCodes = validCodexRejectCodes(raw.HarvestRejectStatusCodes)
+	}
+
+	if raw.MintTicketLength != nil {
+		v := *raw.MintTicketLength
+		p.MintTicketLength = &v
+	}
+	p.GatewayMint = true
+	if raw.GatewayMint != nil {
+		p.GatewayMint = *raw.GatewayMint
+	}
+	p.MintGateway = "unified-88"
+	if raw.MintGateway != "" {
+		p.MintGateway = raw.MintGateway
+	}
+	p.MintTicketTTLSeconds = 240
+	if raw.MintTicketTTLSeconds > 0 {
+		p.MintTicketTTLSeconds = raw.MintTicketTTLSeconds
+	}
+	p.MintPairTTLSeconds = 3900
+	if raw.MintPairTTLSeconds > 0 {
+		p.MintPairTTLSeconds = raw.MintPairTTLSeconds
+	}
+	p.MintMaxAttempts = 24
+	if raw.MintMaxAttempts > 0 {
+		p.MintMaxAttempts = raw.MintMaxAttempts
+	}
+	p.MintTotalTimeoutSeconds = 75
+	if raw.MintTotalTimeoutSeconds > 0 {
+		p.MintTotalTimeoutSeconds = raw.MintTotalTimeoutSeconds
+	}
+	p.MintRetryCooldownSeconds = 30
+	if raw.MintRetryCooldownSeconds > 0 {
+		p.MintRetryCooldownSeconds = raw.MintRetryCooldownSeconds
+	}
+	p.MintCacheCapacity = 256
+	if raw.MintCacheCapacity > 0 {
+		p.MintCacheCapacity = raw.MintCacheCapacity
+	}
+	p.MintWorkers = 4
+	if raw.MintWorkers > 0 {
+		p.MintWorkers = raw.MintWorkers
+	}
+	p.MintTransports = []string{"sse", "websocket"}
+	if raw.MintTransports != nil {
+		p.MintTransports = append([]string(nil), raw.MintTransports...)
 	}
 	return p
 }

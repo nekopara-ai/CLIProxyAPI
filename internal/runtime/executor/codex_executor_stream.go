@@ -94,6 +94,9 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg, opts.Headers)
 	applyModelHeaderOverrides(httpReq.Header, baseModel, codexOverrideIdentity{cfg: e.cfg, auth: auth})
 	ticketInjected := applyCodexTurnTicket(ctx, httpReq.Header, auth, baseModel)
+	if !helps.CodexGatewayRequestAllowed(auth, baseModel, ticketInjected) {
+		return nil, statusErr{code: http.StatusServiceUnavailable, msg: "codex mint: no live ticket and route for the selected transport"}
+	}
 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
 	requestHeaders := httpReq.Header.Clone()
 	reporter.SetCodexTurnState(helps.CodexRequestTurnState(httpReq.Header, ticketInjected))

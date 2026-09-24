@@ -93,6 +93,16 @@ func InvalidateCodexTurnTicketsForAuth(authID string) {
 		return
 	}
 	h := p.Harvester
+	e := codexTurnTicketEffectiveConfig(h.cfgProvider)
+	if h.listAuths != nil {
+		for _, auth := range h.listAuths() {
+			if auth != nil && auth.ID == authID {
+				for _, transport := range []string{"sse", "websocket"} {
+					p.Store.mint.Forget(codexGatewayScope(auth, e, transport))
+				}
+			}
+		}
+	}
 	h.probeInFlight.Lock()
 	defer h.probeInFlight.Unlock()
 	p.Store.mu.Lock()
@@ -134,6 +144,25 @@ func InvalidateCodexTurnTicketsForAuth(authID string) {
 // Count cached buckets using their current account policy, including disabled
 // accounts. Cache occupancy does not imply that an account is schedulable.
 func (h *CodexTurnTicketHarvester) policyHealthyCount(effective CodexTurnTicketConfig) int {
+	if codexGatewayEnabled(effective) {
+		count := 0
+		if h.listAuths != nil {
+			for _, a := range h.listAuths() {
+				if !isCodexTurnTicketProbeEligible(a) || !codexTurnTicketAuthScoped(effective, a.ID) {
+					continue
+				}
+				for _, model := range effective.Models {
+					for _, s := range h.gatewaySnapshots(a, model, effective) {
+						if s.Ready {
+							count++
+							break
+						}
+					}
+				}
+			}
+		}
+		return count
+	}
 	if effective.AdaptiveInjection {
 		count := 0
 		now := time.Now()
