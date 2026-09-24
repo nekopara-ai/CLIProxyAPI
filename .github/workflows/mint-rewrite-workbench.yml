@@ -1,0 +1,61 @@
+name: mint-rewrite-workbench
+
+on:
+  push:
+    branches: [codex/cpa-mint-rewrite-20260924]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mint-rewrite-workbench
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.repository == 'nekopara-ai/CLIProxyAPI' && github.ref == 'refs/heads/codex/cpa-mint-rewrite-20260924'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/cpa-mint-rewrite-20260924
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Apply reviewed development patch on the isolated branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          if test -f .dev/mint-rewrite.patch; then
+            git apply --check .dev/mint-rewrite.patch
+            git apply .dev/mint-rewrite.patch
+            git diff --name-only -- '*.go' | xargs -r gofmt -w
+            rm .dev/mint-rewrite.patch
+            git add -A
+            git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'refactor(codex): apply gateway-scoped mint rewrite'
+            git push origin HEAD:refs/heads/codex/cpa-mint-rewrite-20260924
+          fi
+          git rev-parse HEAD > /tmp/mint-tested-sha.txt
+      - name: Export source for offline review
+        run: git archive --format=tar HEAD > /tmp/mint-source.tar
+      - name: Test
+        run: go test ./... -count=1 -timeout=240s > /tmp/mint-test.log 2>&1
+      - name: Build
+        if: always()
+        run: go build -o /tmp/mint-test-server ./cmd/server > /tmp/mint-build.log 2>&1
+      - name: Upload review source and verification logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mint-rewrite-review
+          path: |
+            /tmp/mint-source.tar
+            /tmp/mint-tested-sha.txt
+            /tmp/mint-test.log
+            /tmp/mint-build.log
+          retention-days: 2
