@@ -33,8 +33,8 @@ jobs:
           set -euo pipefail
           if test -f .dev/mint-rewrite.patch; then
             git apply --check .dev/mint-rewrite.patch
-            git apply .dev/mint-rewrite.patch
-            git diff --name-only -- '*.go' | xargs -r gofmt -w
+            git apply --index .dev/mint-rewrite.patch
+            git diff --cached --name-only -- '*.go' | xargs -r gofmt -w
             rm .dev/mint-rewrite.patch
             git add -A
             git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'refactor(codex): apply gateway-scoped mint rewrite'
@@ -45,6 +45,12 @@ jobs:
         run: git archive --format=tar HEAD > /tmp/mint-source.tar
       - name: Test
         run: go test ./... -count=1 -timeout=240s > /tmp/mint-test.log 2>&1
+      - name: Race test new acquisition and integration
+        if: always()
+        run: |
+          set -o pipefail
+          go test -race ./internal/runtime/executor/helps/codexmint -count=1 -timeout=90s > /tmp/mint-race-core.log 2>&1
+          go test -race ./internal/runtime/executor/helps -run '^TestGateway' -count=1 -timeout=90s > /tmp/mint-race-integration.log 2>&1
       - name: Build
         if: always()
         run: go build -o /tmp/mint-test-server ./cmd/server > /tmp/mint-build.log 2>&1
@@ -58,4 +64,6 @@ jobs:
             /tmp/mint-tested-sha.txt
             /tmp/mint-test.log
             /tmp/mint-build.log
+            /tmp/mint-race-core.log
+            /tmp/mint-race-integration.log
           retention-days: 2
