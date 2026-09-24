@@ -2,78 +2,57 @@ name: mint-rewrite-workbench
 
 on:
   push:
-    branches: [codex/cpa-mint-rewrite-20260924]
+    branches: [codex/cpa-gateway-mint-reviewed-20260924]
     paths: [.dev/mint-rewrite.patch]
 
 permissions:
   contents: read
 
-concurrency:
-  group: mint-rewrite-workbench
-  cancel-in-progress: false
-
 jobs:
   verify:
-    if: github.repository == 'nekopara-ai/CLIProxyAPI' && github.ref == 'refs/heads/codex/cpa-mint-rewrite-20260924'
+    if: github.repository == 'nekopara-ai/CLIProxyAPI' && github.ref == 'refs/heads/codex/cpa-gateway-mint-reviewed-20260924'
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: codex/cpa-mint-rewrite-20260924
+          ref: codex/cpa-gateway-mint-reviewed-20260924
           fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
-      - name: Apply reviewed development patch on the isolated branch
+      - name: Apply fixture correction and remove temporary workbench
         shell: bash
         run: |
           set -euo pipefail
-          if test -f .dev/mint-rewrite.patch; then
-            python3 - <<'PY'
-          import base64, hashlib, lzma, pathlib
-          p = pathlib.Path('.dev/mint-rewrite.patch')
-          data = p.read_bytes()
-          if data.startswith(b'CPA-MINT-XZ-1\n'):
-              _, digest, *parts = data.decode('ascii').splitlines()
-              encoded = ''.join(pathlib.Path(name).read_text().strip() for name in parts if name)
-              data = lzma.decompress(base64.b64decode(encoded, validate=True))
-              assert hashlib.sha256(data).hexdigest() == digest, 'patch checksum mismatch'
-              p.write_bytes(data)
-              for name in parts:
-                  if name:
-                      pathlib.Path(name).unlink()
-          PY
-            git apply --check .dev/mint-rewrite.patch
-            git apply --index .dev/mint-rewrite.patch
-            git diff --cached --name-only -- '*.go' | xargs -r gofmt -w
-            rm .dev/mint-rewrite.patch
-            git add -A
-            git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'refactor(codex): apply gateway-scoped mint rewrite'
-            git push origin HEAD:refs/heads/codex/cpa-mint-rewrite-20260924
-          fi
+          git apply --check .dev/mint-rewrite.patch
+          git apply --index .dev/mint-rewrite.patch
+          git diff --cached --name-only -- '*.go' | xargs -r gofmt -w
+          rm .dev/mint-rewrite.patch .github/workflows/mint-rewrite-workbench.yml
+          git add -A
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'test(codex): correct cancellation fixtures and remove temporary workbench'
+          git push origin HEAD:refs/heads/codex/cpa-gateway-mint-reviewed-20260924
           git rev-parse HEAD > /tmp/mint-tested-sha.txt
-      - name: Export source for offline review
-        run: git archive --format=tar HEAD > /tmp/mint-source.tar
-      - name: Test
-        run: go test ./... -count=1 -timeout=240s > /tmp/mint-test.log 2>&1
-      - name: Race test new acquisition and integration
+          git archive --format=tar HEAD > /tmp/mint-source.tar
+      - name: Full repository tests
+        run: go test ./... -count=1 -timeout=120s > /tmp/mint-test.log 2>&1
+      - name: New core race tests
         if: always()
-        run: |
-          set -o pipefail
-          go test -race ./internal/runtime/executor/helps/codexmint -count=1 -timeout=90s > /tmp/mint-race-core.log 2>&1
-          go test -race ./internal/runtime/executor/helps -run '^TestGateway' -count=1 -timeout=90s > /tmp/mint-race-integration.log 2>&1
-      - name: Build
+        run: go test -race ./internal/runtime/executor/helps/codexmint -count=1 -timeout=60s > /tmp/mint-race-core.log 2>&1
+      - name: Acquisition and injection integration race tests
+        if: always()
+        run: go test -race ./internal/runtime/executor/helps -run '^TestGateway' -count=1 -timeout=60s > /tmp/mint-race-integration.log 2>&1
+      - name: Server build
         if: always()
         run: go build -o /tmp/mint-test-server ./cmd/server > /tmp/mint-build.log 2>&1
-      - name: Upload review source and verification logs
+      - name: Upload source and all verification logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mint-rewrite-review
+          name: mint-rewrite-final-review
           path: |
             /tmp/mint-source.tar
             /tmp/mint-tested-sha.txt
