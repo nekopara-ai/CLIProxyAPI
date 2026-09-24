@@ -163,6 +163,7 @@ func turnTicketTestConfig() *config.Config {
 	cfg.Codex.TurnTicket.TeamHealthyLength = 332
 	cfg.Codex.TurnTicket.TeamDegradedLength = 356
 	cfg.Codex.TurnTicket.Enabled = true
+	cfg.Codex.TurnTicket.GatewayMint = func() *bool { v := false; return &v }() // Exercise the rollback engine.
 	adaptive := false
 	cfg.Codex.TurnTicket.AdaptiveInjection = &adaptive
 	cfg.Codex.TurnTicket.HarvestProxyURLs = []string{"http://127.0.0.1:1"}
@@ -916,6 +917,7 @@ func TestCodexTurnTicketHarvesterPicksUpEnabledConfigHotReload(t *testing.T) {
 	// cycle must see the new value without the harvester being rebuilt.
 	reloaded := &config.Config{}
 	reloaded.Codex.TurnTicket.Enabled = true
+	reloaded.Codex.TurnTicket.GatewayMint = func() *bool { v := false; return &v }() // Exercise the rollback engine.
 	reloaded.Codex.TurnTicket.TargetLength = 292
 	adaptive := false
 	reloaded.Codex.TurnTicket.AdaptiveInjection = &adaptive
@@ -997,6 +999,7 @@ func TestProcessWideTurnTicketWiringFollowsConfigReload(t *testing.T) {
 	// Hot-reload the live config to enabled: injection must start on the very next call.
 	reloaded := &config.Config{}
 	reloaded.Codex.TurnTicket.Enabled = true
+	reloaded.Codex.TurnTicket.GatewayMint = func() *bool { v := false; return &v }() // Exercise the rollback engine.
 	reloaded.Codex.TurnTicket.TargetLength = 292
 	adaptive := false
 	reloaded.Codex.TurnTicket.AdaptiveInjection = &adaptive

@@ -17,7 +17,7 @@ import (
 func policyTestConfig(t *testing.T, extra string) *config.Config {
 	t.Helper()
 	cfg := &config.Config{}
-	text := "codex:\n  turn-ticket:\n    enabled: true\n    models: [gpt-5.5]\n    harvest-attempts: 1\n    harvest-proxy-urls: [http://pool.invalid]\n" + extra
+	text := "codex:\n  turn-ticket:\n    enabled: true\n    gateway-mint: false\n    models: [gpt-5.5]\n    harvest-attempts: 1\n    harvest-proxy-urls: [http://pool.invalid]\n" + extra
 	if err := yaml.Unmarshal([]byte(text), cfg); err != nil {
 		t.Fatal(err)
 	}

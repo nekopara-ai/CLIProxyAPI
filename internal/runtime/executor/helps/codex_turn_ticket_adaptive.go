@@ -399,6 +399,10 @@ func ObserveCodexTurnTicketResponse(auth *cliproxyauth.Auth, model string, statu
 		return
 	}
 	effective := codexTurnTicketEffectiveConfig(p.Harvester.cfgProvider)
+	if codexGatewayEnabled(effective) {
+		p.Harvester.observeGateway(auth, model, status, responseHeaders, requestHeaders, injected, effective, requestContext...)
+		return
+	}
 	if effective.AdaptiveInjection {
 		if !codexAdaptiveRequestEgressMatches(auth, effective, requestContext...) {
 			return
@@ -672,6 +676,10 @@ func (h *CodexTurnTicketHarvester) routingRejected(authID, model string, result 
 }
 
 func (h *CodexTurnTicketHarvester) probeAdaptive(ctx context.Context, auth *cliproxyauth.Auth, model string, effective CodexTurnTicketConfig) {
+	if codexGatewayEnabled(effective) {
+		h.probeGatewayAccount(ctx, auth, effective)
+		return
+	}
 	h.probeInFlight.Lock()
 	defer h.probeInFlight.Unlock()
 	if ctx != nil && ctx.Err() != nil {

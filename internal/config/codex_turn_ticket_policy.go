@@ -8,6 +8,9 @@ import (
 
 // Validate rejects ambiguous policy and misspelled actions before a hot reload.
 func (c CodexTurnTicketSettings) Validate() error {
+	if c.MintTicketLength != nil && (*c.MintTicketLength < 0 || *c.MintTicketLength > 16384) {
+		return fmt.Errorf("codex.turn-ticket.mint-ticket-length must be between 0 and 16384")
+	}
 	for name, value := range map[string]int{"personal-healthy-length": c.PersonalHealthyLength, "personal-degraded-length": c.PersonalDegradedLength, "team-healthy-length": c.TeamHealthyLength, "team-degraded-length": c.TeamDegradedLength, "target-length": c.TargetLength} {
 		if value < 0 || (value > 0 && value < 10) {
 			return fmt.Errorf("codex.turn-ticket.%s must be zero (default) or at least 10", name)
@@ -65,6 +68,27 @@ func (c CodexTurnTicketSettings) Validate() error {
 		if name == "" || name != strings.TrimSpace(name) || (&http.Cookie{Name: name, Value: "test"}).Valid() != nil {
 			return fmt.Errorf("codex.turn-ticket.routing-cookie-names contains an invalid cookie name")
 		}
+	}
+
+	for name, limit := range map[string][2]int{
+		"mint-ticket-ttl-seconds": {c.MintTicketTTLSeconds, 1200}, "mint-pair-ttl-seconds": {c.MintPairTTLSeconds, 86400},
+		"mint-max-attempts": {c.MintMaxAttempts, 128}, "mint-total-timeout-seconds": {c.MintTotalTimeoutSeconds, 180},
+		"mint-retry-cooldown-seconds": {c.MintRetryCooldownSeconds, 3600}, "mint-cache-capacity": {c.MintCacheCapacity, 65536}, "mint-workers": {c.MintWorkers, 32},
+	} {
+		if limit[0] < 0 || limit[0] > limit[1] {
+			return fmt.Errorf("codex.turn-ticket.%s is outside the supported range", name)
+		}
+	}
+	for _, transport := range c.MintTransports {
+		if transport != "sse" && transport != "websocket" {
+			return fmt.Errorf("codex.turn-ticket.mint-transports must contain sse or websocket")
+		}
+	}
+	if c.MintTransports != nil && len(c.MintTransports) == 0 {
+		return fmt.Errorf("codex.turn-ticket.mint-transports must not be empty")
+	}
+	if strings.ContainsAny(c.MintGateway, "\r\n\x00") || len(c.MintGateway) > 96 {
+		return fmt.Errorf("codex.turn-ticket.mint-gateway is invalid")
 	}
 	return nil
 }

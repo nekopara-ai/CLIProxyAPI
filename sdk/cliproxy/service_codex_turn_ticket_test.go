@@ -77,6 +77,7 @@ func TestServiceConfigReloadEnablesTurnTicketInjection(t *testing.T) {
 	// new in-memory config. No service restart and no re-wiring is involved.
 	reloaded := startCfg.CloneForRuntime()
 	reloaded.Codex.TurnTicket.Enabled = true
+	reloaded.Codex.TurnTicket.GatewayMint = func() *bool { v := false; return &v }() // Exercise the rollback engine.
 	if commit := service.commitConfigUpdate(reloaded); commit.cfg == nil {
 		t.Fatal("commitConfigUpdate rejected the reloaded config")
 	}
@@ -95,6 +96,7 @@ func TestServiceConfigReloadDisablesTurnTicketInjection(t *testing.T) {
 	defer helps.ConfigureCodexTurnTickets(nil, nil)
 	startCfg := turnTicketServiceConfig()
 	startCfg.Codex.TurnTicket.Enabled = true
+	startCfg.Codex.TurnTicket.GatewayMint = func() *bool { v := false; return &v }() // Exercise the rollback engine.
 	service := &Service{cfg: startCfg, coreManager: coreauth.NewManager(nil, nil, nil)}
 	service.startCodexTurnTicketHarvester(context.Background())
 	defer service.stopCodexTurnTicketHarvester()
@@ -134,6 +136,7 @@ func TestCodexTurnTicketSummaryNeverLeaksMaterial(t *testing.T) {
 	defer helps.ConfigureCodexTurnTickets(nil, nil)
 	cfg := turnTicketServiceConfig()
 	cfg.Codex.TurnTicket.Enabled = true
+	cfg.Codex.TurnTicket.GatewayMint = func() *bool { v := false; return &v }() // Exercise the rollback engine.
 	cfg.Codex.TurnTicket.HarvestProxyURLs = []string{"direct", "http://user:proxy-secret@127.0.0.1:8080"}
 	service := &Service{cfg: cfg, coreManager: coreauth.NewManager(nil, nil, nil)}
 	service.startCodexTurnTicketHarvester(context.Background())
@@ -165,6 +168,7 @@ func TestServiceConfigReloadTogglesOnlyTicketInjection(t *testing.T) {
 	defer helps.ConfigureCodexTurnTickets(nil, nil)
 	cfg := turnTicketServiceConfig()
 	cfg.Codex.TurnTicket.Enabled = true
+	cfg.Codex.TurnTicket.GatewayMint = func() *bool { v := false; return &v }() // Exercise the rollback engine.
 	service := &Service{cfg: cfg, coreManager: coreauth.NewManager(nil, nil, nil)}
 	service.startCodexTurnTicketHarvester(context.Background())
 	defer service.stopCodexTurnTicketHarvester()

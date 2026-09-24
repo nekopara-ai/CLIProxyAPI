@@ -21,6 +21,7 @@ func TestGetCodexTurnTicketReportsRedactedState(t *testing.T) {
 	const accessToken = "test-access-token-must-not-leak"
 	cfg := &config.Config{}
 	cfg.Codex.TurnTicket.Enabled = true
+	cfg.Codex.TurnTicket.GatewayMint = func() *bool { v := false; return &v }() // Exercise the rollback engine.
 	cfg.Codex.TurnTicket.TargetLength = 292
 	adaptive := false
 	cfg.Codex.TurnTicket.AdaptiveInjection = &adaptive

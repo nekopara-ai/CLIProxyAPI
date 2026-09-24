@@ -49,6 +49,7 @@ func TestCodexTeamTicketRestoreInjectionAndPolicyChange(t *testing.T) {
 	a := &auth.Auth{ID: "imported-team", Provider: "codex", Status: auth.StatusActive, Metadata: map[string]any{"access_token": "opaque", CodexTurnTicketPlanField: "team"}}
 	cfg := turnTicketTestConfig()
 	cfg.Codex.TurnTicket.Enabled = true
+	cfg.Codex.TurnTicket.GatewayMint = func() *bool { v := false; return &v }() // Exercise the rollback engine.
 	adaptive := false
 	cfg.Codex.TurnTicket.AdaptiveInjection = &adaptive
 	cfg.Codex.TurnTicket.Models = []string{"gpt-6-astra"}
@@ -88,6 +89,7 @@ func TestCodexTeamPassiveCaptureRejectsPersonalAndDegraded(t *testing.T) {
 	a := &auth.Auth{ID: "team", Provider: "codex", Metadata: map[string]any{"access_token": "opaque", CodexTurnTicketPlanField: "team"}}
 	cfg := turnTicketTestConfig()
 	cfg.Codex.TurnTicket.Enabled = true
+	cfg.Codex.TurnTicket.GatewayMint = func() *bool { v := false; return &v }() // Exercise the rollback engine.
 	adaptive := false
 	cfg.Codex.TurnTicket.AdaptiveInjection = &adaptive
 	cfg.Codex.TurnTicket.Models = []string{"gpt-6-astra"}
