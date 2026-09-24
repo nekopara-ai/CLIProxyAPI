@@ -111,7 +111,7 @@ func TestGeminiVertexModelsUseFlashLiteReleaseID(t *testing.T) {
 func TestWithXAIBuiltinsIncludesImage20(t *testing.T) {
 	models := WithXAIBuiltins(nil)
 	for _, model := range models {
-		if model != nil && model.ID == xaiBuiltinImageModelID {
+		if model != nil && model.ID == xaiBuiltinImage20ModelID {
 			if model.Created != 1786060800 {
 				t.Fatalf("created = %d, want 1786060800 (2026-08-07)", model.Created)
 			}
