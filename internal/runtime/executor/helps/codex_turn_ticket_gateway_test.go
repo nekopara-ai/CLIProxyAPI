@@ -138,16 +138,27 @@ func TestGateway401StopsCredentialAndDoesNotProbeAgain(t *testing.T) {
 func TestGatewayStopsReadingAtCreatedAndClosesSyntheticRequest(t *testing.T) {
 	closed := make(chan struct{})
 	entered := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
 	_, auth, p := gatewayFixture(t, func(w http.ResponseWriter, r *http.Request) {
+		// Drain the request so net/http can watch the peer for cancellation.
+		_, _ = io.Copy(io.Discard, r.Body)
 		gatewayTestResponse(w, "A", "unified-88")
 		w.(http.Flusher).Flush()
 		close(entered)
-		<-r.Context().Done()
-		close(closed)
+		select {
+		case <-r.Context().Done():
+			close(closed)
+		case <-release:
+		}
 	})
 	done := make(chan struct{})
 	go func() { p.Harvester.probeAll(context.Background()); close(done) }()
-	<-entered
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("probe did not enter mock server")
+	}
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):
@@ -165,9 +176,23 @@ func TestGatewayStopsReadingAtCreatedAndClosesSyntheticRequest(t *testing.T) {
 func TestGatewayStopCancelsInFlightProbe(t *testing.T) {
 	entered := make(chan struct{})
 	closed := make(chan struct{})
-	_, _, p := gatewayFixture(t, func(w http.ResponseWriter, r *http.Request) { close(entered); <-r.Context().Done(); close(closed) })
+	release := make(chan struct{})
+	defer close(release)
+	_, _, p := gatewayFixture(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		close(entered)
+		select {
+		case <-r.Context().Done():
+			close(closed)
+		case <-release:
+		}
+	})
 	p.Harvester.Start(context.Background())
-	<-entered
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("probe did not enter mock server")
+	}
 	done := make(chan struct{})
 	go func() { p.Harvester.Stop(); close(done) }()
 	select {
