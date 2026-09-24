@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const StateHeader = "X-Codex-Turn-State"
@@ -176,6 +177,7 @@ func ReadPair(h http.Header, endpoint string, now time.Time, c Config) (Pair, bo
 }
 
 type Event struct {
+	Headers                   http.Header
 	Model, ID, State, Failure string
 	Status                    int
 	Terminal                  bool
@@ -201,7 +203,7 @@ func ParseEvent(data []byte, eventName string) (Event, error) {
 			} `json:"error"`
 		} `json:"response"`
 	}
-	if len(data) > ScanLimit || !json.Valid(data) || json.Unmarshal(data, &wire) != nil {
+	if len(data) > ScanLimit || !utf8.Valid(data) || !json.Valid(data) || json.Unmarshal(data, &wire) != nil {
 		return Event{}, errors.New("malformed_event")
 	}
 	if eventName != "" && eventName != wire.Type {
@@ -214,15 +216,33 @@ func ParseEvent(data []byte, eventName string) (Event, error) {
 		}
 		return Event{ID: wire.Response.ID, Model: wire.Response.Model}, nil
 	case "codex.response.metadata":
-		for k, v := range wire.Headers {
-			if strings.EqualFold(k, StateHeader) {
-				var state string
-				if json.Unmarshal(v, &state) != nil {
+		headers := make(http.Header)
+		for key, raw := range wire.Headers {
+			key = http.CanonicalHeaderKey(key)
+			if key != StateHeader && key != "Set-Cookie" && key != "Retry-After" {
+				continue
+			}
+			if _, duplicate := headers[key]; duplicate {
+				return Event{}, errors.New("ambiguous_metadata")
+			}
+			var value string
+			var values []string
+			if json.Unmarshal(raw, &value) == nil {
+				values = []string{value}
+			} else if json.Unmarshal(raw, &values) != nil || len(values) == 0 {
+				return Event{}, errors.New("invalid_metadata")
+			}
+			if key != "Set-Cookie" && len(values) != 1 {
+				return Event{}, errors.New("ambiguous_metadata")
+			}
+			for _, value := range values {
+				if strings.ContainsAny(value, "\r\n\x00") {
 					return Event{}, errors.New("invalid_metadata")
 				}
-				return Event{State: state}, nil
 			}
+			headers[key] = values
 		}
+		return Event{State: headers.Get(StateHeader), Headers: headers}, nil
 	case "error", "response.error", "response.failed", "response.incomplete":
 		code := wire.Error.Code
 		if code == "" {

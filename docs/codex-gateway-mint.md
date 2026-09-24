@@ -157,3 +157,14 @@ The new core has deterministic-clock tests for independent leases, late-response
 fencing, scope isolation, bounded budgets, model/gateway rejection, partial success,
 backoff, strict event parsing and injection preservation. Integration tests use only
 local HTTP/WebSocket servers with fake credentials; no live account is exercised.
+
+### Defensive protocol details
+
+Metadata header values may be strings or typed string arrays. A metadata cookie
+update replaces the previous cookie set atomically; a partial update cannot borrow
+its missing partner from the handshake. Malformed, ambiguous and non-UTF-8 events
+are rejected. A newly acquired routing pair may repair already-valid tickets even
+when the new synthetic response does not yield another acceptable ticket. Live
+route-only invalidation preserves the independent model ticket. Credential rejection
+parks both protocol scopes, including previously acquired partial successes, and
+fences active observations. Retry-After backoff is capped at 24 hours.

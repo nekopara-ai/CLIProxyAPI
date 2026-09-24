@@ -98,14 +98,15 @@ func Scope(parts ...string) string {
 }
 
 type entry struct {
-	pair    Pair
-	tickets map[string]Ticket
-	blocked map[string]time.Time
-	flight  chan struct{}
-	epoch   uint64
-	touched uint64
-	next    time.Time
-	last    Snapshot
+	pair          Pair
+	tickets       map[string]Ticket
+	blocked       map[string]time.Time
+	flight        chan struct{}
+	epoch         uint64
+	touched       uint64
+	next          time.Time
+	rejectedUntil time.Time
+	last          Snapshot
 }
 
 type Snapshot struct {
@@ -171,7 +172,7 @@ func (m *Manager) Get(scope, model string, c Config) (Bundle, bool) {
 	}
 	t, ok := e.tickets[model]
 	now := m.now()
-	if !ok || t.Model != model || !t.valid(now, c, c.Margin) || !e.pair.valid(now, c, c.Margin) {
+	if now.Before(e.rejectedUntil) || !ok || t.Model != model || !t.valid(now, c, c.Margin) || !e.pair.valid(now, c, c.Margin) {
 		return Bundle{}, false
 	}
 	t.ExpiresAt = earlier(t.ExpiresAt, t.IssuedAt.Add(c.TicketTTL))
@@ -198,25 +199,48 @@ func (m *Manager) Snapshot(scope, model string, c Config) Snapshot {
 	s.TicketExpiresAt = t.ExpiresAt
 	s.PairExpiresAt = e.pair.ExpiresAt
 	s.Gateway = e.pair.Gateway
-	s.Ready = t.Model == model && t.valid(m.now(), c, c.Margin) && e.pair.valid(m.now(), c, c.Margin)
+	s.Ready = !m.now().Before(e.rejectedUntil) && t.Model == model && t.valid(m.now(), c, c.Margin) && e.pair.valid(m.now(), c, c.Margin)
 	return s
 }
 
 // Reject invalidates only the material actually submitted by an injected request.
 // An old response cannot evict a newer ticket or a rotated pair.
 func (m *Manager) Reject(scope, model, state, cookie string) bool {
+	return m.RejectParts(scope, model, state, cookie, true, true)
+}
+
+// RejectParts preserves an independent live ticket during route-only repair.
+func (m *Manager) RejectParts(scope, model, state, cookie string, dropPair, dropTicket bool) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	e := m.scopes[scope]
-	if e == nil || state == "" || e.tickets[model].State != state || e.pair.Cookie() != cookie {
+	if e == nil || (!dropPair && !dropTicket) || state == "" || e.tickets[model].State != state || e.pair.Cookie() != cookie {
 		return false
 	}
-	delete(e.tickets, model)
-	e.pair = Pair{}
+	if dropTicket {
+		delete(e.tickets, model)
+	}
+	if dropPair {
+		e.pair = Pair{}
+	}
 	e.epoch++
-	e.next = time.Time{}
+	e.next = e.rejectedUntil
 	e.last.Reason = "injected_route_rejected"
 	return true
+}
+
+// Park blocks both acquisition and injection and fences any active observation.
+func (m *Manager) Park(scope string, until time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if e := m.scopes[scope]; e != nil {
+		e.epoch++
+		if until.After(e.rejectedUntil) {
+			e.rejectedUntil = until
+		}
+		e.next = e.rejectedUntil
+		e.last.Reason = "upstream_rejected"
+	}
 }
 
 // Refresh performs a bounded, single-flight acquisition for all requested models.
@@ -373,7 +397,8 @@ func (m *Manager) refresh(parent context.Context, e *entry, epoch uint64, models
 					delay = max(delay, at.Sub(now))
 				}
 			}
-			next = now.Add(delay)
+			next = now.Add(min(delay, 24*time.Hour))
+			e.rejectedUntil = next
 			m.mu.Unlock()
 			reason = "upstream_rejected"
 			return errors.New(reason)
@@ -407,6 +432,13 @@ func (m *Manager) refresh(parent context.Context, e *entry, epoch uint64, models
 			m.mu.Unlock()
 			reason = "gateway_or_pair_mismatch"
 			continue
+		}
+		// When only the route was missing, a validated pair finishes the repair
+		// without requiring or replacing the still-fresh model tickets.
+		if allFresh(e, models, c, now) {
+			m.mu.Unlock()
+			reason = "ready"
+			return nil
 		}
 		if result.Model != model {
 			m.mu.Unlock()

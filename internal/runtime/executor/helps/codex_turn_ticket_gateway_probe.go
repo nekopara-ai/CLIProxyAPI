@@ -46,6 +46,7 @@ func probeCodexGateway(ctx context.Context, auth *cliproxyauth.Auth, request cod
 	}
 	headers.Set("Content-Type", "application/json")
 	headers.Set("Accept", "text/event-stream")
+	headers.Set("OpenAI-Beta", "responses=experimental")
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(codexGatewayPayload(request.Model, false)))
 	if err != nil {
 		return codexmint.Attempt{}, errors.New("invalid_probe_endpoint")
@@ -165,6 +166,24 @@ func probeCodexGatewayWS(ctx context.Context, endpoint string, headers http.Head
 			result.Terminal = event.Terminal
 			result.Status = event.Status
 			return result, nil
+		}
+		// Treat one metadata Set-Cookie set as one atomic routing update. Never
+		// combine a partial update with stale cookies from the handshake.
+		if len(event.Headers) > 0 {
+			if result.Header == nil {
+				result.Header = make(http.Header)
+			}
+			for key, values := range event.Headers {
+				for oldKey := range result.Header {
+					if strings.EqualFold(oldKey, key) {
+						delete(result.Header, oldKey)
+					}
+				}
+				result.Header[key] = append([]string(nil), values...)
+			}
+			if _, present := event.Headers[codexmint.StateHeader]; present {
+				result.State = event.State
+			}
 		}
 		if event.State != "" {
 			result.State = event.State

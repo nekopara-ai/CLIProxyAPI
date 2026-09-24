@@ -237,6 +237,9 @@ func (h *CodexTurnTicketHarvester) probeGatewayAccount(ctx context.Context, auth
 			// Rejection backoff is credential-wide, including the other transport.
 			if snap.Status == 401 || snap.Status == 403 || snap.Status == 429 {
 				if index > 0 {
+					for _, otherTransport := range codexGatewayTransports(auth, e) {
+						h.store.mint.Park(codexGatewayScope(auth, e, otherTransport), snap.NextAttemptAt)
+					}
 					for _, keyModel := range e.Models {
 						h.parkBucket(auth.ID, keyModel, snap.NextAttemptAt)
 					}
@@ -273,15 +276,13 @@ func (h *CodexTurnTicketHarvester) observeGateway(auth *cliproxyauth.Auth, model
 	}
 	cfg := codexGatewayConfig(auth, e)
 	scope := codexGatewayScope(auth, e, codexMintTransport(contexts...))
-	_, changed := codexmint.ReadPair(response, strings.TrimSuffix(codexTurnTicketBaseURL(auth), "/")+"/responses", time.Now(), cfg)
-	badPair := false
-	if changed {
-		pair, _ := codexmint.ReadPair(response, strings.TrimSuffix(codexTurnTicketBaseURL(auth), "/")+"/responses", time.Now(), cfg)
-		badPair = pair.CFLB == ""
-	}
+	pair, changed := codexmint.ReadPair(response, strings.TrimSuffix(codexTurnTicketBaseURL(auth), "/")+"/responses", time.Now(), cfg)
+	sentCookie := "__cflb=" + cflb + "; __oailb=" + oailb
+	badPair := changed && (pair.CFLB == "" || pair.Cookie() != sentCookie)
 	state := ExtractCodexTurnState(response)
-	if badPair || status == 401 || status == 403 || (state != "" && cfg.TicketLength > 0 && len(state) != cfg.TicketLength) {
-		if h.store.mint.Reject(scope, model, ExtractCodexTurnState(request), "__cflb="+cflb+"; __oailb="+oailb) {
+	badTicket := status == 401 || status == 403 || (state != "" && cfg.TicketLength > 0 && len(state) != cfg.TicketLength)
+	if badPair || badTicket {
+		if h.store.mint.RejectParts(scope, model, ExtractCodexTurnState(request), sentCookie, badPair || status == 401 || status == 403, badTicket) {
 			h.wakeAdaptive(auth.ID, model)
 		}
 	}
