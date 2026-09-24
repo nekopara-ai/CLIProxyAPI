@@ -3,6 +3,7 @@ name: mint-rewrite-workbench
 on:
   push:
     branches: [codex/cpa-mint-rewrite-20260924]
+    paths: [.dev/mint-rewrite.patch]
 
 permissions:
   contents: read
@@ -32,6 +33,20 @@ jobs:
         run: |
           set -euo pipefail
           if test -f .dev/mint-rewrite.patch; then
+            python3 - <<'PY'
+          import base64, hashlib, lzma, pathlib
+          p = pathlib.Path('.dev/mint-rewrite.patch')
+          data = p.read_bytes()
+          if data.startswith(b'CPA-MINT-XZ-1\n'):
+              _, digest, *parts = data.decode('ascii').splitlines()
+              encoded = ''.join(pathlib.Path(name).read_text().strip() for name in parts if name)
+              data = lzma.decompress(base64.b64decode(encoded, validate=True))
+              assert hashlib.sha256(data).hexdigest() == digest, 'patch checksum mismatch'
+              p.write_bytes(data)
+              for name in parts:
+                  if name:
+                      pathlib.Path(name).unlink()
+          PY
             git apply --check .dev/mint-rewrite.patch
             git apply --index .dev/mint-rewrite.patch
             git diff --cached --name-only -- '*.go' | xargs -r gofmt -w
