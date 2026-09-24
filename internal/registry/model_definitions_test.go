@@ -111,7 +111,7 @@ func TestGeminiVertexModelsUseFlashLiteReleaseID(t *testing.T) {
 func TestWithXAIBuiltinsIncludesImage20(t *testing.T) {
 	models := WithXAIBuiltins(nil)
 	for _, model := range models {
-		if model != nil && model.ID == xaiBuiltinImage20ModelID {
+		if model != nil && model.ID == xaiBuiltinImageModelID {
 			if model.Created != 1786060800 {
 				t.Fatalf("created = %d, want 1786060800 (2026-08-07)", model.Created)
 			}
@@ -257,6 +257,9 @@ func TestWithCodexBuiltinsIncludesImage25Models(t *testing.T) {
 }
 
 func TestGetDevinModelsFallback(t *testing.T) {
+	// Exercise the static fallback, not whichever embedded or refreshed catalog
+	// happens to be active. Higher-priority catalogs have their own metadata.
+	setDevinModelSourcesForTest(t, nil, nil)
 	devinModels := GetDevinModels()
 	if len(devinModels) == 0 {
 		t.Fatal("GetDevinModels() returned empty list")
@@ -333,5 +336,82 @@ func TestGetDevinModelsFallback(t *testing.T) {
 	}
 	if info.DisplayName != "SWE-2" {
 		t.Errorf("info.DisplayName = %q, want SWE-2", info.DisplayName)
+	}
+}
+
+// These fixtures change package-global catalogs and must not run in parallel.
+// Restore both model sources even when an assertion terminates the test early.
+func setDevinModelSourcesForTest(t *testing.T, primary, secondary []*ModelInfo) {
+	t.Helper()
+	devinCatalogStore.mu.Lock()
+	originalPrimary := devinCatalogStore.models
+	devinCatalogStore.models = cloneModelInfos(primary)
+	devinCatalogStore.mu.Unlock()
+
+	modelsCatalogStore.mu.Lock()
+	originalCatalog := modelsCatalogStore.data
+	fixture := &staticModelsJSON{}
+	if originalCatalog != nil {
+		*fixture = *originalCatalog
+	}
+	fixture.Devin = cloneModelInfos(secondary)
+	modelsCatalogStore.data = fixture
+	modelsCatalogStore.mu.Unlock()
+
+	t.Cleanup(func() {
+		devinCatalogStore.mu.Lock()
+		devinCatalogStore.models = originalPrimary
+		devinCatalogStore.mu.Unlock()
+		modelsCatalogStore.mu.Lock()
+		modelsCatalogStore.data = originalCatalog
+		modelsCatalogStore.mu.Unlock()
+	})
+}
+
+func TestGetDevinModelsSourcePrecedence(t *testing.T) {
+	primary := []*ModelInfo{{
+		ID: "devin/grok-4-6", Type: "devin", OwnedBy: "devin",
+		DisplayName: "Primary catalog entry",
+		Thinking:    &ThinkingSupport{Levels: []string{"high"}},
+	}}
+	secondary := []*ModelInfo{{
+		ID: "devin/grok-4-6", Type: "devin", OwnedBy: "catalog-author",
+		DisplayName: "Secondary catalog entry",
+		Thinking:    &ThinkingSupport{Levels: []string{"medium"}},
+	}}
+
+	for _, tt := range []struct {
+		name                     string
+		primary, secondary, want []*ModelInfo
+	}{
+		{"primary overrides secondary and static", primary, secondary, primary},
+		{"secondary overrides static", nil, secondary, secondary},
+		{"static only when both catalogs are empty", nil, nil, cloneModelInfos(staticDevinModels)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			setDevinModelSourcesForTest(t, tt.primary, tt.secondary)
+			got := GetDevinModels()
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("GetDevinModels() = %#v, want selected source %#v", got, tt.want)
+			}
+			if byChannel := GetStaticModelDefinitionsByChannel("devin"); !reflect.DeepEqual(byChannel, tt.want) {
+				t.Fatalf("channel lookup did not preserve the selected catalog")
+			}
+			for _, expected := range tt.want {
+				if found := LookupDevinModel(expected.ID); !reflect.DeepEqual(found, expected) {
+					t.Fatalf("LookupDevinModel(%q) = %#v, want %#v", expected.ID, found, expected)
+				}
+			}
+
+			// Catalog metadata is authoritative; do not rewrite an explicit owner
+			// from a model-name guess, or let callers mutate the stored catalog.
+			got[0].OwnedBy = "caller mutation"
+			if got[0].Thinking != nil && len(got[0].Thinking.Levels) > 0 {
+				got[0].Thinking.Levels[0] = "caller mutation"
+			}
+			if after := GetDevinModels(); !reflect.DeepEqual(after, tt.want) {
+				t.Fatal("mutating a returned model changed its source catalog")
+			}
+		})
 	}
 }
