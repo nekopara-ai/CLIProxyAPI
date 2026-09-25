@@ -31,12 +31,14 @@ func NormalizeGateway(s string) string {
 	if s == "" || s == "*" || s == "any" {
 		return ""
 	}
-	if _, err := strconv.ParseUint(s, 10, 64); err == nil {
-		return "unified-" + s
+	if n, err := strconv.ParseUint(s, 10, 64); err == nil {
+		return "unified-" + strconv.FormatUint(n, 10)
 	}
 	m := gatewayPattern.FindStringSubmatch(s)
 	if len(m) > 1 && m[0] == s && m[1] != "" {
-		return "unified-" + m[1]
+		if n, err := strconv.ParseUint(m[1], 10, 64); err == nil {
+			return "unified-" + strconv.FormatUint(n, 10)
+		}
 	}
 	return s
 }
@@ -61,7 +63,7 @@ func Gateway(cflb, oailb string) string {
 				return ""
 			}
 			if u := unifiedPattern.FindStringSubmatch(m[0]); len(u) > 1 {
-				return "unified-" + u[1]
+				return NormalizeGateway(u[0])
 			}
 			return strings.ToLower(m[0])
 		}
@@ -77,7 +79,7 @@ type Pair struct {
 
 func (p Pair) Cookie() string { return "__cflb=" + p.CFLB + "; __oailb=" + p.OAILB }
 func (p Pair) valid(now time.Time, c Config, margin time.Duration) bool {
-	return p.CFLB != "" && p.OAILB != "" && (c.Gateway == "" || p.Gateway == c.Gateway) &&
+	return p.CFLB != "" && p.OAILB != "" && (c.Gateway == "" || p.Gateway == c.Gateway) && c.rejectedPairGateway(p) == "" &&
 		earlier(p.ExpiresAt, p.CapturedAt.Add(c.PairTTL)).After(now.Add(margin))
 }
 func earlier(a, b time.Time) time.Time {
@@ -170,6 +172,9 @@ func ReadPair(h http.Header, endpoint string, now time.Time, c Config) (Pair, bo
 		}
 	}
 	p.Gateway = Gateway(p.CFLB, p.OAILB)
+	if rejected := c.rejectedPairGateway(p); rejected != "" {
+		return Pair{Gateway: rejected}, true
+	}
 	if !p.valid(now, c, 0) {
 		return Pair{Gateway: p.Gateway}, true
 	}

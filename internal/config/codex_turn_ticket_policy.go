@@ -3,8 +3,11 @@ package config
 import (
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 )
+
+var mintRejectedGatewayPattern = regexp.MustCompile(`(?i)^(?:[0-9]+|unified[-_.]?[0-9]+|gateway[-_.][a-z0-9-]+)$`)
 
 // Validate rejects ambiguous policy and misspelled actions before a hot reload.
 func (c CodexTurnTicketSettings) Validate() error {
@@ -89,6 +92,11 @@ func (c CodexTurnTicketSettings) Validate() error {
 	}
 	if strings.ContainsAny(c.MintGateway, "\r\n\x00") || len(c.MintGateway) > 96 {
 		return fmt.Errorf("codex.turn-ticket.mint-gateway is invalid")
+	}
+	for _, gateway := range c.MintRejectGateways {
+		if len(gateway) > 96 || !mintRejectedGatewayPattern.MatchString(gateway) {
+			return fmt.Errorf("codex.turn-ticket.mint-reject-gateways contains an invalid gateway")
+		}
 	}
 	return nil
 }

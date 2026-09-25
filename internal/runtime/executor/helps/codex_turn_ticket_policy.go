@@ -12,6 +12,7 @@ type CodexTurnTicketPolicy struct {
 	MintTicketLength         *int     `json:"mint-ticket-length,omitempty"`
 	GatewayMint              bool     `json:"gateway-mint"`
 	MintGateway              string   `json:"mint-gateway"`
+	MintRejectGateways       []string `json:"mint-reject-gateways,omitempty"`
 	MintTicketTTLSeconds     int      `json:"mint-ticket-ttl-seconds"`
 	MintPairTTLSeconds       int      `json:"mint-pair-ttl-seconds"`
 	MintMaxAttempts          int      `json:"mint-max-attempts"`
@@ -105,6 +106,7 @@ func effectiveCodexTurnTicketPolicy(raw config.CodexTurnTicketPolicySettings, fa
 	if raw.MintGateway != "" {
 		p.MintGateway = raw.MintGateway
 	}
+	p.MintRejectGateways = append([]string(nil), raw.MintRejectGateways...)
 	p.MintTicketTTLSeconds = 240
 	if raw.MintTicketTTLSeconds > 0 {
 		p.MintTicketTTLSeconds = raw.MintTicketTTLSeconds

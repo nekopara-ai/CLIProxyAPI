@@ -11,6 +11,10 @@ func TestGatewayMintConfigValidation(t *testing.T) {
 		func(c *CodexTurnTicketSettings) { c.MintTransports = []string{"typo"} },
 		func(c *CodexTurnTicketSettings) { c.MintTransports = []string{} },
 		func(c *CodexTurnTicketSettings) { c.MintGateway = "unified-88\r\n" },
+		func(c *CodexTurnTicketSettings) { c.MintRejectGateways = []string{""} },
+		func(c *CodexTurnTicketSettings) { c.MintRejectGateways = []string{"any"} },
+		func(c *CodexTurnTicketSettings) { c.MintRejectGateways = []string{"unified-149\r\n"} },
+		func(c *CodexTurnTicketSettings) { c.MintRejectGateways = []string{"not-a-gateway"} },
 	} {
 		c := CodexTurnTicketSettings{}
 		mutate(&c)
@@ -23,6 +27,7 @@ func TestGatewayMintConfigValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.MintGateway = "any"
+	c.MintRejectGateways = []string{"unified-149"}
 	c.MintTransports = []string{"sse", "websocket"}
 	if err := c.Validate(); err != nil {
 		t.Fatal(err)

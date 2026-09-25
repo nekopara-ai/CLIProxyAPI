@@ -57,6 +57,105 @@ func TestGatewayMismatchDespiteSameModel(t *testing.T) {
 		t.Fatal("wrong gateway accepted")
 	}
 }
+
+func TestGatewayRejectListRetriesOnlyDeniedAndKeepsOtherRoutes(t *testing.T) {
+	c := testConfig()
+	c.Gateway = "any"
+	c.RejectGateways = []string{"149"}
+	for _, allowed := range []string{"unified-83", "unified-88", "unified-167"} {
+		t.Run(allowed, func(t *testing.T) {
+			m, _ := testManager()
+			calls := 0
+			mint(t, m, c, allowed, []string{"A"}, func(_ context.Context, r Request) (Attempt, error) {
+				calls++
+				if r.Pair != nil {
+					t.Fatal("rejected pair replayed")
+				}
+				gateway := "unified-149"
+				if calls == 2 {
+					gateway = allowed
+				}
+				return success(m.now(), r.Model, gateway), nil
+			})
+			if calls != 2 {
+				t.Fatalf("wanted one retry, got %d", calls)
+			}
+			bundle, ok := m.Get(allowed, "A", c)
+			if !ok || bundle.Pair.Gateway != allowed {
+				t.Fatalf("allowed gateway lost: ok=%t gateway=%s", ok, bundle.Pair.Gateway)
+			}
+		})
+	}
+	m, clock := testManager()
+	c.MaxAttempts = 3
+	calls := 0
+	probe := func(_ context.Context, r Request) (Attempt, error) {
+		calls++
+		if r.Pair != nil {
+			t.Fatal("denied pair reused")
+		}
+		return success(m.now(), r.Model, "unified-149"), nil
+	}
+	if err := m.Refresh(context.Background(), "denied", []string{"A"}, endpoint, c, probe); err == nil || calls != c.MaxAttempts {
+		t.Fatalf("unbounded or accepted: err=%v calls=%d", err, calls)
+	}
+	if _, ok := m.Get("denied", "A", c); ok || m.Snapshot("denied", "A", c).Reason != "gateway_rejected" {
+		t.Fatal("denied pair became ready or was not diagnosed")
+	}
+	if err := m.Refresh(context.Background(), "denied", []string{"A"}, endpoint, c, probe); err == nil || calls != c.MaxAttempts {
+		t.Fatal("cooldown was bypassed")
+	}
+	clock.Add(31)
+	if err := m.Refresh(context.Background(), "denied", []string{"A"}, endpoint, c, probe); err == nil || calls != c.MaxAttempts*2 {
+		t.Fatal("cooldown did not allow bounded retry")
+	}
+}
+
+func TestGatewayRejectListChangeDiscardsOldRouteAndItsTicket(t *testing.T) {
+	m, _ := testManager()
+	c := testConfig()
+	c.Gateway = "any"
+	mint(t, m, c, "scope", []string{"A"}, func(_ context.Context, r Request) (Attempt, error) {
+		return success(m.now(), r.Model, "unified-149"), nil
+	})
+	c.RejectGateways = []string{"unified-149"}
+	if _, ok := m.Get("scope", "A", c); ok || m.Snapshot("scope", "A", c).Ready {
+		t.Fatal("old route reused after policy change")
+	}
+	mint(t, m, c, "scope", []string{"A"}, func(_ context.Context, r Request) (Attempt, error) {
+		if r.Pair != nil {
+			t.Fatal("cached rejected route sent in new probe")
+		}
+		a := success(m.now(), r.Model, "unified-83")
+		a.State = strings.Repeat("n", 780)
+		return a, nil
+	})
+	bundle, ok := m.Get("scope", "A", c)
+	if !ok || bundle.Ticket.State != strings.Repeat("n", 780) || bundle.Pair.Gateway != "unified-83" {
+		t.Fatal("old ticket lent to replacement route")
+	}
+}
+
+func TestGatewayReject149FromEitherCookieHint(t *testing.T) {
+	m, _ := testManager()
+	c := testConfig()
+	c.Gateway = "any"
+	c.RejectGateways = []string{"unified-149"}
+	for _, tt := range []struct {
+		name, cflb, oailb string
+	}{
+		{"oailb", "route", "unified-0149"},
+		{"conflicting cflb", "unified-149", "unified-83"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			h := http.Header{"Set-Cookie": {"__cflb=" + tt.cflb + "; Path=/; Secure", "__oailb=" + tt.oailb + "; Path=/; Secure"}}
+			p, changed := ReadPair(h, endpoint, m.now(), c.Normalized())
+			if !changed || p.CFLB != "" || p.OAILB != "" || p.Gateway != "unified-149" {
+				t.Fatalf("rejected route escaped: changed=%t gateway=%s", changed, p.Gateway)
+			}
+		})
+	}
+}
 func TestModelMismatchRetainsOnlyTargetPair(t *testing.T) {
 	m, _ := testManager()
 	c := testConfig()

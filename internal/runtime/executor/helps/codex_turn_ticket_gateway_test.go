@@ -123,6 +123,38 @@ func TestGatewayModelMismatchExhaustsWithoutInjection(t *testing.T) {
 		t.Fatal("mismatch accepted or budget ignored")
 	}
 }
+
+func TestGatewayReject149ConfigToBusinessInjection(t *testing.T) {
+	var calls atomic.Int32
+	cfg, auth, p := gatewayFixture(t, func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		gateway := "unified-149"
+		if n > 1 {
+			gateway = "unified-83"
+		}
+		gatewayTestResponse(w, "A", gateway)
+	})
+	cfg.Codex.TurnTicket.MintGateway = "any"
+	cfg.Codex.TurnTicket.MintRejectGateways = []string{"unified-149"}
+	if !strings.Contains(fmt.Sprint(EffectiveCodexTurnTicketConfig(cfg).MintRejectGateways), "unified-149") {
+		t.Fatal("effective policy lost rejection list")
+	}
+	p.Harvester.probeAll(context.Background())
+	if calls.Load() != 2 {
+		t.Fatalf("rejected route not retried: %d", calls.Load())
+	}
+	h := http.Header{}
+	if !ApplyCodexTurnTicket(auth, "A", h) || !CodexGatewayRequestAllowed(auth, "A", true) || !strings.Contains(h.Get("Cookie"), "__oailb=") {
+		t.Fatal("eligible route not injected")
+	}
+	if snap := p.Harvester.gatewaySnapshots(auth, "A", EffectiveCodexTurnTicketConfig(cfg))["sse"]; !snap.Ready || snap.Gateway != "unified-83" {
+		t.Fatalf("unexpected snapshot: %+v", snap)
+	}
+	cfg.Codex.TurnTicket.MintRejectGateways = []string{"unified-149", "unified-83"}
+	if ApplyCodexTurnTicket(auth, "A", http.Header{}) || CodexGatewayRequestAllowed(auth, "A", false) {
+		t.Fatal("policy change reused old cached bundle")
+	}
+}
 func TestGateway401StopsCredentialAndDoesNotProbeAgain(t *testing.T) {
 	var calls atomic.Int32
 	cfg, auth, p := gatewayFixture(t, func(w http.ResponseWriter, r *http.Request) { calls.Add(1); w.WriteHeader(401) })

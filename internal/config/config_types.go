@@ -325,8 +325,11 @@ type CodexTurnTicketPolicySettings struct {
 	MintTicketLength *int `yaml:"mint-ticket-length,omitempty" json:"mint-ticket-length,omitempty"`
 	// Gateway minting is the default acquisition engine. False explicitly selects
 	// the previous adaptive engine for rollback; the master switch stays unchanged.
-	GatewayMint              *bool    `yaml:"gateway-mint,omitempty" json:"gateway-mint,omitempty"`
-	MintGateway              string   `yaml:"mint-gateway,omitempty" json:"mint-gateway,omitempty"`
+	GatewayMint *bool  `yaml:"gateway-mint,omitempty" json:"gateway-mint,omitempty"`
+	MintGateway string `yaml:"mint-gateway,omitempty" json:"mint-gateway,omitempty"`
+	// MintRejectGateways excludes routing pairs from acquisition and injection.
+	// With mint-gateway: any, all other gateways remain eligible.
+	MintRejectGateways       []string `yaml:"mint-reject-gateways,omitempty" json:"mint-reject-gateways,omitempty"`
 	MintTicketTTLSeconds     int      `yaml:"mint-ticket-ttl-seconds,omitempty" json:"mint-ticket-ttl-seconds,omitempty"`
 	MintPairTTLSeconds       int      `yaml:"mint-pair-ttl-seconds,omitempty" json:"mint-pair-ttl-seconds,omitempty"`
 	MintMaxAttempts          int      `yaml:"mint-max-attempts,omitempty" json:"mint-max-attempts,omitempty"`

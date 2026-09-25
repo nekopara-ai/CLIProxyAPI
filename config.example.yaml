@@ -409,6 +409,8 @@ codex:
     # The existing master enabled switch below remains authoritative.
     gateway-mint: true
     mint-gateway: "unified-88"
+    # To exclude only one gateway: set mint-gateway: "any" and uncomment below.
+    # mint-reject-gateways: ["unified-149"]
     mint-ticket-ttl-seconds: 240
     mint-pair-ttl-seconds: 3900
     mint-max-attempts: 24

@@ -30,8 +30,9 @@ upstream model. SSE and WebSocket material never cross scopes.
 2. A missing/expiring ticket with a live target pair is minted with **only the pair**.
    No previously minted `X-Codex-Turn-State` is sent in a mint request.
 3. A missing/expiring pair is acquired without routing cookies. An off-target,
-   partially rotated, deleted, expired or malformed pair is not reused. The fresh
-   target pair can be retained independently when a model declaration mismatches.
+   explicitly rejected, partially rotated, deleted, expired or malformed pair is not
+   reused. The fresh eligible pair can be retained independently when a model
+   declaration mismatches.
 4. Accept a ticket only on a successful transport response, a complete
    `response.created` JSON event with a nonempty response ID and model, exact model
    equality, an accepted ticket length (when enabled), and a live target pair.
@@ -108,7 +109,8 @@ codex:
     gateway-mint: true             # New default; false selects the rollback engine.
     injection-enabled: true       # Can be false for probe-only observation.
     fail-closed: true
-    mint-gateway: unified-88       # "any" or "*" disables only the gateway check.
+    mint-gateway: any              # Other gateways remain eligible (instead of unified-88).
+    mint-reject-gateways: [unified-149] # Exclude only these gateways from mint/injection.
     # mint-ticket-length: 780      # Omitted: use existing per-plan length settings.
     # mint-ticket-length: 0        # Explicit zero disables only the length check.
     mint-ticket-ttl-seconds: 240
@@ -125,6 +127,16 @@ codex:
     routing-expiry-margin-seconds: 5
     # Keep your existing models, auth-ids and harvest-proxy-urls here.
 ```
+
+The rejection list is applied to both fresh probes and cached bundles. Changing it
+isolates old acquisition scopes; a rejected pair is never sent in the next probe.
+`mint-gateway` continues to support a single target for narrower opt-in; the
+rejection list cannot override that target. A missing/unrecognized gateway is not
+proof of a non-rejected route: `any` leaves it eligible as before. These are local
+cookie hints, not upstream attestation. `fail-closed: false` still lets an unready
+business request through without injection (it may reach any upstream gateway),
+while `fail-closed: true` can block requests for credentials without a ready bundle.
+Neither mode can replay an already-streamed business request.
 
 Changing a local TTL does not lengthen an upstream-validity window. Disabling gateway
 or length checks does not improve model quality. Successful probes consume actual

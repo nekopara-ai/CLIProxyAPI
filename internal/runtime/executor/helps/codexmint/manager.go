@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,6 +15,7 @@ import (
 
 type Config struct {
 	Gateway                                                      string
+	RejectGateways                                               []string
 	TicketLength                                                 int
 	TicketTTL, PairTTL, Margin, RefreshBefore                    time.Duration
 	AttemptTimeout, TotalTimeout, FailureCooldown, RejectBackoff time.Duration
@@ -22,6 +24,14 @@ type Config struct {
 
 func (c Config) Normalized() Config {
 	c.Gateway = NormalizeGateway(c.Gateway)
+	rejected := make([]string, 0, len(c.RejectGateways))
+	for _, gateway := range c.RejectGateways {
+		gateway = NormalizeGateway(gateway)
+		if gateway != "" && !slices.Contains(rejected, gateway) {
+			rejected = append(rejected, gateway)
+		}
+	}
+	c.RejectGateways = rejected
 	if c.TicketTTL <= 0 {
 		c.TicketTTL = 240 * time.Second
 	}
@@ -55,6 +65,21 @@ func (c Config) Normalized() Config {
 	}
 	c.RefreshBefore = min(c.RefreshBefore, c.TicketTTL/2, c.PairTTL/2)
 	return c
+}
+
+func (c Config) rejectsGateway(gateway string) bool {
+	return slices.Contains(c.RejectGateways, gateway)
+}
+
+// Routing cookies are hints: when they disagree, either hint naming an
+// explicitly rejected gateway is enough to discard the whole pair.
+func (c Config) rejectedPairGateway(p Pair) string {
+	for _, gateway := range []string{p.Gateway, Gateway("", p.OAILB), Gateway(p.CFLB, "")} {
+		if c.rejectsGateway(gateway) {
+			return gateway
+		}
+	}
+	return ""
 }
 
 type Ticket struct {
@@ -342,6 +367,11 @@ func (m *Manager) refresh(parent context.Context, e *entry, epoch uint64, models
 			return errors.New(reason)
 		}
 		now := m.now()
+		// An old, now-denied pair must not lend its ticket to a new route.
+		if c.rejectedPairGateway(e.pair) != "" {
+			e.pair = Pair{}
+			clear(e.tickets)
+		}
 		if allFresh(e, models, c, now) {
 			m.mu.Unlock()
 			reason = "ready"
@@ -429,8 +459,17 @@ func (m *Manager) refresh(parent context.Context, e *entry, epoch uint64, models
 			e.pair = Pair{}
 		}
 		if !e.pair.valid(now, c, c.Margin) {
+			denied := c.rejectsGateway(e.pair.Gateway)
+			if denied {
+				// The denied candidate is never retained, even for the next attempt.
+				e.pair = Pair{}
+			}
 			m.mu.Unlock()
-			reason = "gateway_or_pair_mismatch"
+			if denied {
+				reason = "gateway_rejected"
+			} else {
+				reason = "gateway_or_pair_mismatch"
+			}
 			continue
 		}
 		// When only the route was missing, a validated pair finishes the repair

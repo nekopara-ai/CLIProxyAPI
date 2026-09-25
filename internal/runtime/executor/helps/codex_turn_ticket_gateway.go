@@ -39,7 +39,7 @@ func codexGatewayConfig(auth *cliproxyauth.Auth, e CodexTurnTicketConfig) codexm
 	if e.MintTicketLength != nil {
 		length = *e.MintTicketLength
 	}
-	return codexmint.Config{Gateway: e.MintGateway, TicketLength: length,
+	return codexmint.Config{Gateway: e.MintGateway, RejectGateways: e.MintRejectGateways, TicketLength: length,
 		TicketTTL: time.Duration(e.MintTicketTTLSeconds) * time.Second, PairTTL: time.Duration(e.MintPairTTLSeconds) * time.Second,
 		Margin: time.Duration(e.RoutingExpiryMarginSeconds) * time.Second, RefreshBefore: time.Duration(e.RoutingRefreshBeforeSeconds) * time.Second,
 		AttemptTimeout: time.Duration(e.ProbeTimeoutSeconds) * time.Second, TotalTimeout: time.Duration(e.MintTotalTimeoutSeconds) * time.Second,
