@@ -224,6 +224,12 @@ func TestDetectClaudeCodeRequestRecognizesMeasuredHaikuHelpers(t *testing.T) {
 			structured: true,
 			payload:    measuredClaudeCodeStructuredHelperPayload(),
 		},
+		{
+			name:       "structured title helper 2.1.280",
+			beta:       claudeCodeHelperBetaProfile(true, "structured-outputs-2025-12-15", "server-side-fallback-2026-06-01", "fallback-credit-2026-06-01", "cache-diagnosis-2026-04-07"),
+			structured: true,
+			payload:    measuredClaudeCodeStructuredHelperPayload(),
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -239,6 +245,24 @@ func TestDetectClaudeCodeRequestRecognizesMeasuredHaikuHelpers(t *testing.T) {
 				t.Fatalf("claude-code beta signal = true, want helper profile to remain separate: %#v", detection)
 			}
 		})
+	}
+}
+
+func TestDetectClaudeCodeRequestRejectsExtendedHaikuHelperBetas(t *testing.T) {
+	beta := claudeCodeHelperBetaProfile(true,
+		"structured-outputs-2025-12-15",
+		"server-side-fallback-2026-06-01",
+		"fallback-credit-2026-06-01",
+		"cache-diagnosis-2026-04-07",
+		"advisor-tool-2026-03-01",
+	)
+	detection := DetectClaudeCodeRequest(
+		measuredClaudeCodeHelperHeaders(beta, true),
+		measuredClaudeCodeStructuredHelperPayload(),
+		false,
+	)
+	if detection.Confirmed || detection.HelperProfile {
+		t.Fatalf("detection = %#v, want an extra helper beta rejected", detection)
 	}
 }
 

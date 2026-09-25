@@ -10,7 +10,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
@@ -289,5 +291,98 @@ func TestClaudeBodyNeedsBillingFallbackTracksSystemPresence(t *testing.T) {
 				t.Fatalf("claudeBodyNeedsBillingFallback() = %v, want %v", got, test.want)
 			}
 		})
+	}
+}
+
+// A 2.1.258 helper that reaches CPA through ANTHROPIC_BASE_URL carries no
+// x-client-request-id, because the client attaches it only for a first-party base
+// URL. The header must stay absent on a custom upstream instead of being
+// synthesized, while a helper that did carry one keeps its own value.
+func TestApplyClaudeHeadersHelperRequestIDFollowsUpstreamBase(t *testing.T) {
+	const nativeRequestID = "66666666-7777-4888-8999-aaaaaaaaaaaa"
+	for _, test := range []struct {
+		name          string
+		url           string
+		incomingID    string
+		wantGenerated bool
+		wantID        string
+	}{
+		{name: "first party base without caller id", url: "https://api.anthropic.com/v1/messages?beta=true", wantGenerated: true},
+		// The fork opts confirmed helpers into a request ID even on a custom base.
+		{name: "custom base helper without caller id", url: "https://gateway.example.com/v1/messages", wantGenerated: true},
+		{name: "custom base keeps caller id", url: "https://gateway.example.com/v1/messages", incomingID: nativeRequestID, wantID: nativeRequestID},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request, errRequest := http.NewRequest(http.MethodPost, test.url, nil)
+			if errRequest != nil {
+				t.Fatal(errRequest)
+			}
+			incoming := http.Header{}
+			if test.incomingID != "" {
+				incoming.Set("X-Client-Request-Id", test.incomingID)
+			}
+			if errHeaders := applyClaudeHeadersWithNativeProfile(
+				request,
+				&cliproxyauth.Auth{Attributes: map[string]string{"api_key": "test-api-key"}},
+				"test-api-key",
+				false,
+				nil,
+				[]byte(`{"model":"claude-haiku-4-5-20251001"}`),
+				&config.Config{},
+				incoming,
+				true,
+				true,
+				claudeNativeHelperSessionID,
+			); errHeaders != nil {
+				t.Fatalf("applyClaudeHeadersWithNativeProfile() error = %v", errHeaders)
+			}
+			got := request.Header.Get("X-Client-Request-Id")
+			switch {
+			case test.wantID != "":
+				if got != test.wantID {
+					t.Fatalf("X-Client-Request-Id = %q, want caller value %q", got, test.wantID)
+				}
+			case test.wantGenerated:
+				if _, errParse := uuid.Parse(got); errParse != nil {
+					t.Fatalf("X-Client-Request-Id = %q, want a generated UUID", got)
+				}
+			default:
+				if got != "" {
+					t.Fatalf("X-Client-Request-Id = %q, want the header to stay absent", got)
+				}
+			}
+		})
+	}
+}
+
+func TestClaudeExecutor_Native280HaikuTitleHelperPreservesServerSideFallbackBeta(t *testing.T) {
+	var seenHeaders http.Header
+	transport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		seenHeaders = req.Header.Clone()
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": {"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"msg_helper","type":"message","model":"claude-haiku-4-5-20251001","role":"assistant","content":[{"type":"text","text":"ok"}]}`)),
+			Request:    req,
+		}, nil
+	})
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", http.RoundTripper(transport))
+	const titleBetas = claudeNativeHelperCoreBetas + ",structured-outputs-2025-12-15,server-side-fallback-2026-06-01,fallback-credit-2026-06-01,cache-diagnosis-2026-04-07"
+	headers := claudeNativeHelperHeaders(titleBetas, "gzip", true)
+	payload := []byte(fmt.Sprintf(`{"model":"claude-haiku-4-5-20251001","max_tokens":80,"messages":[{"role":"user","content":"generate title"}],"metadata":{"user_id":%s},"output_config":{"format":{"type":"json_schema","schema":{"type":"object"}}}}`, claudeNativeHelperUserID))
+
+	_, err := NewClaudeExecutor(&config.Config{}).Execute(ctx, claudeNativeHelperOAuthAuth("https://api.anthropic.com"), cliproxyexecutor.Request{
+		Model:   "claude-haiku-4-5-20251001",
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatClaude,
+		Headers:      headers,
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	outBeta := helps.HeaderValueCaseInsensitive(seenHeaders, "Anthropic-Beta")
+	if !strings.Contains(outBeta, "server-side-fallback-2026-06-01") {
+		t.Fatalf("Anthropic-Beta = %q, want server-side-fallback-2026-06-01 preserved for 2.1.280 title helper", outBeta)
 	}
 }

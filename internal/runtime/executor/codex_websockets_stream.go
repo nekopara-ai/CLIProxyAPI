@@ -841,6 +841,7 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 		return nil, errValidate
 	}
 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg, preserveNativeOutput, opts.Headers)
+	applyCodexRoutingHint(ctx, wsHeaders, auth, baseModel, upstreamBody, opts.Headers)
 	applyModelHeaderOverrides(wsHeaders, baseModel, codexOverrideIdentity{cfg: e.cfg, auth: auth})
 	ticketInjected := applyCodexTurnTicket(helps.WithCodexMintTransport(ctx, "websocket"), wsHeaders, auth, baseModel)
 	if !helps.CodexGatewayRequestAllowed(auth, baseModel, ticketInjected) {
