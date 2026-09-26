@@ -55,7 +55,6 @@ type UsageReporter struct {
 	ttftStart            time.Time
 	ttftSet              bool
 	once                 sync.Once
-	codexTurnState       atomic.Pointer[usage.CodexTurnStateObservation]
 
 	responseModelMu sync.RWMutex
 	// responseModel holds the latest model name reported by the upstream response.
@@ -626,10 +625,7 @@ func (r *UsageReporter) publishAttemptRecord(ctx context.Context, record usage.R
 func (r *UsageReporter) publishRecord(ctx context.Context, record usage.Record) {
 	record.ResponseHeaders = internallogging.GetResponseHeaders(ctx)
 	if r != nil {
-		if observation := r.codexTurnState.Load(); observation != nil {
-			copied := *observation
-			record.CodexTurnState = &copied
-		}
+
 	}
 	usage.PublishRecord(ctx, record)
 }

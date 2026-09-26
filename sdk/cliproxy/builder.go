@@ -203,7 +203,8 @@ func (b *Builder) Build() (*Service, error) {
 	if b.configPath == "" {
 		return nil, fmt.Errorf("cliproxy: configuration path is required")
 	}
-	if errValidate := b.cfg.Codex.TurnTicket.Validate(); errValidate != nil {
+
+	if errValidate := b.cfg.ValidateCredentialPolicies(); errValidate != nil {
 		return nil, errValidate
 	}
 	if errValidate := b.cfg.ValidateCredentialWeights(); errValidate != nil {

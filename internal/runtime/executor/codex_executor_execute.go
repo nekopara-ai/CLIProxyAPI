@@ -54,7 +54,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
-	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
+	body = helps.ApplyPayloadConfigWithRequest(helps.ConfigForAuth(e.cfg, auth), baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
 	body = helps.SetStringIfDifferent(body, "model", baseModel)
 	body = helps.SetBoolIfDifferent(body, "stream", true)
 	body, _ = sjson.DeleteBytes(body, "previous_response_id")
@@ -74,7 +74,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	if errReplay != nil {
 		return resp, errReplay
 	}
-	body = helps.ApplyTimezoneOverride(e.cfg, body)
+	body = helps.ApplyTimezoneOverride(helps.ConfigForAuth(e.cfg, auth), body)
 	reporter.SetTranslatedReasoningEffort(body, to.String())
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
@@ -86,13 +86,9 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg, opts.Headers)
 	applyCodexRoutingHint(ctx, httpReq.Header, auth, baseModel, upstreamBody, opts.Headers)
 	applyModelHeaderOverrides(httpReq.Header, baseModel, codexOverrideIdentity{cfg: e.cfg, auth: auth})
-	ticketInjected := applyCodexTurnTicket(ctx, httpReq.Header, auth, baseModel)
-	if !helps.CodexGatewayRequestAllowed(auth, baseModel, ticketInjected) {
-		return resp, statusErr{code: http.StatusServiceUnavailable, msg: "codex mint: no live ticket and route for the selected transport"}
-	}
+
 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
-	requestHeaders := httpReq.Header.Clone()
-	reporter.SetCodexTurnState(helps.CodexRequestTurnState(httpReq.Header, ticketInjected))
+
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
 		authID = auth.ID
@@ -123,7 +119,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		}
 	}()
 	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
-	observeCodexTurnTicketResponse(ctx, httpResp.StatusCode, httpResp.Header, requestHeaders, auth, baseModel, ticketInjected)
+
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		b, _ := io.ReadAll(httpResp.Body)
 		b = applyCodexIdentityConfuseResponsePayload(b, identityState)
@@ -248,7 +244,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
-	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
+	body = helps.ApplyPayloadConfigWithRequest(helps.ConfigForAuth(e.cfg, auth), baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
 	body = helps.SetStringIfDifferent(body, "model", baseModel)
 	body, _ = sjson.DeleteBytes(body, "stream")
 	body = normalizeCodexInstructions(body, helps.IsNativeCodexRequest(req.Payload, opts))
@@ -256,7 +252,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	body = normalizeCodexParallelToolCalls(body, opts.Headers)
 	body = helps.NormalizeCodexToolSchemas(body)
 	body, optimizeMultiAgentV2 := helps.OptimizeCodexMultiAgentV2RequestForAuth(ctx, opts.Headers, body, e.cfg, auth, baseModel)
-	body = helps.ApplyTimezoneOverride(e.cfg, body)
+	body = helps.ApplyTimezoneOverride(helps.ConfigForAuth(e.cfg, auth), body)
 	reporter.SetTranslatedReasoningEffort(body, to.String())
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses/compact"
@@ -268,13 +264,9 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	applyCodexHeaders(httpReq, auth, apiKey, false, e.cfg, opts.Headers)
 	applyCodexRoutingHint(ctx, httpReq.Header, auth, baseModel, upstreamBody, opts.Headers)
 	applyModelHeaderOverrides(httpReq.Header, baseModel, codexOverrideIdentity{cfg: e.cfg, auth: auth})
-	ticketInjected := applyCodexTurnTicket(ctx, httpReq.Header, auth, baseModel)
-	if !helps.CodexGatewayRequestAllowed(auth, baseModel, ticketInjected) {
-		return resp, statusErr{code: http.StatusServiceUnavailable, msg: "codex mint: no live ticket and route for the selected transport"}
-	}
+
 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
-	requestHeaders := httpReq.Header.Clone()
-	reporter.SetCodexTurnState(helps.CodexRequestTurnState(httpReq.Header, ticketInjected))
+
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
 		authID = auth.ID
@@ -305,7 +297,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 		}
 	}()
 	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
-	observeCodexTurnTicketResponse(ctx, httpResp.StatusCode, httpResp.Header, requestHeaders, auth, baseModel, ticketInjected)
+
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		b, _ := io.ReadAll(httpResp.Body)
 		b = applyCodexIdentityConfuseResponsePayload(b, identityState)

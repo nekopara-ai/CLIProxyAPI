@@ -213,10 +213,18 @@ jobs:
             ./internal/api/handlers/management \
             ./internal/pluginhost \
             ./internal/redisqueue \
+            ./internal/config \
+            ./internal/fingerprint \
             ./internal/runtime/executor/... \
             ./sdk/api/handlers/openai \
             ./sdk/cliproxy/... \
             ./sdk/pluginapi
+
+      - name: Race-test fingerprint state and credential timezone isolation
+        if: steps.metadata.outputs.already_released != 'true'
+        run: |
+          CGO_ENABLED=1 go test -race ./internal/fingerprint
+          CGO_ENABLED=1 go test -race ./internal/runtime/executor/helps -run 'Test(CredentialTimezone|TimezoneTool)'
 
       - name: Verify server build
         if: steps.metadata.outputs.already_released != 'true'

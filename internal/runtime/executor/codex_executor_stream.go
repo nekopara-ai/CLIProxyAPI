@@ -59,7 +59,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
-	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
+	body = helps.ApplyPayloadConfigWithRequest(helps.ConfigForAuth(e.cfg, auth), baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
 	body, _ = sjson.DeleteBytes(body, "previous_response_id")
 	body, _ = sjson.DeleteBytes(body, "generate")
 	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
@@ -82,7 +82,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	if errReplay != nil {
 		return nil, errReplay
 	}
-	body = helps.ApplyTimezoneOverride(e.cfg, body)
+	body = helps.ApplyTimezoneOverride(helps.ConfigForAuth(e.cfg, auth), body)
 	reporter.SetTranslatedReasoningEffort(body, to.String())
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
@@ -94,13 +94,9 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg, opts.Headers)
 	applyCodexRoutingHint(ctx, httpReq.Header, auth, baseModel, upstreamBody, opts.Headers)
 	applyModelHeaderOverrides(httpReq.Header, baseModel, codexOverrideIdentity{cfg: e.cfg, auth: auth})
-	ticketInjected := applyCodexTurnTicket(ctx, httpReq.Header, auth, baseModel)
-	if !helps.CodexGatewayRequestAllowed(auth, baseModel, ticketInjected) {
-		return nil, statusErr{code: http.StatusServiceUnavailable, msg: "codex mint: no live ticket and route for the selected transport"}
-	}
+
 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
-	requestHeaders := httpReq.Header.Clone()
-	reporter.SetCodexTurnState(helps.CodexRequestTurnState(httpReq.Header, ticketInjected))
+
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
 		authID = auth.ID
@@ -127,7 +123,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		return nil, err
 	}
 	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
-	observeCodexTurnTicketResponse(ctx, httpResp.StatusCode, httpResp.Header, requestHeaders, auth, baseModel, ticketInjected)
+
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		data, readErr := io.ReadAll(httpResp.Body)
 		if errClose := httpResp.Body.Close(); errClose != nil {

@@ -272,7 +272,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		bodyForUpstream, oauthToolNamesReverseMap = prepareClaudeOAuthToolNamesForUpstream(bodyForUpstream, mcpAliases)
 	}
 	bodyForUpstream = sanitizeClaudeMessagesForClaudeUpstreamWithDebug(ctx, bodyForUpstream, baseModel, helps.APIKeyModelIsCompat(req))
-	bodyForUpstream = helps.ApplyTimezoneOverride(e.cfg, bodyForUpstream)
+	bodyForUpstream = helps.ApplyTimezoneOverride(helps.ConfigForAuth(e.cfg, auth), bodyForUpstream)
 	if fp.ApplyCLIIdentity {
 		bodyForUpstream, err = applyClaudeCLIIdentity(bodyForUpstream, auth, apiKey, url, claudeSessionID, fp.SynthesizeIdentity)
 		if err != nil {

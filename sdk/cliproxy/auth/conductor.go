@@ -137,7 +137,7 @@ type resultPolicyHolder struct {
 
 // ExecutionModelGuard can reject one resolved upstream model for a credential before
 // any request preparation or upstream I/O occurs. It is intended for runtime safety
-// gates whose state lives outside the auth manager, such as Codex turn-ticket readiness.
+// gates whose state lives outside the auth manager, such as fingerprint cooldowns.
 type ExecutionModelGuard func(auth *Auth, model string) bool
 
 type executionModelGuardHolder struct {

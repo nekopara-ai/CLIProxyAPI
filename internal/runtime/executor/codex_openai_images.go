@@ -103,7 +103,7 @@ func (e *CodexExecutor) executeOpenAIImage(ctx context.Context, auth *cliproxyau
 	reporter := helps.NewExecutorUsageReporter(ctx, e, mainModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
 
-	body, errBuild := e.prepareCodexOpenAIImageBody(prepared.Body, req, opts, mainModel)
+	body, errBuild := e.prepareCodexOpenAIImageBody(prepared.Body, req, opts, mainModel, auth)
 	if errBuild != nil {
 		return resp, errBuild
 	}
@@ -201,7 +201,7 @@ func (e *CodexExecutor) executeOpenAIImageStream(ctx context.Context, auth *clip
 	reporter := helps.NewExecutorUsageReporter(ctx, e, mainModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
 
-	body, errBuild := e.prepareCodexOpenAIImageBody(prepared.Body, req, opts, mainModel)
+	body, errBuild := e.prepareCodexOpenAIImageBody(prepared.Body, req, opts, mainModel, auth)
 	if errBuild != nil {
 		return nil, errBuild
 	}
@@ -672,7 +672,11 @@ func codexIsDirectOpenAIImageModel(model string) bool {
 	}
 }
 
-func (e *CodexExecutor) prepareCodexOpenAIImageBody(body []byte, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, mainModel string) ([]byte, error) {
+func (e *CodexExecutor) prepareCodexOpenAIImageBody(body []byte, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, mainModel string, auths ...*cliproxyauth.Auth) ([]byte, error) {
+	var auth *cliproxyauth.Auth
+	if len(auths) > 0 {
+		auth = auths[0]
+	}
 	out := body
 	mainModel = strings.TrimSpace(mainModel)
 	if mainModel == "" {
@@ -686,7 +690,7 @@ func (e *CodexExecutor) prepareCodexOpenAIImageBody(body []byte, req cliproxyexe
 
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
-	out = helps.ApplyPayloadConfigWithRequest(e.cfg, mainModel, "codex", codexOpenAIImageSourceFormat, "", out, body, requestedModel, requestPath, opts.Headers)
+	out = helps.ApplyPayloadConfigWithRequest(helps.ConfigForAuth(e.cfg, auth), mainModel, "codex", codexOpenAIImageSourceFormat, "", out, body, requestedModel, requestPath, opts.Headers)
 	out = helps.SetStringIfDifferent(out, "model", mainModel)
 	out = helps.SetBoolIfDifferent(out, "stream", true)
 	out, _ = sjson.DeleteBytes(out, "previous_response_id")

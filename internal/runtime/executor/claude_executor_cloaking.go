@@ -1114,6 +1114,7 @@ func claudeCodeCurrentTime(cfg *config.Config, auth *cliproxyauth.Auth) time.Tim
 }
 
 func claudeCodeTimezone(cfg *config.Config, auth *cliproxyauth.Auth) *time.Location {
+	cfg = helps.ConfigForAuth(cfg, auth)
 	if location := helps.TimezoneOverrideLocation(cfg); location != nil {
 		return location
 	}

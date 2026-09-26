@@ -224,10 +224,6 @@ type CodexConfig struct {
 	LiveMediaRelay CodexLiveMediaRelayConfig `yaml:"live-media-relay" json:"live-media-relay"`
 	// ResponseSteering enables full-duplex Codex WebSockets bound to one upstream socket.
 	ResponseSteering bool `yaml:"response-steering" json:"response-steering"`
-	// TurnTicket harvests upstream-minted X-Codex-Turn-State tokens so Codex requests can
-	// replay a healthy token instead of the degraded state the upstream would otherwise
-	// assign. Disabled by default.
-	TurnTicket CodexTurnTicketSettings `yaml:"turn-ticket" json:"turn-ticket"`
 }
 
 // CodexClientIdentity overrides the outbound Codex client identity. Empty fields fall
@@ -240,124 +236,6 @@ type CodexClientIdentity struct {
 	// UserAgent overrides the full User-Agent. When empty it is derived from Originator/Version
 	// so the identity stays self-consistent.
 	UserAgent string `yaml:"user-agent" json:"user-agent"`
-}
-
-// CodexTurnTicketSettings configures the Codex turn-state ticket harvester.
-//
-// Header lengths are configurable empirical routing rules. Acquired tokens remain
-// isolated by credential and model; adaptive replay also requires business validation.
-type CodexTurnTicketSettings struct {
-	CodexTurnTicketPolicySettings `yaml:",inline"`
-	// Enabled is the master switch for harvesting, injection, and ticket-based gating.
-	Enabled bool `yaml:"enabled" json:"enabled"`
-	// InjectionEnabled controls replay of cached tickets on outbound requests. Defaults
-	// to true when omitted. False preserves client headers and leaves harvesting,
-	// passive capture, and FailClosed scheduling unchanged.
-	InjectionEnabled *bool `yaml:"injection-enabled,omitempty" json:"injection-enabled,omitempty"`
-	// AdaptiveInjection selects adaptive routing-cookie mode for the ticket subsystem.
-	// The effective default is true, resolved in the core runtime rather than here, so a
-	// missing field keeps the adaptive behavior. Set false to fall back to the legacy
-	// behavior, which replays only a cached healthy ticket and never classifies traffic
-	// through a business-egress probe.
-	AdaptiveInjection *bool `yaml:"adaptive-injection,omitempty" json:"adaptive-injection,omitempty"`
-	// RoutingCookieTTLSeconds caps the freshness lease granted to a validated routing
-	// cookie bundle in adaptive mode. The default is 240; explicit positive values are
-	// honored and remain bounded by the ticket and cookie expirations.
-	RoutingCookieTTLSeconds int `yaml:"routing-cookie-ttl-seconds,omitempty" json:"routing-cookie-ttl-seconds,omitempty"`
-	// RoutingRefreshBeforeSeconds is how close to lease expiry a validated bundle is
-	// renewed. The core default is 30.
-	RoutingRefreshBeforeSeconds int `yaml:"routing-refresh-before-seconds,omitempty" json:"routing-refresh-before-seconds,omitempty"`
-	// RoutingProbeIntervalSeconds is the delay between adaptive business-egress
-	// classification probes. The core default is 15.
-	RoutingProbeIntervalSeconds int `yaml:"routing-probe-interval-seconds,omitempty" json:"routing-probe-interval-seconds,omitempty"`
-	// HarvestAttempts bounds how many acquisition candidates the adaptive harvester
-	// tries before giving up on a bucket. The core default is 3; positive overrides
-	// are honored.
-	HarvestAttempts int `yaml:"harvest-attempts,omitempty" json:"harvest-attempts,omitempty"`
-	// FailClosed prevents a Codex OAuth credential from serving a gated model until that
-	// exact (credential, model) bucket has a valid healthy ticket. It defaults to true when
-	// omitted so a missing ticket can never silently fall back to a degraded turn state.
-	FailClosed *bool `yaml:"fail-closed,omitempty" json:"fail-closed,omitempty"`
-	// TargetLength is the healthy length for unclassified plans only. Defaults to 780.
-	TargetLength int `yaml:"target-length,omitempty" json:"target-length,omitempty"`
-	// TTLSeconds bounds how long a captured token is replayed, measured from the issue
-	// timestamp encoded in the token itself. Defaults to 3600.
-	TTLSeconds int `yaml:"ttl-seconds,omitempty" json:"ttl-seconds,omitempty"`
-	// RefreshBeforeSeconds is how close to expiry a ticket may get before the harvester
-	// probes again. Defaults to 600.
-	RefreshBeforeSeconds int `yaml:"refresh-before-seconds,omitempty" json:"refresh-before-seconds,omitempty"`
-	// ProbeIntervalSeconds is the delay between harvest cycles. Defaults to 60.
-	ProbeIntervalSeconds int `yaml:"probe-interval-seconds,omitempty" json:"probe-interval-seconds,omitempty"`
-	// ProbeTimeoutSeconds bounds one synthetic probe request. Defaults to 25.
-	ProbeTimeoutSeconds int `yaml:"probe-timeout-seconds,omitempty" json:"probe-timeout-seconds,omitempty"`
-	// ProbeCooldownSeconds is the minimum spacing between synthetic probes of the same
-	// (credential, model) bucket. Defaults to 3300 (55 minutes), deliberately just under the
-	// bucket's one-hour lifetime so a renewal is not blocked by its own cooldown.
-	ProbeCooldownSeconds int `yaml:"probe-cooldown-seconds,omitempty" json:"probe-cooldown-seconds,omitempty"`
-	// RejectBackoffSeconds is how long a bucket stops being probed after the upstream
-	// rejects it with 429, 401, or a business-egress 403. Defaults to 600.
-	// Adaptive acquisition 403 uses the separate egress-only backoff below.
-	RejectBackoffSeconds int `yaml:"reject-backoff-seconds,omitempty" json:"reject-backoff-seconds,omitempty"`
-	// HarvestRejectBackoffSeconds pauses an acquisition egress after an adaptive
-	// harvest 403 without stopping business probes or other acquisition egresses.
-	// Defaults to 15. Authentication (401) and quota (429) still park the whole bucket.
-	HarvestRejectBackoffSeconds int `yaml:"harvest-reject-backoff-seconds,omitempty" json:"harvest-reject-backoff-seconds,omitempty"`
-	// HarvestProxyURLs lists fallback egress choices used only by synthetic probes.
-	// Each entry may be a concrete proxy URL or "direct", which explicitly bypasses process
-	// environment proxies. Background probes try the business egress first and select one
-	// random fallback only after an HTTP 200 with a 312 turn state. An empty list disables
-	// only the fallback acquisition pool: adaptive mode still runs business-egress
-	// classification and can still pass natural healthy traffic through. It never disables
-	// classification itself.
-	HarvestProxyURLs []string `yaml:"harvest-proxy-urls,omitempty" json:"harvest-proxy-urls,omitempty"`
-	// Models lists the buckets to harvest and inject for. Defaults to the Codex models the
-	// upstream mints tickets for.
-	Models []string `yaml:"models,omitempty" json:"models,omitempty"`
-	// AuthIDs optionally restricts harvesting to specific credentials. Empty harvests
-	// every eligible Codex OAuth credential.
-	AuthIDs []string `yaml:"auth-ids,omitempty" json:"auth-ids,omitempty"`
-}
-
-// CodexTurnTicketPolicySettings controls classification and adaptive recovery.
-// Lengths describe empirical header shapes, not an upstream quality guarantee.
-type CodexTurnTicketPolicySettings struct {
-	// Nil uses the existing per-plan length policy; zero disables the format-length check.
-	MintTicketLength *int `yaml:"mint-ticket-length,omitempty" json:"mint-ticket-length,omitempty"`
-	// Gateway minting is the default acquisition engine. False explicitly selects
-	// the previous adaptive engine for rollback; the master switch stays unchanged.
-	GatewayMint *bool  `yaml:"gateway-mint,omitempty" json:"gateway-mint,omitempty"`
-	MintGateway string `yaml:"mint-gateway,omitempty" json:"mint-gateway,omitempty"`
-	// MintRejectGateways excludes routing pairs from acquisition and injection.
-	// With mint-gateway: any, all other gateways remain eligible.
-	MintRejectGateways       []string `yaml:"mint-reject-gateways,omitempty" json:"mint-reject-gateways,omitempty"`
-	MintTicketTTLSeconds     int      `yaml:"mint-ticket-ttl-seconds,omitempty" json:"mint-ticket-ttl-seconds,omitempty"`
-	MintPairTTLSeconds       int      `yaml:"mint-pair-ttl-seconds,omitempty" json:"mint-pair-ttl-seconds,omitempty"`
-	MintMaxAttempts          int      `yaml:"mint-max-attempts,omitempty" json:"mint-max-attempts,omitempty"`
-	MintTotalTimeoutSeconds  int      `yaml:"mint-total-timeout-seconds,omitempty" json:"mint-total-timeout-seconds,omitempty"`
-	MintRetryCooldownSeconds int      `yaml:"mint-retry-cooldown-seconds,omitempty" json:"mint-retry-cooldown-seconds,omitempty"`
-	MintCacheCapacity        int      `yaml:"mint-cache-capacity,omitempty" json:"mint-cache-capacity,omitempty"`
-	MintWorkers              int      `yaml:"mint-workers,omitempty" json:"mint-workers,omitempty"`
-	MintTransports           []string `yaml:"mint-transports,omitempty" json:"mint-transports,omitempty"`
-
-	PersonalHealthyLength  int `yaml:"personal-healthy-length,omitempty" json:"personal-healthy-length,omitempty"`
-	PersonalDegradedLength int `yaml:"personal-degraded-length,omitempty" json:"personal-degraded-length,omitempty"`
-	TeamHealthyLength      int `yaml:"team-healthy-length,omitempty" json:"team-healthy-length,omitempty"`
-	TeamDegradedLength     int `yaml:"team-degraded-length,omitempty" json:"team-degraded-length,omitempty"`
-	// BlockOnDegraded defaults to FailClosed. Explicit values override it for inject mode only.
-	BlockOnDegraded *bool `yaml:"block-on-degraded,omitempty" json:"block-on-degraded,omitempty"`
-	// UnknownStateAction is retain (default), harvest, or block. Adaptive mode only.
-	UnknownStateAction string `yaml:"unknown-state-action,omitempty" json:"unknown-state-action,omitempty"`
-	// HarvestOnBusinessError excludes statuses assigned to rejection backoff.
-	HarvestOnBusinessError bool `yaml:"harvest-on-business-error,omitempty" json:"harvest-on-business-error,omitempty"`
-	// ValidationTicketPolicy is same-or-empty (default) or healthy-or-empty.
-	ValidationTicketPolicy     string   `yaml:"validation-ticket-policy,omitempty" json:"validation-ticket-policy,omitempty"`
-	RequireCompleteResponse    *bool    `yaml:"require-complete-response,omitempty" json:"require-complete-response,omitempty"`
-	RequireModelMatch          *bool    `yaml:"require-model-match,omitempty" json:"require-model-match,omitempty"`
-	RoutingExpiryMarginSeconds *int     `yaml:"routing-expiry-margin-seconds,omitempty" json:"routing-expiry-margin-seconds,omitempty"`
-	LegacyExpiryMarginSeconds  *int     `yaml:"legacy-expiry-margin-seconds,omitempty" json:"legacy-expiry-margin-seconds,omitempty"`
-	RoutingCookieNames         []string `yaml:"routing-cookie-names" json:"routing-cookie-names"`
-	RejectStatusCodes          []int    `yaml:"reject-status-codes" json:"reject-status-codes"`
-	HarvestRejectStatusCodes   []int    `yaml:"harvest-reject-status-codes" json:"harvest-reject-status-codes"`
 }
 
 // DefaultCodexStreamBootstrapTimeout is the default maximum duration to buffer bootstrap events.

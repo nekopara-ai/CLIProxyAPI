@@ -391,44 +391,6 @@ func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, s
 	applyCodexHeadersFromSources(r, auth, token, stream, cfg, ginHeaders)
 }
 
-// applyCodexTurnTicket replaces the turn-state header with a harvested healthy ticket
-// for this (auth, model) bucket, when one is available.
-//
-// The call site passes the outbound model, not the client's requested model, because the
-// harvester buckets tickets by the model it probed. Injection runs after every other
-// header source has been considered, including the client-supplied value: a stale or
-// degraded turn-state from the client would otherwise keep the account in the state this
-// feature exists to escape. A no-op when no ticket is available leaves pass-through
-// behaviour intact.
-func applyCodexTurnTicket(ctx context.Context, headers http.Header, auth *cliproxyauth.Auth, model string) bool {
-	return helps.ApplyCodexTurnTicket(auth, model, headers, ctx)
-}
-
-// observeCodexTurnTicketResponse feeds the actual upstream status and both sides of
-// the wire to the adaptive ticket policy. The response side is deliberately separate
-// from the legacy passive harvester so 312/degraded responses can become sticky without
-// replaying the request that discovered them.
-func observeCodexTurnTicketResponse(ctx context.Context, status int, responseHeaders, requestHeaders http.Header, auth *cliproxyauth.Auth, model string, injected bool) {
-	helps.ObserveCodexTurnTicketResponse(auth, model, status, responseHeaders, requestHeaders, injected, ctx)
-}
-
-// observeCodexWebsocketTurnTicketResponse observes a successful physical websocket
-// handshake. An HTTP response from a failed upgrade is not a WebSocket 101 and must not
-// transition adaptive state. Reused sockets have no handshake response and are skipped.
-func observeCodexWebsocketTurnTicketResponse(ctx context.Context, response *http.Response, errDial error, requestHeaders http.Header, auth *cliproxyauth.Auth, model string, injected bool) {
-	if errDial != nil || response == nil || response.StatusCode != http.StatusSwitchingProtocols {
-		return
-	}
-	observeCodexTurnTicketResponse(helps.WithCodexMintTransport(ctx, "websocket"), response.StatusCode, response.Header, requestHeaders, auth, model, injected)
-}
-
-// harvestCodexTurnTicket records a healthy turn-state the upstream minted for live
-// traffic. Passive capture costs no extra quota and keeps the bucket fresh without
-// waiting for the next synthetic probe cycle.
-func harvestCodexTurnTicket(headers http.Header, auth *cliproxyauth.Auth, model string) {
-	helps.HarvestCodexTurnStateOnResponse(auth, model, headers)
-}
-
 // applyModelHeaderOverrides forces models.json config.override_header onto upstream headers.
 // When a config is supplied and the override carries a catalog-managed Codex identity, the
 // identity fields are rewritten from that config so a configured Version/Originator reaches

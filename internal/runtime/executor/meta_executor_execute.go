@@ -30,7 +30,11 @@ type metaPreparedRequest struct {
 	body            []byte
 }
 
-func (e *MetaExecutor) prepareResponsesRequest(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, stream bool) (*metaPreparedRequest, error) {
+func (e *MetaExecutor) prepareResponsesRequest(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, stream bool, auths ...*cliproxyauth.Auth) (*metaPreparedRequest, error) {
+	var auth *cliproxyauth.Auth
+	if len(auths) > 0 {
+		auth = auths[0]
+	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
@@ -53,7 +57,7 @@ func (e *MetaExecutor) prepareResponsesRequest(ctx context.Context, req cliproxy
 
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
-	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, e.Identifier(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
+	body = helps.ApplyPayloadConfigWithRequest(helps.ConfigForAuth(e.cfg, auth), baseModel, e.Identifier(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
 	body = helps.SetStringIfDifferent(body, "model", baseModel)
 	body = helps.SetBoolIfDifferent(body, "stream", stream)
 	body, _ = sjson.DeleteBytes(body, "generate")
@@ -85,7 +89,7 @@ func (e *MetaExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 		return resp, errAuth
 	}
 
-	prepared, errPrepare := e.prepareResponsesRequest(ctx, req, opts, true)
+	prepared, errPrepare := e.prepareResponsesRequest(ctx, req, opts, true, auth)
 	if errPrepare != nil {
 		return resp, errPrepare
 	}
@@ -194,7 +198,7 @@ func (e *MetaExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth,
 	if _, errAuth := e.ensureAuth(ctx, auth); errAuth != nil {
 		return cliproxyexecutor.Response{}, errAuth
 	}
-	prepared, errPrepare := e.prepareResponsesRequest(ctx, req, opts, false)
+	prepared, errPrepare := e.prepareResponsesRequest(ctx, req, opts, false, auth)
 	if errPrepare != nil {
 		return cliproxyexecutor.Response{}, errPrepare
 	}

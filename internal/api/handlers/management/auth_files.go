@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/fingerprint"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,7 +18,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/credentialweight"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
+
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
@@ -669,11 +670,17 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quotaSupported .
 		"size":           int64(0),
 	}
 	entry["success"] = auth.Success
+	if monitor := fingerprint.Current(); monitor != nil {
+		snapshot := monitor.Snapshot(auth)
+		entry["fingerprint_status"] = snapshot
+		if !auth.Disabled && !monitor.Allowed(auth, "") {
+			entry["unavailable"] = true
+			entry["status_message"] = "fingerprint cooldown; awaiting successful verification"
+		}
+	}
 	entry["failed"] = auth.Failed
 	entry["recent_requests"] = auth.RecentRequestsSnapshot(time.Now())
-	if ticketSnapshot := helps.SnapshotCodexTurnTicketForAuth(auth); ticketSnapshot != nil {
-		entry["codex_turn_ticket"] = ticketSnapshot
-	}
+
 	entry["quota"] = quotaObservationPayloadForProvider(auth.Provider, auth.Quota)
 	if modelQuotas := modelQuotaObservationPayload(auth.Provider, auth.ModelStates); len(modelQuotas) > 0 {
 		entry["model_quotas"] = modelQuotas

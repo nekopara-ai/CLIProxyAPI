@@ -97,6 +97,12 @@ func rewriteTimezoneValue(out []byte, path string, value gjson.Result, target ti
 			out = rewriteTimezoneValue(out, joinJSONPath(path, strconv.Itoa(i)), items[i], target)
 		}
 	case value.IsObject():
+		// Tool results are untrusted payloads, not environment instructions. Never
+		// rewrite source code, historical examples, or nested JSON inside them.
+		kind := value.Get("type").String()
+		if kind == "function_call_output" || kind == "tool_result" || value.Get("role").String() == "tool" {
+			return out
+		}
 		value.ForEach(func(key, child gjson.Result) bool {
 			childPath := joinJSONPath(path, key.String())
 			if key.String() == "user_location" && child.IsObject() {

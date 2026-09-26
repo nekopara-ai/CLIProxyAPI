@@ -131,7 +131,7 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	}
 
 	requestPath := helps.PayloadRequestPath(opts)
-	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
+	translated = helps.ApplyPayloadConfigWithRequest(helps.ConfigForAuth(e.cfg, auth), baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
 	if normalizeToolResults {
 		translated = helps.NormalizeOpenAIToolResultsTextOnly(translated)
 	}
@@ -379,7 +379,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	}
 
 	requestPath := helps.PayloadRequestPath(opts)
-	translated = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
+	translated = helps.ApplyPayloadConfigWithRequest(helps.ConfigForAuth(e.cfg, auth), baseModel, to.String(), from.String(), "", translated, originalTranslated, requestedModel, requestPath, opts.Headers)
 	if normalizeToolResults {
 		translated = helps.NormalizeOpenAIToolResultsTextOnly(translated)
 	}

@@ -54,7 +54,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
-	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
+	body = helps.ApplyPayloadConfigWithRequest(helps.ConfigForAuth(e.cfg, auth), baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
 	body = helps.SetStringIfDifferent(body, "model", baseModel)
 	body = helps.SetBoolIfDifferent(body, "stream", true)
 	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
@@ -72,7 +72,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	if errReplay != nil {
 		return resp, errReplay
 	}
-	body = helps.ApplyTimezoneOverride(e.cfg, body)
+	body = helps.ApplyTimezoneOverride(helps.ConfigForAuth(e.cfg, auth), body)
 
 	httpURL := strings.TrimSuffix(baseURL, "/") + "/responses"
 	wsURL, err := buildCodexResponsesWebsocketURL(httpURL)
@@ -94,12 +94,8 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg, nativeRequest, opts.Headers)
 	applyCodexRoutingHint(ctx, wsHeaders, auth, baseModel, upstreamBody, opts.Headers)
 	applyModelHeaderOverrides(wsHeaders, baseModel, codexOverrideIdentity{cfg: e.cfg, auth: auth})
-	ticketInjected := applyCodexTurnTicket(helps.WithCodexMintTransport(ctx, "websocket"), wsHeaders, auth, baseModel)
-	if !helps.CodexGatewayRequestAllowed(auth, baseModel, ticketInjected) {
-		return resp, statusErr{code: http.StatusServiceUnavailable, msg: "codex mint: no live ticket and route for the selected transport"}
-	}
+
 	applyCodexIdentityConfuseHeaders(wsHeaders, &identityState)
-	routingFingerprint := codexWebsocketRoutingFingerprint(wsHeaders, ticketInjected)
 
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
@@ -148,16 +144,15 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	var errDial error
 	dialCtx := ctx
 	if cliproxyexecutor.RequiredUpstreamWebsocket(ctx) {
-		conn, closer = existingWebsocketSessionConn(sess, authID, wsURL, executionProxyURL(ctx, e.cfg, auth), routingFingerprint)
+		conn, closer = existingWebsocketSessionConn(sess, authID, wsURL, executionProxyURL(ctx, e.cfg, auth))
 		if conn == nil {
 			return resp, cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError()
 		}
 	} else {
 		dialCtx = cliproxyexecutor.WithUpstreamAttemptTracker(ctx)
-		conn, closer, respHS, errDial = e.ensureUpstreamConnWithRoutingFingerprint(dialCtx, auth, sess, authID, wsURL, wsHeaders, routingFingerprint)
+		conn, closer, respHS, errDial = e.ensureUpstreamConn(dialCtx, auth, sess, authID, wsURL, wsHeaders)
 	}
-	recordCodexWebsocketTurnState(reporter, sess, conn, respHS, wsHeaders, ticketInjected)
-	observeCodexWebsocketTurnTicketResponse(ctx, respHS, errDial, wsHeaders, auth, baseModel, ticketInjected)
+
 	if errDial != nil {
 		bodyErr := websocketHandshakeBody(respHS)
 		if respHS != nil {
@@ -228,9 +223,8 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			// Retry once with a fresh websocket connection. This is mainly to handle
 			// upstream closing the socket between sequential requests within the same
 			// execution session.
-			connRetry, closerRetry, respHSRetry, errDialRetry := e.ensureUpstreamConnWithRoutingFingerprint(ctx, auth, sess, authID, wsURL, wsHeaders, routingFingerprint)
-			recordCodexWebsocketTurnState(reporter, sess, connRetry, respHSRetry, wsHeaders, ticketInjected)
-			observeCodexWebsocketTurnTicketResponse(ctx, respHSRetry, errDialRetry, wsHeaders, auth, baseModel, ticketInjected)
+			connRetry, closerRetry, respHSRetry, errDialRetry := e.ensureUpstreamConn(ctx, auth, sess, authID, wsURL, wsHeaders)
+
 			if errDialRetry == nil && connRetry != nil {
 				previousConn, previousReadCh := conn, readCh
 				conn = connRetry

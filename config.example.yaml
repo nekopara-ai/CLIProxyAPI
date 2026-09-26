@@ -397,157 +397,7 @@ codex:
     #       - "turn:turn.example.com:3478?transport=udp"
     #     username: "user"
     #     credential: "secret"
-  # Harvest and replay upstream-minted X-Codex-Turn-State tokens.
-  # Experimental turn-state routing: personal and Team lengths are configured separately.
-  # Per-auth JSON codex_turn_ticket_plan: auto|pro|team overrides token plan hints;
-  # imported opaque access tokens can select team without ID/refresh tokens. Auto uses
-  # only claims matching account_id, otherwise target-length below remains the fallback.
-  # Length is not a model-quality guarantee. Tickets remain isolated by auth and model.
-  # Manual policy changes through PATCH auth-files/fields invalidate cached tickets.
-  turn-ticket:
-    # Gateway-scoped probe/injection engine; see docs/codex-gateway-mint.md.
-    # The existing master enabled switch below remains authoritative.
-    gateway-mint: true
-    mint-gateway: "unified-88"
-    # To exclude only one gateway: set mint-gateway: "any" and uncomment below.
-    # mint-reject-gateways: ["unified-149"]
-    mint-ticket-ttl-seconds: 240
-    mint-pair-ttl-seconds: 3900
-    mint-max-attempts: 24
-    mint-total-timeout-seconds: 75
-    mint-retry-cooldown-seconds: 30
-    mint-cache-capacity: 256
-    mint-workers: 4
-    mint-transports: [sse, websocket]
-    # Disabled by default. When false the wiring is inert: injection and passive capture
-    # both check this flag, so nothing is stored or replayed until an operator opts in.
-    # When true, adaptive direct routes need no captured ticket; degraded routes require
-    # a validated routing-cookie+ticket bundle before they can be served.
-    enabled: false
-    # Replay cached personal or Team tickets on outbound requests. Defaults
-    # to true when omitted. Set false to keep probing, passive capture, and fail-closed
-    # scheduling while preserving client-supplied turn-state headers. Hot-reloadable;
-    # existing WebSocket handshakes are unchanged until the connection is replaced.
-    injection-enabled: true
-    # Adaptive routing-cookie mode. The effective default is true and is resolved in the
-    # core runtime, so omitting this key keeps the adaptive behavior described below.
-    # Set false to fall back to the legacy behavior: only a cached healthy ticket is
-    # replayed, and no business-egress classification probe is performed.
-    # Hot-reloadable; existing WebSocket handshakes are unchanged until the connection
-    # is replaced.
-    #
-    # Adaptive mode classifies a gated request with a synthetic business-egress probe:
-    #   - natural healthy probe -> passthrough (no injection required)
-    #   - explicitly degraded probe (configured personal/team degraded lengths) -> injection enabled for
-    #     the auth+model bundle
-    #   - transport errors such as 401/403/429/timeouts -> no mode toggle
-    # Injection state is isolated per auth+model, never per router. Cookie names are
-    # restricted to the __cflb/__oailb allowlist. Cookies acquired from an acquisition
-    # pool are candidates only: each one must be validated by a business-egress replay
-    # before it becomes usable.
-    #
-    # A validated bundle is activated under a short freshness lease. The lease is capped
-    # at routing-cookie-ttl-seconds, renewed routing-refresh-before-seconds early, and
-    # invalidated on an explicit degraded configured degraded lengths. It is a local routing lease, not the upstream token's own
-    # TTL. Unknown bundles are not retained across a restart.
-    adaptive-injection: true
-    # Maximum freshness lease for an adaptive-mode routing-cookie bundle, in seconds.
-    # Core default is 240; positive overrides are honored. This bounds local reuse; it
-    # is not the upstream token TTL. See docs/codex-adaptive-turn-ticket.md.
-    routing-cookie-ttl-seconds: 240
-    # Renew a validated adaptive bundle this many seconds before its lease expires.
-    # Core default is 30.
-    routing-refresh-before-seconds: 30
-    # Delay between adaptive business-egress classification probes, in seconds.
-    # Core default is 15.
-    routing-probe-interval-seconds: 15
-    # How many acquisition candidates the adaptive harvester tries before giving up on a
-    # bucket. Core default is 3; positive overrides are honored.
-    harvest-attempts: 3
-    # Refuse to route a gated model through a Codex OAuth credential that has no valid
-    # healthy ticket for that exact model. Defaults to true. In adaptive mode this means
-    # an unknown/unclassified bundle waits for classification instead of being served;
-    # a natural healthy probe still passes without a cached ticket; a degraded probe
-    # requires a validated cookie+ticket bundle. Set false only to restore the old
-    # pass-through behavior, which may allow a 312 degraded turn state onto live traffic.
-    fail-closed: true
-    # Fallback length for accounts without an explicit policy or matching token hint.
-    target-length: 780
-    # Four independent lengths. Recognized plans do not use target-length.
-    personal-healthy-length: 780
-    personal-degraded-length: 312
-    team-healthy-length: 780
-    team-degraded-length: 312
-    # Pause only this auth+model until direct recovery or usable injection.
-    # false: continue traffic while background recovery runs. Omitted: inherit fail-closed.
-    block-on-degraded: true
-    # Unknown/missing state (or unusable HTTP 200): retain, harvest, or block.
-    # block pauses admission independently of fail-closed; probing continues.
-    unknown-state-action: retain
-    # Non-200/transport failures may trigger acquisition. Rejection backoff takes priority.
-    harvest-on-business-error: false
-    # Accept a reissued healthy response but cache only the submitted, tested bundle.
-    # Core default is same-or-empty; healthy-or-empty also accepts a new healthy ticket.
-    validation-ticket-policy: healthy-or-empty
-    require-complete-response: true
-    require-model-match: true
-    routing-expiry-margin-seconds: 5
-    legacy-expiry-margin-seconds: 30
-    routing-cookie-names: [__cflb, __oailb]
-    # Explicit [] disables a status list; null/omitted uses defaults.
-    reject-status-codes: [401, 403, 429]
-    # Takes priority only during acquisition; other phases use reject-status-codes.
-    harvest-reject-status-codes: [403]
-    # How long a captured token may be replayed, measured from the token's own issue time.
-    ttl-seconds: 3600
-    # Probe again when a ticket is this close to expiry.
-    refresh-before-seconds: 600
-    # Delay between harvest cycles.
-    probe-interval-seconds: 60
-    # Bound on one synthetic probe request.
-    probe-timeout-seconds: 25
-    # Minimum spacing after a successful healthy harvest. A 200 response with no healthy
-    # ticket (including a 312 state) is retried on the next probe cycle instead of waiting
-    # for this cooldown.
-    probe-cooldown-seconds: 3300
-    # Bucket backoff after 401, 429, or a business-egress 403.
-    reject-backoff-seconds: 600
-    # Adaptive harvest 403 pauses only that acquisition egress; business probes continue.
-    harvest-reject-backoff-seconds: 15
-    # Fallback egress pool for synthetic probes. Each cycle first uses the credential
-    # proxy, then the global proxy, or the environment when neither is set. Only an
-    # HTTP 200 with a 312 personal / 356 Team state triggers one random pool fallback.
-    # Entries may be concrete http/https/socks5 proxy URLs, or "direct" to explicitly
-    # bypass HTTP_PROXY/HTTPS_PROXY. An empty list disables only fallback acquisition:
-    # adaptive mode still performs business-egress classification and can still pass
-    # natural healthy traffic through without any fallback egress available.
-    harvest-proxy-urls: []
-    #  - direct
-    #  - socks5h://user:password@proxy.example.com:1080
-    # Buckets to harvest and inject for. Omit to use the built-in Codex model list.
-    # models:
-    #   - gpt-5.6-sol
-    # Optional restriction to specific credential ids.
-    # auth-ids:
-    #   - ""
 
-# Antigravity provider behavior.
-# antigravity:
-#   sensitive-words:             # optional: words to obfuscate with zero-width characters in system instructions
-#     - "API"
-#     - "proxy"
-#   connection-pool:             # optional: upstream HTTP connection pool settings
-#     enabled: false             # whether to enable connection pooling (default: false; set to true to enable connection pooling)
-#     idle-conn-timeout: "30s"   # idle keep-alive timeout (default: 30s, capped at 210s)
-#     max-idle-conns-per-host: 2 # max idle connections per host per credential (default: 2)
-
-# Devin provider behavior.
-# devin:
-#   sensitive-words:             # optional: words to obfuscate with zero-width characters in system instructions and prompts
-#     - "API"
-#     - "proxy"
-
-# xAI provider behavior.
 xai:
   # When true, inject the native x_search tool when the request does not declare it.
   # The injected tool is also added to tool_choice.allowed_tools when applicable.
@@ -1172,3 +1022,38 @@ nonstream-keepalive-interval: 0
 #         - 'tools.#(name=="apply_patch")'
 #         # Nested additional_tools structure in input[] (Codex CLI >= 0.154 "Responses Lite"):
 #         - 'input.#(type=="additional_tools")#.tools.#(name=="functions")#.tools.#(name=="apply_patch")#'
+
+# Optional three-question, bank-relative model fingerprint monitoring.
+# Disabled by default: enabling sends billed upstream requests using each credential's proxy.
+fingerprint:
+  enabled: false
+  models: [gpt-5.6-sol, gpt-6-sol, gpt-6-astra]
+  interval-seconds: 3600
+  cooldown-seconds: 1800
+  confidence: 0.95
+  minimum-answers: 3
+  question-retries: 1
+  retry-seconds: 300
+  max-retry-seconds: 3600
+  daily-request-limit: 300
+  history-limit: 10
+  retain-answers: false
+  workers: 1
+  startup-delay-seconds: 30
+  jitter-seconds: 30
+  # state-file: /var/lib/cliproxy/fingerprint-state  # Restart required to change path.
+  # bank-file: /etc/cliproxy/unified_bank.json       # Defaults to embedded ModelTrace bank.
+  # expected-models: {gpt-6: gpt-6-astra}  # Classification labels, not routing aliases.
+
+# Keys are credential JSON filenames (preferred) or runtime auth IDs.
+# Credential-file fields edited in CPAMP take precedence over these defaults.
+# Omitted timezone inherits global; "" disables rewriting for this credential.
+credential-policies: {}
+# credential-policies:
+#   account.json:
+#     timezone-override: Asia/Tokyo
+#     fingerprint:
+#       enabled: true
+#       models: [gpt-6-sol, gpt-6-astra]
+#       interval-seconds: 7200
+#       cooldown-seconds: 3600

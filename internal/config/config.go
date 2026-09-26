@@ -6,7 +6,9 @@ package config
 
 // Config represents the application's configuration, loaded from a YAML file.
 type Config struct {
-	SDKConfig `yaml:",inline"`
+	SDKConfig          `yaml:",inline"`
+	CredentialPolicies map[string]CredentialPolicy `yaml:"credential-policies,omitempty" json:"credential-policies,omitempty"`
+	Fingerprint        FingerprintConfig           `yaml:"fingerprint,omitempty" json:"fingerprint,omitempty"`
 	// Host is the network host/interface on which the API server will bind.
 	// Default is empty ("") to bind all interfaces (IPv4 + IPv6). Use "127.0.0.1" or "localhost" for local-only access.
 	Host string `yaml:"host" json:"-"`

@@ -72,17 +72,6 @@ type Record struct {
 	Detail      Detail
 	// ResponseHeaders stores a snapshot of upstream response headers for usage sinks.
 	ResponseHeaders http.Header
-	// CodexTurnState is the immutable outbound observation for this attempt.
-	// It contains no ticket material and is independent of response headers.
-	CodexTurnState *CodexTurnStateObservation
-}
-
-type CodexTurnStateObservation struct {
-	RequestLength int    `json:"request_length"`
-	RequestSource string `json:"request_source"`
-	// WebSocket messages inherit their physical connection's handshake ticket.
-	// Empty means an HTTP request; this is never inferred from the current cache.
-	RequestScope string `json:"request_scope,omitempty"`
 }
 
 // Failure holds HTTP failure metadata for an upstream request attempt.

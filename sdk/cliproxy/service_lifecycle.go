@@ -117,10 +117,8 @@ func (s *Service) Run(ctx context.Context) error {
 	// legacy clients removed; no caches to refresh
 
 	s.ensureWebsocketGateway()
-	// The turn-ticket wiring must exist in both runtime modes. Home serves the same Codex
-	// traffic, and the feature is inert until its config enables it, so installing it here
-	// keeps injection and passive capture available regardless of which mode started.
-	s.startCodexTurnTicketHarvester(ctx)
+	s.startFingerprintMonitor(ctx)
+
 	if homeEnabled {
 		s.registerAvailableExecutors(ctx, executorRegistrationOptions{
 			includeBaseline: true,
@@ -241,6 +239,9 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	}
 	var shutdownErr error
 	s.shutdownOnce.Do(func() {
+		if s.fingerprintMonitor != nil {
+			s.fingerprintMonitor.Stop()
+		}
 		if ctx == nil {
 			ctx = context.Background()
 		}
@@ -299,7 +300,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		if s.coreManager != nil {
 			s.coreManager.StopAutoRefresh()
 		}
-		s.stopCodexTurnTicketHarvester()
+
 		if s.watcher != nil {
 			if err := s.watcher.Stop(); err != nil {
 				log.Errorf("failed to stop file watcher: %v", err)

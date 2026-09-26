@@ -26,7 +26,7 @@ func (e *MetaExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		return nil, errAuth
 	}
 
-	prepared, errPrepare := e.prepareResponsesRequest(ctx, req, opts, true)
+	prepared, errPrepare := e.prepareResponsesRequest(ctx, req, opts, true, auth)
 	if errPrepare != nil {
 		return nil, errPrepare
 	}

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/fingerprint"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/homeplugins"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
@@ -26,6 +27,7 @@ import (
 // It manages the complete lifecycle including authentication, file watching, HTTP server,
 // and integration with various AI service providers.
 type Service struct {
+	fingerprintMonitor *fingerprint.Monitor
 	// cfg holds the current application configuration.
 	cfg *config.Config
 

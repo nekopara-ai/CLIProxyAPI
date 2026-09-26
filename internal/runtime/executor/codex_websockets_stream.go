@@ -60,8 +60,6 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	optimizeMultiAgentV2 := prepared.optimizeMultiAgentV2
 	multiAgentV2Conflict := prepared.multiAgentV2Conflict
 	reporter.SetTranslatedReasoningEffort(clientBody, to.String())
-	ticketInjected := prepared.ticketInjected
-	routingFingerprint := prepared.routingFingerprint
 
 	var authID, authLabel, authType, authValue string
 	authID = auth.ID
@@ -108,17 +106,16 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	var errDial error
 	dialCtx := ctx
 	if cliproxyexecutor.RequiredUpstreamWebsocket(ctx) {
-		conn, closer = existingWebsocketSessionConn(sess, authID, wsURL, executionProxyURL(ctx, e.cfg, auth), routingFingerprint)
+		conn, closer = existingWebsocketSessionConn(sess, authID, wsURL, executionProxyURL(ctx, e.cfg, auth))
 		if conn == nil {
 			unlockStreamSession()
 			return nil, cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError()
 		}
 	} else {
 		dialCtx = cliproxyexecutor.WithUpstreamAttemptTracker(ctx)
-		conn, closer, respHS, errDial = e.ensureUpstreamConnWithRoutingFingerprint(dialCtx, auth, sess, authID, wsURL, wsHeaders, routingFingerprint)
+		conn, closer, respHS, errDial = e.ensureUpstreamConn(dialCtx, auth, sess, authID, wsURL, wsHeaders)
 	}
-	recordCodexWebsocketTurnState(reporter, sess, conn, respHS, wsHeaders, ticketInjected)
-	observeCodexWebsocketTurnTicketResponse(ctx, respHS, errDial, wsHeaders, auth, baseModel, ticketInjected)
+
 	var upstreamHeaders http.Header
 	if respHS != nil {
 		upstreamHeaders = respHS.Header.Clone()
@@ -189,9 +186,8 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			}
 
 			// Retry once with a new websocket connection for the same execution session.
-			connRetry, closerRetry, respHSRetry, errDialRetry := e.ensureUpstreamConnWithRoutingFingerprint(ctx, auth, sess, authID, wsURL, wsHeaders, routingFingerprint)
-			recordCodexWebsocketTurnState(reporter, sess, connRetry, respHSRetry, wsHeaders, ticketInjected)
-			observeCodexWebsocketTurnTicketResponse(ctx, respHSRetry, errDialRetry, wsHeaders, auth, baseModel, ticketInjected)
+			connRetry, closerRetry, respHSRetry, errDialRetry := e.ensureUpstreamConn(ctx, auth, sess, authID, wsURL, wsHeaders)
+
 			if errDialRetry != nil || connRetry == nil {
 				closeHTTPResponseBody(respHSRetry, "codex websockets executor: close handshake response body error")
 				helps.RecordAPIWebsocketError(ctx, e.cfg, "dial_retry", errDialRetry)
@@ -773,8 +769,7 @@ type codexWebsocketPrepared struct {
 	upstreamBody         []byte
 	wsURL                string
 	wsHeaders            http.Header
-	ticketInjected       bool
-	routingFingerprint   string
+
 	identityState        codexIdentityConfuseState
 	replayScope          codexReasoningReplayScope
 	optimizeMultiAgentV2 bool
@@ -807,7 +802,7 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
-	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
+	body = helps.ApplyPayloadConfigWithRequest(helps.ConfigForAuth(e.cfg, auth), baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
 	body = helps.SetStringIfDifferent(body, "model", baseModel)
 	body = normalizeCodexInstructions(body, preserveNativeOutput)
 	if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
@@ -822,7 +817,7 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 	if errReplay != nil {
 		return nil, errReplay
 	}
-	body = helps.ApplyTimezoneOverride(e.cfg, body)
+	body = helps.ApplyTimezoneOverride(helps.ConfigForAuth(e.cfg, auth), body)
 
 	httpURL := strings.TrimSuffix(baseURL, "/") + "/responses"
 	wsURL, err := buildCodexResponsesWebsocketURL(httpURL)
@@ -843,12 +838,8 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg, preserveNativeOutput, opts.Headers)
 	applyCodexRoutingHint(ctx, wsHeaders, auth, baseModel, upstreamBody, opts.Headers)
 	applyModelHeaderOverrides(wsHeaders, baseModel, codexOverrideIdentity{cfg: e.cfg, auth: auth})
-	ticketInjected := applyCodexTurnTicket(helps.WithCodexMintTransport(ctx, "websocket"), wsHeaders, auth, baseModel)
-	if !helps.CodexGatewayRequestAllowed(auth, baseModel, ticketInjected) {
-		return nil, statusErr{code: http.StatusServiceUnavailable, msg: "codex mint: no live ticket and route for the selected transport"}
-	}
+
 	applyCodexIdentityConfuseHeaders(wsHeaders, &identityState)
-	routingFingerprint := codexWebsocketRoutingFingerprint(wsHeaders, ticketInjected)
 
 	return &codexWebsocketPrepared{
 		from:                 from,
@@ -860,8 +851,7 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 		upstreamBody:         upstreamBody,
 		wsURL:                wsURL,
 		wsHeaders:            wsHeaders,
-		ticketInjected:       ticketInjected,
-		routingFingerprint:   routingFingerprint,
+
 		identityState:        identityState,
 		replayScope:          replayScope,
 		optimizeMultiAgentV2: optimizeMultiAgentV2,
