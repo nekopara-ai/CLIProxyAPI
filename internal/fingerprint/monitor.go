@@ -19,11 +19,12 @@ import (
 
 type Probe func(context.Context, *coreauth.Auth, string, string) (string, error)
 type ModelResult struct {
-	Model         string  `json:"model"`
-	ExpectedModel string  `json:"expected_model"`
-	Status        string  `json:"status"`
-	Error         string  `json:"error,omitempty"`
-	Confidence    float64 `json:"confidence,omitempty"`
+	Deferred      *coreauth.DiagnosticUnavailable `json:"deferred,omitempty"`
+	Model         string                          `json:"model"`
+	ExpectedModel string                          `json:"expected_model"`
+	Status        string                          `json:"status"`
+	Error         string                          `json:"error,omitempty"`
+	Confidence    float64                         `json:"confidence,omitempty"`
 	Classification
 	Answers    []Answer  `json:"answers,omitempty"`
 	StartedAt  time.Time `json:"started_at"`
@@ -431,6 +432,7 @@ func (m *Monitor) tick(ctx context.Context) {
 		}
 		stamp := signature(cfg, a, p)
 		models := syncModels(s, p, stamp, now)
+		models = m.filterAvailable(s, a, p, models, now)
 		if len(models) == 0 {
 			m.mu.Unlock()
 			continue
@@ -455,14 +457,20 @@ func (m *Monitor) tick(ctx context.Context) {
 	}
 }
 func (m *Monitor) stillCurrent(a *coreauth.Auth, stamp string) bool {
+	return m.currentAuth(a, stamp) != nil
+}
+func (m *Monitor) currentAuth(a *coreauth.Auth, stamp string) *coreauth.Auth {
 	cfg := m.cfg()
 	for _, latest := range m.auths() {
 		if latest != nil && authKey(latest) == authKey(a) {
 			p, err := policyFor(cfg, latest)
-			return err == nil && !latest.Disabled && signature(cfg, latest, p) == stamp
+			if err == nil && !latest.Disabled && signature(cfg, latest, p) == stamp {
+				return latest
+			}
+			return nil
 		}
 	}
-	return false
+	return nil
 }
 func (m *Monitor) reserve(a *coreauth.Auth, p config.FingerprintPolicy) bool {
 	m.mu.Lock()
@@ -515,6 +523,13 @@ func (m *Monitor) run(ctx context.Context, a *coreauth.Auth, p config.Fingerprin
 		if ctx.Err() != nil || !m.stillCurrent(a, stamp) {
 			return
 		}
+		m.mu.Lock()
+		wait := m.states[key].ModelStates[model].Wait
+		waiting := wait != nil && wait.RetryAt.After(m.now())
+		m.mu.Unlock()
+		if waiting {
+			continue
+		}
 		expected := model
 		if v := p.ExpectedModels[model]; v != "" {
 			expected = v
@@ -527,8 +542,15 @@ func (m *Monitor) run(ctx context.Context, a *coreauth.Auth, p config.Fingerprin
 		} else {
 			for i, prompt := range Prompts {
 				for attempt := 0; attempt <= *p.QuestionRetries; attempt++ {
-					if ctx.Err() != nil || !m.stillCurrent(a, stamp) {
+					latest := m.currentAuth(a, stamp)
+					if ctx.Err() != nil || latest == nil {
 						return
+					}
+					if wait := coreauth.DiagnosticAvailability(latest, model, m.now()); wait != nil {
+						r.Deferred = wait
+						m.deferProbe(a, model, p, wait)
+						requestError = true
+						break
 					}
 					m.mu.Lock()
 					progress := m.states[key].Progress
@@ -542,19 +564,34 @@ func (m *Monitor) run(ctx context.Context, a *coreauth.Auth, p config.Fingerprin
 						requestError = true
 						break
 					}
-					text, probeErr := m.probe(ctx, a, model, prompt)
+					text, probeErr := m.probe(ctx, latest, model, prompt)
+					var local *coreauth.DiagnosticUnavailable
+					if errors.As(probeErr, &local) {
+						m.refundReservation(a)
+					}
 					if ctx.Err() != nil || !m.stillCurrent(a, stamp) {
 						return
 					}
 					if probeErr != nil {
+						if wait := deferredError(probeErr, m.now()); wait != nil {
+							if !wait.RetryAt.After(m.now()) {
+								wait.RetryAt = m.now().Add(retryDelay(p, 1))
+							}
+							// The manager may have learned a longer cooldown concurrently.
+							if current := m.currentAuth(a, stamp); current != nil {
+								if known := coreauth.DiagnosticAvailability(current, model, m.now()); known != nil && known.RetryAt.After(wait.RetryAt) {
+									wait.RetryAt = known.RetryAt
+								}
+							}
+							r.Deferred = wait
+							m.deferProbe(a, model, p, wait)
+							requestError = true
+							break
+						}
 						r.Error = "upstream_request_failed"
 						var status interface{ StatusCode() int }
 						if errors.As(probeErr, &status) {
 							r.Error = fmt.Sprintf("upstream_http_%d", status.StatusCode())
-							if status.StatusCode() == 401 || status.StatusCode() == 403 || status.StatusCode() == 429 {
-								requestError = true
-								break
-							}
 						}
 						if attempt == *p.QuestionRetries {
 							requestError = true
@@ -584,7 +621,10 @@ func (m *Monitor) run(ctx context.Context, a *coreauth.Auth, p config.Fingerprin
 				m.mu.Unlock()
 			}
 			r.Classification = bank.Classify(answers)
-			if requestError {
+			if r.Deferred != nil {
+				r.Status, r.Error = "deferred", ""
+				r.Prediction, r.Probability = "", nil
+			} else if requestError {
 				r.Status = "error"
 			} else if r.UsedOutputs < *p.MinimumAnswers {
 				r.Status = "insufficient"
@@ -613,7 +653,7 @@ func (m *Monitor) run(ctx context.Context, a *coreauth.Auth, p config.Fingerprin
 		applyModelResult(m.states[key], p, r, stamp, m.now())
 		_ = m.saveLocked()
 		m.mu.Unlock()
-		if requestError {
+		if requestError && r.Deferred == nil {
 			break
 		}
 	}
@@ -627,6 +667,11 @@ func (m *Monitor) finish(a *coreauth.Auth, p config.FingerprintPolicy, results [
 	defer m.mu.Unlock()
 	s := m.states[authKey(a)]
 	now := m.now()
+	if len(results) == 0 && issue == "" {
+		refreshSummary(s, p)
+		_ = m.saveLocked()
+		return
+	}
 	s.LastRunAt = now
 	s.ResultSignature = stamp
 	s.ResultPolicy = copyPolicy(p)
@@ -644,6 +689,9 @@ func (m *Monitor) finish(a *coreauth.Auth, p config.FingerprintPolicy, results [
 	for _, model := range models {
 		if !completed[model] {
 			ms := s.ModelStates[model]
+			if ms.Wait != nil && ms.Wait.RetryAt.After(now) {
+				continue
+			}
 			ms.NextRunAt = now.Add(retryDelay(p, ms.Failures+1))
 			if ms.Blocked && ms.CooldownUntil.After(ms.NextRunAt) {
 				ms.NextRunAt = ms.CooldownUntil

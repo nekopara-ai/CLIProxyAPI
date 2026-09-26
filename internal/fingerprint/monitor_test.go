@@ -234,11 +234,11 @@ func TestRateLimitStopsCycleWithoutDisabling(t *testing.T) {
 	h.cfg.Fingerprint.QuestionRetries = ptr(2)
 	h.m.probe = func(context.Context, *coreauth.Auth, string, string) (string, error) {
 		h.calls++
-		return "", statusFailure(429)
+		return "", quotaFailure{credential: true}
 	}
 	h.cycle()
 	s := h.m.Snapshot(h.a)
-	if h.calls != 1 || s.Blocked || s.Results[0].Error != "upstream_http_429" {
+	if h.calls != 1 || s.Blocked || len(s.Results) != 0 || s.ModelStates["gpt-6-sol"].Wait == nil || s.History[0].Results[0].Status != "deferred" {
 		t.Fatal("rate limit retried or mislabeled")
 	}
 }

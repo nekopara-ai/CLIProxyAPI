@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/fingerprint"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -34,7 +36,7 @@ func (s *Service) startFingerprintMonitor(ctx context.Context) {
 	s.coreManager.SetExecutionModelGuard(s.fingerprintMonitor.Allowed)
 	s.fingerprintMonitor.Start(ctx)
 }
-func (s *Service) probeFingerprint(ctx context.Context, a *coreauth.Auth, model, prompt string) (string, error) {
+func (s *Service) probeFingerprint(ctx context.Context, a *coreauth.Auth, model, prompt string) (_ string, probeErr error) {
 	if a == nil || a.Provider != "codex" {
 		return "", errors.New("fingerprint probes require a Codex credential")
 	}
@@ -47,8 +49,13 @@ func (s *Service) probeFingerprint(ctx context.Context, a *coreauth.Auth, model,
 		return "", err
 	}
 	ctx = usage.WithInternalAPIKey(ctx, callerKey)
-	// Bypass business eligibility only for this selected-auth diagnostic. No selector,
-	// proxy substitution, token sharing, or automatic credential enablement is involved.
+	// Refresh admission immediately before dispatch. Bypass only the fingerprint
+	// guard, never manual disablement, expired auth, or business quota cooldowns.
+	a, _ = s.coreManager.GetByID(a.ID)
+	if wait := coreauth.DiagnosticAvailability(a, model, time.Now()); wait != nil {
+		return "", wait
+	}
+	ctx = logging.WithFreshResponseHeadersHolder(ctx)
 	provider, ok := s.coreManager.Executor(a.Provider)
 	if !ok {
 		return "", errors.New("executor unavailable")
@@ -65,6 +72,7 @@ func (s *Service) probeFingerprint(ctx context.Context, a *coreauth.Auth, model,
 	// Cancellation is tied to completion or policy changes, never a wall-clock deadline.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	defer func() { s.coreManager.RecordDiagnosticFailure(ctx, a, model, probeErr) }()
 	response, err := provider.ExecuteStream(ctx, a, executor.Request{Model: model, Payload: payload}, executor.Options{SourceFormat: format, ResponseFormat: format, OriginalRequest: payload, Metadata: map[string]any{"fingerprint_probe": true}})
 	if err != nil {
 		return "", err

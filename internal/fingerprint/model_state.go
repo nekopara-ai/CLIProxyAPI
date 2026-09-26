@@ -6,20 +6,22 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
 // ModelState owns eligibility and scheduling for one resolved upstream model.
 type ModelState struct {
-	Blocked         bool                      `json:"blocked"`
-	LastMismatchAt  time.Time                 `json:"last_mismatch_at,omitempty"`
-	CooldownUntil   time.Time                 `json:"cooldown_until,omitempty"`
-	NextRunAt       time.Time                 `json:"next_run_at"`
-	LastRunAt       time.Time                 `json:"last_run_at,omitempty"`
-	Failures        int                       `json:"failures"`
-	Result          *ModelResult              `json:"result,omitempty"`
-	ResultPolicy    *config.FingerprintPolicy `json:"result_policy,omitempty"`
-	ResultSignature string                    `json:"result_signature,omitempty"`
-	ResultsStale    bool                      `json:"results_stale,omitempty"`
+	Wait            *coreauth.DiagnosticUnavailable `json:"wait,omitempty"`
+	Blocked         bool                            `json:"blocked"`
+	LastMismatchAt  time.Time                       `json:"last_mismatch_at,omitempty"`
+	CooldownUntil   time.Time                       `json:"cooldown_until,omitempty"`
+	NextRunAt       time.Time                       `json:"next_run_at"`
+	LastRunAt       time.Time                       `json:"last_run_at,omitempty"`
+	Failures        int                             `json:"failures"`
+	Result          *ModelResult                    `json:"result,omitempty"`
+	ResultPolicy    *config.FingerprintPolicy       `json:"result_policy,omitempty"`
+	ResultSignature string                          `json:"result_signature,omitempty"`
+	ResultsStale    bool                            `json:"results_stale,omitempty"`
 }
 
 func modelKey(model string) string {
@@ -96,6 +98,15 @@ func syncModels(s *State, p config.FingerprintPolicy, stamp string, now time.Tim
 				ms.NextRunAt = until
 			}
 		}
+		if ms.Wait != nil {
+			if ms.Wait.RetryAt.After(now) {
+				if ms.NextRunAt.Before(ms.Wait.RetryAt) {
+					ms.NextRunAt = ms.Wait.RetryAt
+				}
+			} else {
+				ms.Wait = nil
+			}
+		}
 		if !ms.NextRunAt.After(now) && (!ms.Blocked || !ms.CooldownUntil.After(now)) {
 			due = append(due, model)
 		}
@@ -142,6 +153,12 @@ func applyModelResult(s *State, p config.FingerprintPolicy, r ModelResult, stamp
 		ms = &ModelState{}
 		s.ModelStates[r.Model] = ms
 	}
+	if r.Deferred != nil {
+		deferModel(ms, *r.Deferred, p, now)
+		refreshSummary(s, p)
+		return
+	}
+	ms.Wait = nil
 	ms.Result, ms.ResultSignature, ms.ResultPolicy, ms.LastRunAt = &r, stamp, copyPolicy(p), now
 	switch r.Status {
 	case "match":
