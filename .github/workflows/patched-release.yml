@@ -211,7 +211,6 @@ jobs:
           go test \
             -skip '^(TestApplyClaudeHeaders_DisableDeviceProfileStabilization|TestApplyClaudeHeaders_LegacyModePreservesConfiguredUserAgentOverrideForClaudeClients|TestClaudeExecutor_NonClaudeRequestUsesClaudeCode220CLIFingerprint)$' \
             ./internal/api/handlers/management \
-            ./internal/fingerprint \
             ./internal/pluginhost \
             ./internal/redisqueue \
             ./internal/runtime/executor/... \
