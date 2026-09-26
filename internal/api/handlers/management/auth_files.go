@@ -673,10 +673,8 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quotaSupported .
 	if monitor := fingerprint.Current(); monitor != nil {
 		snapshot := monitor.Snapshot(auth)
 		entry["fingerprint_status"] = snapshot
-		if !auth.Disabled && !monitor.Allowed(auth, "") {
-			entry["unavailable"] = true
-			entry["status_message"] = "fingerprint cooldown; awaiting successful verification"
-		}
+		// Fingerprint cooldowns apply to individual models, never the whole auth.
+		// The scheduler evaluates the resolved upstream model at request time.
 	}
 	entry["failed"] = auth.Failed
 	entry["recent_requests"] = auth.RecentRequestsSnapshot(time.Now())

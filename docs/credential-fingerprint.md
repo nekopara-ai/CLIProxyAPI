@@ -34,20 +34,27 @@ Both Full and Panel modes use CPA's management API for these fields and snapshot
 
 Each cycle runs the original three prompts (300, 310 and 304 numbers) separately
 for each configured model. The current implementation diagnoses **Codex**
-credentials; other providers return a diagnostic error without upstream traffic.
+credentials; other providers are skipped before budget reservation or requests.
 Probes use that credential and its own business proxy (or the normal global proxy),
 without selecting another account, substituting egresses, injecting cookies, or
 using tools. Codex HTTP/SSE is used for diagnostics even if business traffic uses
 WebSocket. No request deadline is imposed after connection establishment.
 
 The global worker limit bounds concurrent credential cycles; requests within a
-cycle are serial. Interval is measured from cycle completion, not wall-clock cron.
+cycle are serial. Each model has its own next-test time, measured from that model's
+completed test, not wall-clock cron. Only due models are included in a cycle.
 Startup defaults to 30 seconds (0 also selects this default), plus deterministic
 jitter. Each credential's UTC daily budget is reserved durably **before** a request,
 including retries. Question retries are only for unusable answers or errors, never
 to discard a valid mismatch. HTTP 401/403/429 stops the current cycle. Failed or
 inconclusive cycles retry exponentially, bounded by retry/max-retry seconds.
-No cancellation of already admitted business requests is attempted.
+No cancellation of already admitted business requests is attempted. Diagnostic
+requests use terminal-aware SSE processing: completion/failure ends the request
+without waiting for transport EOF. Policy changes, removal and manual disabling
+cancel obsolete diagnostics even when every worker is occupied. No post-connect
+network deadline is added; genuine ongoing generation can still occupy a worker.
+Snapshots expose model/question/attempt, start times, completed questions and
+stream activity without retaining raw text.
 
 ## Decisions and recovery
 
@@ -55,28 +62,37 @@ No cancellation of already admitted business requests is attempted.
   numbers. `minimum-answers` defaults to all three questions.
 - A high-scoring prediction matching `expected-models[requested]` (or the requested
   name) passes. An unknown reference-bank model is an error, not a mismatch.
-- A sufficiently confident mismatch immediately excludes the **whole credential**
-  from new business selection across all models. Other configured models are still
-  diagnosed for reporting unless a request error stops the cycle.
+- A sufficiently confident mismatch immediately excludes only that
+  **credential + resolved upstream model**. Healthy sibling models, models omitted
+  from monitoring and other credentials are unaffected. Routing aliases are
+  checked after upstream-model resolution.
 - Zero valid outputs, errors and low confidence are separate states with no
   invented 0% probability. They do not newly disable a credential, and never
   restore a previously blocked one.
-- After cooldown, only diagnostic traffic may resume. **All configured models**
-  must pass in a fresh cycle to restore eligibility. A new mismatch starts a new
-  cooldown. Manually disabled credentials are never probed or auto-enabled.
+- After a model's cooldown, only its diagnostic traffic resumes. Its own fresh
+  successful test restores it immediately, without waiting for other models. A
+  new mismatch restarts only its cooldown. Errors and inconclusive results never
+  clear its block. Manually disabled credentials are never probed or auto-enabled.
 - Automatic exclusion is separate from the auth file's manual `disabled` bit.
-  Management exposes `fingerprint_status` and effective `unavailable`; CPAMP shows
-  blocked state, triggering model, results, score, valid answers, next test,
-  cooldown, daily budget, reference bank version and bounded history.
+  Management exposes `fingerprint_status.model_states`; a fingerprint mismatch
+  does not set the whole auth's `unavailable` flag. Summary `blocked` means some
+  monitored models are blocked. CPAMP shows per-model cooldowns, results, score,
+  valid answers, next test, daily budget, reference bank version and history.
 - Disabling monitoring globally or for a credential is an explicit operator bypass
   of the fingerprint gate; persisted blocks remain if monitoring is enabled again.
+
+Each new result records its decision threshold and each history entry records its
+policy. Policy changes mark old results stale, not relabelled with today's threshold.
+Legacy results without a recorded policy are explicitly unknown until retested.
+Legacy blanket blocks migrate only to recorded mismatching/trigger models;
+accounting and history are preserved.
 
 State is an atomic, mode-0600 file at `<auth-dir>/.fingerprint-state` by default,
 not an auth `.json` file. Set `state-file` to override; changing that path requires
 restart. Use only **one CPA writer per state file**. Multiple CPA replicas require
 separate state files and independent monitoring budgets. Runtime IDs isolate members
 of shared credential files. Corrupt/unreadable/unwritable state fails closed for
-monitored credentials and requires operator repair/restart; it is not silently
+monitored models only and requires operator repair/restart; it is not silently
 reset. Identity/policy/proxy changes and manual disabling invalidate in-flight
 results. Cooldown duration changes are applied at the next scheduler tick.
 Raw answers are omitted by default; opt in with `retain-answers`. Secure state

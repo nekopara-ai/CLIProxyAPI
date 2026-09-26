@@ -5,9 +5,40 @@ import (
 	"testing"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
+
+func TestExecutionModelGuardUsesAliasTargetWithoutBlockingSiblingModels(t *testing.T) {
+	manager := NewManager(nil, nil, nil)
+	a := &Auth{ID: "model-guard-alias", Provider: "codex", Status: StatusActive}
+	manager.SetOAuthModelAlias(map[string][]config.OAuthModelAlias{"codex": {
+		{Name: "gpt-6-astra", Alias: "astra-public"},
+		{Name: "gpt-6-sol", Alias: "sol-public"},
+	}})
+	manager.SetExecutionModelGuard(func(candidate *Auth, model string) bool {
+		return candidate.ID != a.ID || thinking.ParseSuffix(model).ModelName != "gpt-6-astra"
+	})
+	for _, tc := range []struct {
+		requested, upstream string
+	}{
+		{"astra-public", ""}, {"astra-public(high)", ""},
+		{"gpt-6-astra", ""}, {"gpt-6-astra(high)", ""},
+		{"sol-public", "gpt-6-sol"}, {"sol-public(high)", "gpt-6-sol(high)"},
+		{"gpt-5.6-sol", "gpt-5.6-sol"},
+	} {
+		got, _ := manager.preparedExecutionModels(a, tc.requested)
+		if tc.upstream == "" {
+			if len(got) != 0 {
+				t.Errorf("blocked route %s resolved to %v", tc.requested, got)
+			}
+		} else if len(got) != 1 || got[0] != tc.upstream {
+			t.Errorf("allowed route %s = %v, want %s", tc.requested, got, tc.upstream)
+		}
+	}
+}
 
 func TestExecutionModelGuardFiltersResolvedModels(t *testing.T) {
 	manager := NewManager(nil, nil, nil)

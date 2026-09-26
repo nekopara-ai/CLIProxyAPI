@@ -2,6 +2,7 @@ package fingerprint
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -57,7 +58,7 @@ func setup(t *testing.T) *harness {
 	return h
 }
 func (h *harness) cycle() { h.m.tick(context.Background()); h.m.wg.Wait() }
-func TestMonitorMismatchBlocksEntireCredentialAndRecovers(t *testing.T) {
+func TestMonitorMismatchBlocksOnlyItsModelAndRecovers(t *testing.T) {
 	h := setup(t)
 	good := h.answers["gpt-6-astra"]
 	if good == nil {
@@ -67,7 +68,7 @@ func TestMonitorMismatchBlocksEntireCredentialAndRecovers(t *testing.T) {
 	h.answers["gpt-6-astra"] = h.answers["gpt-5.6-luna"]
 	h.cycle()
 	s := h.m.Snapshot(h.a)
-	if !s.Blocked || s.TriggerModel != "gpt-6-astra" || h.m.Allowed(h.a, "unrelated-business-model") || h.a.Disabled {
+	if !s.Blocked || s.TriggerModel != "gpt-6-astra" || h.m.Allowed(h.a, "gpt-6-astra") || !h.m.Allowed(h.a, "gpt-6-sol") || !h.m.Allowed(h.a, "unrelated-business-model") || h.a.Disabled {
 		t.Fatalf("bad block %+v", s)
 	}
 	n := h.calls
@@ -77,7 +78,7 @@ func TestMonitorMismatchBlocksEntireCredentialAndRecovers(t *testing.T) {
 	}
 	// Restart must preserve block and request accounting.
 	restarted := New(h.m.cfg, h.m.auths, h.m.probe)
-	if restarted.Allowed(h.a, "") {
+	if restarted.Allowed(h.a, "gpt-6-astra") || !restarted.Allowed(h.a, "gpt-6-sol") {
 		t.Fatal("restart bypassed cooldown")
 	}
 	if restarted.Snapshot(h.a).RequestsToday != n {
@@ -86,14 +87,14 @@ func TestMonitorMismatchBlocksEntireCredentialAndRecovers(t *testing.T) {
 	h.now = h.now.Add(time.Hour)
 	h.answers["gpt-6-astra"] = nil
 	h.cycle()
-	if h.m.Allowed(h.a, "") {
+	if h.m.Allowed(h.a, "gpt-6-astra") {
 		t.Fatal("upstream error restored credential")
 	}
 	h.now = h.now.Add(time.Hour)
 	h.answers["gpt-6-astra"] = good
 	h.index = map[string]int{}
 	h.cycle()
-	if !h.m.Allowed(h.a, "") {
+	if !h.m.Allowed(h.a, "gpt-6-astra") {
 		t.Fatalf("all passed but still blocked: %+v", h.m.Snapshot(h.a))
 	}
 }
@@ -139,7 +140,7 @@ func TestMonitorStateCorruptionFailsClosedWithoutTraffic(t *testing.T) {
 	_ = os.WriteFile(h.m.stateFile, []byte("broken"), 0600)
 	h.m = New(h.m.cfg, h.m.auths, h.m.probe)
 	h.cycle()
-	if h.m.Allowed(h.a, "") || h.calls != 0 {
+	if h.m.Allowed(h.a, "gpt-6-sol") || !h.m.Allowed(h.a, "not-monitored") || h.calls != 0 {
 		t.Fatal("corrupt state fail-open")
 	}
 	h.cfg.Fingerprint.Enabled = ptr(false)
@@ -152,7 +153,7 @@ func TestMonitorUnwritableStateFailsClosed(t *testing.T) {
 	h.m.stateFile = filepath.Join(h.cfg.AuthDir, "not-directory", "state")
 	_ = os.WriteFile(filepath.Dir(h.m.stateFile), []byte("x"), 0600)
 	h.cycle()
-	if h.calls != 0 || h.m.Allowed(h.a, "") {
+	if h.calls != 0 || h.m.Allowed(h.a, "gpt-6-sol") || !h.m.Allowed(h.a, "not-monitored") {
 		t.Fatal("probe made without durable budget")
 	}
 }
@@ -164,8 +165,8 @@ func TestMonitorPolicyInheritanceAndInvalidConfiguration(t *testing.T) {
 	if err != nil || *p.CooldownSeconds != 20 {
 		t.Fatal(p, err)
 	}
-	h.a.Metadata["fingerprint"] = map[string]any{"models": []string{}}
-	if h.m.Allowed(h.a, "") {
+	h.a.Metadata["fingerprint"] = map[string]any{"confidence": .1}
+	if h.m.Allowed(h.a, "gpt-6-sol") || !h.m.Allowed(h.a, "not-monitored") {
 		t.Fatal("invalid configuration allowed")
 	}
 }
@@ -259,9 +260,190 @@ func TestMismatchBlocksBeforeRemainingModelsFinish(t *testing.T) {
 	}
 	h.m.tick(context.Background())
 	<-entered
-	if h.m.Allowed(h.a, "any") {
+	if h.m.Allowed(h.a, "gpt-6-astra") || !h.m.Allowed(h.a, "gpt-6-sol") {
 		t.Error("did not block immediately")
 	}
 	close(release)
 	h.m.wg.Wait()
+}
+
+func TestMonitorUnsupportedProvidersNeverProbeOrGate(t *testing.T) {
+	for _, provider := range []string{"opencode", "openai-compatibility", "claude", "xai", ""} {
+		t.Run(provider, func(t *testing.T) {
+			h := setup(t)
+			h.a.Provider = provider
+			h.cycle()
+			if h.calls != 0 || len(h.m.states) != 0 {
+				t.Fatal("unsupported credential consumed probes or budget")
+			}
+			// Old persisted errors or a shared storage error must not block other providers.
+			h.m.states[authKey(h.a)] = &State{Identity: identity(h.a), Blocked: true}
+			h.m.storageError = "synthetic storage failure"
+			s := h.m.Snapshot(h.a)
+			if s.Supported || s.Enabled || s.State != nil || s.ConfigurationError != "" || !h.m.Allowed(h.a, "any") {
+				t.Fatal("unsupported provider inherited fingerprint state")
+			}
+			h.a.Disabled = true
+			if h.m.Allowed(h.a, "any") {
+				t.Fatal("manual disabled provider allowed")
+			}
+		})
+	}
+}
+
+func TestMonitorResultPolicyRemainsAuditableAcrossThresholdChanges(t *testing.T) {
+	h := setup(t)
+	h.cycle()
+	s := h.m.Snapshot(h.a)
+	if s.ResultsStale || s.ResultPolicy == nil || *s.ResultPolicy.Confidence != .95 || s.Results[0].Confidence != .95 {
+		t.Fatalf("missing result policy: %+v", s)
+	}
+	h.cfg.Fingerprint.Confidence = ptr(.5)
+	s = h.m.Snapshot(h.a)
+	if !s.ResultsStale || *s.Effective.Confidence != .5 || *s.ResultPolicy.Confidence != .95 || *s.History[0].Policy.Confidence != .95 {
+		t.Fatal("old result was silently relabeled using the new threshold")
+	}
+	h.cycle()
+	s = h.m.Snapshot(h.a)
+	if s.ResultsStale || *s.ResultPolicy.Confidence != .5 || s.Results[0].Confidence != .5 || *s.History[0].Policy.Confidence != .95 {
+		t.Fatal("fresh result policy/history is incorrect")
+	}
+	// Version-1 state without recorded policy stays explicitly historical until retested.
+	h.m.states[authKey(h.a)].ModelStates = nil
+	migrateModelStates(h.m.states[authKey(h.a)])
+	if !h.m.Snapshot(h.a).ResultsStale {
+		t.Fatal("legacy result reported as current")
+	}
+	h.cycle()
+	if h.m.Snapshot(h.a).ResultsStale {
+		t.Fatal("legacy results were not refreshed")
+	}
+}
+
+func TestMonitorCancelsObsoleteProbeWithAllWorkersOccupied(t *testing.T) {
+	for _, change := range []string{"manual_disable", "master_disable", "policy", "removed"} {
+		t.Run(change, func(t *testing.T) {
+			h := setup(t)
+			entered := make(chan struct{})
+			h.m.probe = func(ctx context.Context, _ *coreauth.Auth, _, _ string) (string, error) {
+				RecordActivity(ctx, 123)
+				close(entered)
+				<-ctx.Done()
+				return "", ctx.Err()
+			}
+			h.m.tick(context.Background())
+			<-entered
+			s := h.m.Snapshot(h.a)
+			if s.Progress == nil || s.Progress.Model != "gpt-6-sol" || s.Progress.Question != 1 || s.Progress.Attempt != 1 || s.Progress.TotalQuestions != 6 || s.Progress.ReceivedBytes != 123 || s.Progress.LastEventAt.IsZero() || !s.NextRunAt.IsZero() {
+				t.Fatalf("missing live progress: %+v", s.Progress)
+			}
+			switch change {
+			case "manual_disable":
+				h.a.Disabled = true
+			case "master_disable":
+				h.cfg.Fingerprint.Enabled = ptr(false)
+			case "policy":
+				h.cfg.Fingerprint.Confidence = ptr(.5)
+			case "removed":
+				h.m.auths = func() []*coreauth.Auth { return nil }
+			}
+			h.m.tick(context.Background())
+			h.m.wg.Wait()
+			s = h.m.Snapshot(h.a)
+			if s.Running || s.Progress != nil || !s.LastRunAt.IsZero() || len(s.History) > 0 || s.Blocked || s.RequestsToday != 1 {
+				t.Fatal("cancelled run changed eligibility, committed a result or leaked work")
+			}
+		})
+	}
+}
+
+func TestModelCooldownAndRecoveryAreIndependent(t *testing.T) {
+	h := setup(t)
+	good := h.answers["gpt-6-sol"]
+	h.cfg.Fingerprint.ExpectedModels = map[string]string{"gpt-6-astra": "gpt-6-sol"}
+	h.answers["gpt-6-sol"], h.answers["gpt-6-astra"] = h.answers["gpt-5.6-luna"], h.answers["gpt-5.6-luna"]
+	h.cycle()
+	if h.m.Allowed(h.a, "gpt-6-sol") || h.m.Allowed(h.a, "gpt-6-astra(high)") || !h.m.Allowed(h.a, "gpt-5.6-sol") {
+		t.Fatal("wrong model scope")
+	}
+	h.now = h.now.Add(31 * time.Minute)
+	h.answers["gpt-6-sol"], h.answers["gpt-6-astra"] = good, nil
+	h.cycle()
+	if !h.m.Allowed(h.a, "gpt-6-sol") || h.m.Allowed(h.a, "gpt-6-astra") {
+		t.Fatal("one model's error prevented another model's recovery")
+	}
+	s := h.m.Snapshot(h.a)
+	if s.ModelStates["gpt-6-sol"].Blocked || !s.ModelStates["gpt-6-astra"].Blocked || h.a.Disabled {
+		t.Fatal("incorrect per-model block or manual flag changed")
+	}
+	before := h.calls
+	h.now = h.now.Add(6 * time.Minute)
+	h.answers["gpt-6-astra"] = good
+	h.index["gpt-6-astra"] = 0
+	h.cycle()
+	if h.calls-before != 3 || !h.m.Allowed(h.a, "gpt-6-astra") {
+		t.Fatal("recovery should probe only the due model, not its healthy sibling")
+	}
+}
+
+func TestUnmonitoredAndOtherCredentialsBypassModelBlock(t *testing.T) {
+	h := setup(t)
+	h.answers["gpt-6-astra"] = h.answers["gpt-5.6-luna"]
+	h.cycle()
+	other := *h.a
+	other.ID = "another-account"
+	if !h.m.Allowed(&other, "gpt-6-astra") || !h.m.Allowed(h.a, "gpt-5.6-sol") || !h.m.Allowed(h.a, "") {
+		t.Fatal("model block leaked to another model/account or management availability")
+	}
+	h.cfg.Fingerprint.Models = []string{"gpt-6-sol"}
+	if !h.m.Allowed(h.a, "gpt-6-astra") || h.m.Snapshot(h.a).Blocked {
+		t.Fatal("removed model is still gated")
+	}
+	h.cfg.Fingerprint.Models = []string{"gpt-6-sol", "gpt-6-astra"}
+	if h.m.Allowed(h.a, "gpt-6-astra") {
+		t.Fatal("temporarily removing monitoring erased the durable block")
+	}
+}
+
+func TestLegacyCredentialBlockMigratesOnlyToRecordedModels(t *testing.T) {
+	h := setup(t)
+	legacy := &State{Identity: identity(h.a), Blocked: true, TriggerModel: "gpt-6-astra", LastMismatchAt: h.now,
+		CooldownUntil: h.now.Add(30 * time.Minute), NextRunAt: h.now.Add(30 * time.Minute), RequestsToday: 19,
+		Results: []ModelResult{{Model: "gpt-6-sol", Status: "match"}, {Model: "gpt-6-astra", Status: "mismatch"}}}
+	raw, _ := json.Marshal(map[string]any{"version": 1, "states": map[string]*State{authKey(h.a): legacy}})
+	if err := os.WriteFile(h.m.stateFile, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	m := New(h.m.cfg, h.m.auths, h.m.probe)
+	if m.Allowed(h.a, "gpt-6-astra") || !m.Allowed(h.a, "gpt-6-sol") || !m.Allowed(h.a, "unmonitored") {
+		t.Fatal("legacy blanket exclusion was not narrowed")
+	}
+	if s := m.Snapshot(h.a); s.RequestsToday != 19 || !s.ResultsStale || !s.ModelStates["gpt-6-astra"].CooldownUntil.Equal(legacy.CooldownUntil) {
+		t.Fatal("migration lost accounting, cooldown or unknown-policy marker")
+	}
+}
+
+func TestModelVariantsCannotBypassBlockAndPolicyDisableStillBypasses(t *testing.T) {
+	h := setup(t)
+	h.cfg.Fingerprint.Models = []string{"gpt-6-astra", "gpt-6-astra(high)", "gpt-6-sol"}
+	h.m.states[authKey(h.a)] = &State{Identity: identity(h.a), ModelStates: map[string]*ModelState{
+		"gpt-6-astra":       {Blocked: false},
+		"gpt-6-astra(high)": {Blocked: true},
+	}}
+	for _, model := range []string{"gpt-6-astra", "gpt-6-astra(low)", "GPT-6-ASTRA(high)"} {
+		if h.m.Allowed(h.a, model) {
+			t.Fatalf("reasoning or case variant bypassed block: %s", model)
+		}
+	}
+	if !h.m.Allowed(h.a, "gpt-6-sol") || !h.m.Allowed(h.a, "gpt-5.6-sol") {
+		t.Fatal("variant block leaked to unrelated models")
+	}
+	h.a.Metadata["fingerprint"] = map[string]any{"enabled": false}
+	if !h.m.Allowed(h.a, "gpt-6-astra") {
+		t.Fatal("credential policy disable did not bypass fingerprint block")
+	}
+	h.a.Disabled = true
+	if h.m.Allowed(h.a, "gpt-6-astra") || h.m.Allowed(h.a, "gpt-5.6-sol") {
+		t.Fatal("fingerprint bypass overrode manual credential disable")
+	}
 }
