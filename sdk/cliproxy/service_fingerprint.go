@@ -12,6 +12,7 @@ import (
 	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	"github.com/tidwall/gjson"
 )
@@ -37,6 +38,15 @@ func (s *Service) probeFingerprint(ctx context.Context, a *coreauth.Auth, model,
 	if a == nil || a.Provider != "codex" {
 		return "", errors.New("fingerprint probes require a Codex credential")
 	}
+	current := s.currentConfig()
+	if current == nil {
+		return "", errors.New("fingerprint configuration unavailable")
+	}
+	callerKey, err := current.InternalRequestAPIKey()
+	if err != nil {
+		return "", err
+	}
+	ctx = usage.WithInternalAPIKey(ctx, callerKey)
 	// Bypass business eligibility only for this selected-auth diagnostic. No selector,
 	// proxy substitution, token sharing, or automatic credential enablement is involved.
 	provider, ok := s.coreManager.Executor(a.Provider)
@@ -44,7 +54,7 @@ func (s *Service) probeFingerprint(ctx context.Context, a *coreauth.Auth, model,
 		return "", errors.New("executor unavailable")
 	}
 	if a.Provider == "codex" {
-		cfg := *s.currentConfig()
+		cfg := *current
 		cfg.DisableImageGeneration = config.DisableImageGenerationAll
 		cfg.Payload = config.PayloadConfig{}
 		provider = runtimeexecutor.NewCodexExecutor(&cfg)

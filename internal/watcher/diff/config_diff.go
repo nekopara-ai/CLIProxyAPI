@@ -196,6 +196,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	}
 
 	// API keys (redacted) and counts
+	if strings.TrimSpace(oldCfg.InternalRequestAPIKeySHA256) != strings.TrimSpace(newCfg.InternalRequestAPIKeySHA256) {
+		changes = append(changes, "internal request API key reference updated")
+	}
 	if len(oldCfg.APIKeys) != len(newCfg.APIKeys) {
 		changes = append(changes, fmt.Sprintf("api-keys count: %d -> %d", len(oldCfg.APIKeys), len(newCfg.APIKeys)))
 	} else if !reflect.DeepEqual(trimStrings(oldCfg.APIKeys), trimStrings(newCfg.APIKeys)) {

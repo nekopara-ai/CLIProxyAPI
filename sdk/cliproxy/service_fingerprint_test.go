@@ -2,11 +2,14 @@ package cliproxy
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -15,10 +18,42 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/fingerprint"
 	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	"github.com/tidwall/gjson"
 )
 
+type fingerprintUsageCapture struct {
+	authID  string
+	records chan usage.Record
+}
+
+func (c *fingerprintUsageCapture) HandleUsage(_ context.Context, r usage.Record) {
+	if r.AuthID == c.authID {
+		select {
+		case c.records <- r:
+		default:
+		}
+	}
+}
+
 func TestFingerprintProbeUsesOwnProxyAndCredentialWithoutTools(t *testing.T) {
+	// Service lifecycle tests stop the process-global usage dispatcher permanently.
+	// Isolate this end-to-end accounting assertion rather than depending on test order.
+	if os.Getenv("CPA_FINGERPRINT_USAGE_ISOLATED") != "1" {
+		binary, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command(binary, "-test.run=^"+t.Name()+"$")
+		cmd.Env = append(os.Environ(), "CPA_FINGERPRINT_USAGE_ISOLATED=1")
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("isolated probe: %v\n%s", err, output)
+		}
+		return
+	}
+	capture := &fingerprintUsageCapture{authID: t.Name(), records: make(chan usage.Record, 3)}
+	usage.RegisterNamedPlugin(t.Name(), capture)
+	t.Cleanup(func() { usage.RegisterNamedPlugin(t.Name(), &fingerprintUsageCapture{}) })
 	var calls atomic.Int32
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		i := int(calls.Add(1)) - 1
@@ -44,17 +79,38 @@ func TestFingerprintProbeUsesOwnProxyAndCredentialWithoutTools(t *testing.T) {
 	defer proxy.Close()
 	cfg := &config.Config{}
 	cfg.ProxyURL = "http://global-proxy.invalid:1"
+	cfg.APIKeys = []string{"synthetic-business-client", "synthetic-system-client"}
+	cfg.InternalRequestAPIKeySHA256 = fmt.Sprintf("%x", sha256.Sum256([]byte(cfg.APIKeys[1])))
 	s := &Service{cfg: cfg, coreManager: coreauth.NewManager(nil, nil, nil)}
 	s.coreManager.RegisterExecutor(runtimeexecutor.NewCodexExecutor(cfg))
-	a := &coreauth.Auth{ID: "synthetic", Provider: "codex", ProxyURL: proxy.URL, Attributes: map[string]string{"base_url": "http://fingerprint.invalid", "api_key": "synthetic"}}
+	a := &coreauth.Auth{ID: t.Name(), Provider: "codex", ProxyURL: proxy.URL, Attributes: map[string]string{"base_url": "http://fingerprint.invalid"}, Metadata: map[string]any{"email": "selected@example.invalid", "access_token": "synthetic"}}
 	for _, prompt := range fingerprint.Prompts {
 		text, err := s.probeFingerprint(context.Background(), a, "gpt-6-sol", prompt)
 		if err != nil || text != "87, 213" {
 			t.Fatalf("probe = %q, %v", text, err)
 		}
+		select {
+		case r := <-capture.records:
+			if r.APIKey != cfg.APIKeys[1] || r.Source != "selected@example.invalid" || r.AuthID != a.ID || r.Model != "gpt-6-sol" {
+				t.Fatalf("synthetic probe identity: key_match=%t source=%q auth_match=%t model=%q", r.APIKey == cfg.APIKeys[1], r.Source, r.AuthID == a.ID, r.Model)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("probe usage was not published")
+		}
 	}
 	if calls.Load() != 3 {
 		t.Fatal("missing probes")
+	}
+}
+
+func TestFingerprintProbeRejectsRevokedInternalCallerBeforeDispatch(t *testing.T) {
+	cfg := &config.Config{InternalRequestAPIKeySHA256: fmt.Sprintf("%x", sha256.Sum256([]byte("revoked-system")))}
+	cfg.APIKeys = []string{"business-client"}
+	s := &Service{cfg: cfg}
+	// No manager or executor is installed: resolving an invalid reference must stop first.
+	_, err := s.probeFingerprint(context.Background(), &coreauth.Auth{Provider: "codex"}, "gpt-6-sol", "synthetic")
+	if err == nil || err.Error() != "internal-request-api-key-sha256 does not match a configured api-keys entry" {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

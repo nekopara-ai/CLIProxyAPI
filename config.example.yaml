@@ -49,6 +49,12 @@ api-keys:
   - "your-api-key-2"
   - "your-api-key-3"
 
+# Optional SHA-256 reference to an existing api-keys entry (not the key itself).
+# Background fingerprint probes use this client identity for usage accounting.
+# Label the matching key "system" in CPAMP. This does not grant management access
+# or change the selected credential/proxy. A missing referenced key stops new probes.
+# internal-request-api-key-sha256: "<64 hex characters>"
+
 # Enable debug logging
 debug: false
 

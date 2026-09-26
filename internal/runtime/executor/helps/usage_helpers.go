@@ -810,7 +810,7 @@ func APIKeyFromContext(ctx context.Context) string {
 	}
 	ginCtx, ok := ctx.Value("gin").(*gin.Context)
 	if !ok || ginCtx == nil {
-		return ""
+		return usage.InternalAPIKeyFromContext(ctx)
 	}
 	if v, exists := ginCtx.Get("userApiKey"); exists {
 		switch value := v.(type) {
@@ -822,7 +822,7 @@ func APIKeyFromContext(ctx context.Context) string {
 			return fmt.Sprintf("%v", value)
 		}
 	}
-	return ""
+	return usage.InternalAPIKeyFromContext(ctx)
 }
 
 func resolveUsageSource(auth *cliproxyauth.Auth, ctxAPIKey string) string {

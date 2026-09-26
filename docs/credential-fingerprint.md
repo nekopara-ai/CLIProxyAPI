@@ -56,6 +56,26 @@ network deadline is added; genuine ongoing generation can still occupy a worker.
 Snapshots expose model/question/attempt, start times, completed questions and
 stream activity without retaining raw text.
 
+### Internal system caller
+
+To separate diagnostics from business clients in usage accounting, create a
+dedicated random client key in `api-keys` and label it `system` in CPAMP. Set the
+top-level `internal-request-api-key-sha256` to the SHA-256 hex digest of that key.
+Only the digest is added to this setting; never commit the actual key. Background
+fingerprint requests retain the selected credential, account source and proxy,
+but their caller usage is attributed to this configured key. The client key is
+not sent upstream and grants no management privileges or model-block bypass to
+external callers. Explicit external client identity always takes precedence.
+
+An empty reference preserves legacy unattributed diagnostics. An invalid digest
+or a reference to a removed key stops new diagnostic requests with a configuration
+error instead of choosing another key or producing more unknown-key records.
+Hot reload applies the reference to subsequent probes; a previously admitted
+request retains its original attribution. Past unknown-key usage is not relabelled,
+since not every unattributed historical request can be proven to be a probe.
+Operational scripts should authenticate with the same system key, loaded from an
+operator-controlled secret file, not a business client's key or command-line value.
+
 ## Decisions and recovery
 
 - A usable answer contains at least max(80, ceil(expected count × 0.55)) parsed

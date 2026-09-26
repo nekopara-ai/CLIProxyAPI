@@ -9,6 +9,8 @@ type Config struct {
 	SDKConfig          `yaml:",inline"`
 	CredentialPolicies map[string]CredentialPolicy `yaml:"credential-policies,omitempty" json:"credential-policies,omitempty"`
 	Fingerprint        FingerprintConfig           `yaml:"fingerprint,omitempty" json:"fingerprint,omitempty"`
+	// InternalRequestAPIKeySHA256 selects an existing client key for background usage attribution.
+	InternalRequestAPIKeySHA256 string `yaml:"internal-request-api-key-sha256,omitempty" json:"internal-request-api-key-sha256,omitempty"`
 	// Host is the network host/interface on which the API server will bind.
 	// Default is empty ("") to bind all interfaces (IPv4 + IPv6). Use "127.0.0.1" or "localhost" for local-only access.
 	Host string `yaml:"host" json:"-"`
