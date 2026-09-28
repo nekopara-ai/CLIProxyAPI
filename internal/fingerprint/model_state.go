@@ -133,7 +133,14 @@ func refreshSummary(s *State, p config.FingerprintPolicy) {
 			s.NextRunAt = ms.NextRunAt
 		}
 		if ms.Blocked {
-			s.Blocked, s.Reason = true, "fingerprint_model_mismatch"
+			s.Blocked = true
+			if ms.Result != nil && ms.Result.Status == "insufficient" && ms.LastMismatchAt.IsZero() {
+				if s.Reason == "" {
+					s.Reason = "fingerprint_insufficient_answers"
+				}
+			} else {
+				s.Reason = "fingerprint_model_mismatch"
+			}
 			if s.TriggerModel == "" {
 				s.TriggerModel = model
 			}
@@ -170,6 +177,11 @@ func applyModelResult(s *State, p config.FingerprintPolicy, r ModelResult, stamp
 		ms.CooldownUntil = now.Add(time.Duration(*p.CooldownSeconds) * time.Second)
 		ms.NextRunAt = ms.CooldownUntil
 	default:
+		// An insufficient result does not establish the expected model. Do not
+		// preserve an earlier passing decision; require a fresh complete match.
+		if r.Status == "insufficient" {
+			ms.Blocked = true
+		}
 		ms.Failures++
 		ms.NextRunAt = now.Add(retryDelay(p, ms.Failures))
 		if ms.Blocked && ms.CooldownUntil.After(ms.NextRunAt) {

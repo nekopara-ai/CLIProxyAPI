@@ -192,6 +192,7 @@ func New(cfg func() *config.Config, auths func() []*coreauth.Auth, probe Probe) 
 		m.storageError = "fingerprint_state_invalid"
 		return m
 	}
+	corrected := false
 	for k, s := range saved.States {
 		if s == nil || s.Identity == "" {
 			m.storageError = "fingerprint_state_invalid"
@@ -206,8 +207,16 @@ func New(cfg func() *config.Config, auths func() []*coreauth.Auth, probe Probe) 
 				m.storageError = "fingerprint_state_invalid"
 				return m
 			}
+			// Earlier versions kept routing open after an insufficient test.
+			if ms.Result != nil && ms.Result.Status == "insufficient" && !ms.Blocked {
+				ms.Blocked = true
+				corrected = true
+			}
 		}
 		m.states[k] = s
+	}
+	if corrected {
+		_ = m.saveLocked()
 	}
 	return m
 }

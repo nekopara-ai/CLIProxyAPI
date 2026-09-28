@@ -121,20 +121,75 @@ func TestMonitorErrorsMissingAndBudget(t *testing.T) {
 	h.answers["gpt-6-sol"] = []Answer{{"", 300}, {"no", 310}, {"", 304}}
 	h.cycle()
 	s := h.m.Snapshot(h.a)
-	if s.Results[0].Status != "insufficient" || s.Results[0].Probability != nil || s.Blocked {
+	if s.Results[0].Status != "insufficient" || s.Results[0].Probability != nil || !s.Blocked {
 		t.Fatalf("%+v", s)
 	}
 	h.now = h.now.Add(time.Hour)
 	h.cycle()
-	if h.calls != 3 || h.m.Snapshot(h.a).Blocked {
-		t.Fatal("budget not enforced or error disabled")
+	if h.calls != 3 || !h.m.Snapshot(h.a).Blocked {
+		t.Fatal("budget not enforced or insufficient result opened routing")
 	}
 	h.now = h.now.Add(24 * time.Hour)
 	h.cycle()
-	if h.calls != 6 {
-		t.Fatal("UTC budget did not reset")
+	if h.calls != 6 || !h.m.Snapshot(h.a).Blocked {
+		t.Fatal("UTC budget did not reset or insufficient result lost its block")
 	}
 }
+func TestInsufficientResultInvalidatesPriorMatch(t *testing.T) {
+	h := setup(t)
+	h.cfg.Fingerprint.Models = []string{"gpt-6-astra"}
+	good := h.answers["gpt-6-astra"]
+	if good == nil {
+		good = h.answers["gpt-6-sol"]
+		h.answers["gpt-6-astra"] = good
+		h.cfg.Fingerprint.ExpectedModels = map[string]string{"gpt-6-astra": "gpt-6-sol"}
+	}
+	h.cycle()
+	initial := h.m.Snapshot(h.a)
+	if initial.Results[0].Status != "match" || !h.m.Allowed(h.a, "gpt-6-astra") {
+		t.Fatalf("initial complete match did not open routing: status=%s prediction=%s expected=%s blocked=%t allowed=%t", initial.Results[0].Status, initial.Results[0].Prediction, initial.Results[0].ExpectedModel, initial.Blocked, h.m.Allowed(h.a, "gpt-6-astra"))
+	}
+
+	// Preserve two valid answers but make the middle answer unparseable.
+	h.answers["gpt-6-astra"] = []Answer{good[0], {Text: "no valid numbers", ExpectedCount: good[1].ExpectedCount}, good[2]}
+	h.index = map[string]int{}
+	h.now = h.now.Add(time.Hour)
+	h.cycle()
+	s := h.m.Snapshot(h.a)
+	if s.Results[0].Status != "insufficient" || s.Results[0].Error != "insufficient_valid_answers" || !s.Blocked || s.Reason != "fingerprint_insufficient_answers" || h.m.Allowed(h.a, "gpt-6-astra") {
+		t.Fatalf("insufficient result preserved routing: %+v", s)
+	}
+
+	h.answers["gpt-6-astra"] = good
+	h.index = map[string]int{}
+	h.now = h.now.Add(5 * time.Minute)
+	h.cycle()
+	if recovered := h.m.Snapshot(h.a); recovered.Results[0].Status != "match" || recovered.Blocked || !h.m.Allowed(h.a, "gpt-6-astra") {
+		t.Fatalf("complete match did not recover routing: %+v", recovered)
+	}
+}
+
+func TestPersistedInsufficientResultIsBlockedOnRestart(t *testing.T) {
+	h := setup(t)
+	h.cfg.Fingerprint.Models = []string{"gpt-6-astra"}
+	next := h.now.Add(5 * time.Minute)
+	h.m.states[authKey(h.a)] = &State{Identity: identity(h.a), ModelStates: map[string]*ModelState{
+		"gpt-6-astra": {NextRunAt: next, Result: &ModelResult{Model: "gpt-6-astra", Status: "insufficient", Error: "insufficient_valid_answers", Classification: Classification{UsedOutputs: 2}}},
+	}}
+	if err := h.m.saveLocked(); err != nil {
+		t.Fatal(err)
+	}
+	restarted := New(h.m.cfg, h.m.auths, h.m.probe)
+	s := restarted.Snapshot(h.a)
+	if restarted.Allowed(h.a, "gpt-6-astra") || !s.Blocked || s.Reason != "fingerprint_insufficient_answers" || !s.ModelStates["gpt-6-astra"].NextRunAt.Equal(next) || h.calls != 0 {
+		t.Fatalf("persisted insufficient result bypassed block: %+v", s)
+	}
+	again := New(h.m.cfg, h.m.auths, h.m.probe)
+	if again.storageError != "" || again.Allowed(h.a, "gpt-6-astra") {
+		t.Fatal("corrected block was not persisted before startup")
+	}
+}
+
 func TestMonitorStateCorruptionFailsClosedWithoutTraffic(t *testing.T) {
 	h := setup(t)
 	_ = os.WriteFile(h.m.stateFile, []byte("broken"), 0600)
