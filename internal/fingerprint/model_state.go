@@ -123,14 +123,9 @@ func refreshSummary(s *State, p config.FingerprintPolicy) {
 		}
 		if ms.Blocked {
 			s.Blocked = true
-			if ms.Result != nil && ms.Result.Status == "insufficient" && ms.LastMismatchAt.IsZero() {
-				if s.Reason == "" {
-					s.Reason = "fingerprint_insufficient_answers"
-				}
-			} else {
-				s.Reason = "fingerprint_model_mismatch"
-			}
-			if s.TriggerModel == "" {
+			reason := modelBlockReason(ms)
+			if s.Reason == "" || reason == "fingerprint_model_mismatch" {
+				s.Reason = reason
 				s.TriggerModel = model
 			}
 			if s.CooldownUntil.IsZero() || ms.CooldownUntil.Before(s.CooldownUntil) {
@@ -141,6 +136,25 @@ func refreshSummary(s *State, p config.FingerprintPolicy) {
 			}
 		}
 	}
+}
+
+func modelBlockReason(ms *ModelState) string {
+	if !ms.LastMismatchAt.IsZero() {
+		return "fingerprint_model_mismatch"
+	}
+	if ms.Result != nil {
+		switch ms.Result.Status {
+		case "mismatch":
+			return "fingerprint_model_mismatch"
+		case "insufficient":
+			return "fingerprint_insufficient_answers"
+		case "error":
+			return "fingerprint_check_error"
+		case "inconclusive":
+			return "fingerprint_low_confidence"
+		}
+	}
+	return "fingerprint_unverified"
 }
 
 func applyModelResult(s *State, p config.FingerprintPolicy, r ModelResult, stamp string, now time.Time) {
@@ -160,11 +174,10 @@ func applyModelResult(s *State, p config.FingerprintPolicy, r ModelResult, stamp
 		ms.CooldownUntil = now.Add(time.Duration(*p.CooldownSeconds) * time.Second)
 		ms.NextRunAt = ms.CooldownUntil
 	default:
-		// An insufficient result does not establish the expected model. Do not
-		// preserve an earlier passing decision; require a fresh complete match.
-		if r.Status == "insufficient" {
-			ms.Blocked = true
-		}
+		// Every completed non-match invalidates an earlier passing decision.
+		// Keep the failure diagnostic and retry schedule; only a fresh match
+		// can reopen routing, including after transport/configuration errors.
+		ms.Blocked = true
 		ms.Failures++
 		ms.NextRunAt = now.Add(retryDelay(p, ms.Failures))
 		if ms.Blocked && ms.CooldownUntil.After(ms.NextRunAt) {

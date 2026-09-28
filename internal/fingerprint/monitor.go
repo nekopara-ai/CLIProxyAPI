@@ -206,8 +206,8 @@ func New(cfg func() *config.Config, auths func() []*coreauth.Auth, probe Probe) 
 				m.storageError = "fingerprint_state_invalid"
 				return m
 			}
-			// Earlier versions kept routing open after an insufficient test.
-			if ms.Result != nil && ms.Result.Status == "insufficient" && !ms.Blocked {
+			// Earlier versions kept routing open after failed or inconclusive tests.
+			if ms.Result != nil && ms.Result.Status != "match" && !ms.Blocked {
 				ms.Blocked = true
 				corrected = true
 			}
@@ -636,6 +636,19 @@ func (m *Monitor) finish(a *coreauth.Auth, p config.FingerprintPolicy, results [
 	defer m.mu.Unlock()
 	s := m.states[authKey(a)]
 	now := m.now()
+	if issue != "" {
+		// A shared setup failure (such as an unreadable reference bank) also
+		// invalidates due models, without consuming upstream requests.
+		for _, model := range models {
+			expected := model
+			if v := p.ExpectedModels[model]; v != "" {
+				expected = v
+			}
+			r := ModelResult{Model: model, ExpectedModel: expected, Status: "error", Error: issue, Confidence: *p.Confidence, StartedAt: now, FinishedAt: now}
+			applyModelResult(s, p, r, stamp, now)
+			results = append(results, r)
+		}
+	}
 	s.LastRunAt = now
 	s.ResultSignature = stamp
 	s.ResultPolicy = copyPolicy(p)

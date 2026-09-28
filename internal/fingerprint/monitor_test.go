@@ -235,8 +235,8 @@ func TestMonitorOffByDefaultAndNoUnknownModelTraffic(t *testing.T) {
 	h.cfg.Fingerprint.Enabled = ptr(true)
 	h.cfg.Fingerprint.Models = []string{"not-in-bank"}
 	h.cycle()
-	if h.calls != 0 || h.m.Snapshot(h.a).Blocked {
-		t.Fatal("unsupported bank model probed or disabled")
+	if h.calls != 0 || !h.m.Snapshot(h.a).Blocked || h.m.Allowed(h.a, "not-in-bank") || h.a.Disabled {
+		t.Fatal("unsupported bank model probed, allowed, or manually disabled")
 	}
 }
 func TestMonitorCooldownEditing(t *testing.T) {
@@ -268,15 +268,15 @@ func TestSharedAuthFileDoesNotShareCooldown(t *testing.T) {
 		t.Fatal("cooldown leaked to another member of source file")
 	}
 }
-func TestLowConfidenceDoesNotBlock(t *testing.T) {
+func TestLowConfidenceBlocksWithoutClaimingMismatch(t *testing.T) {
 	h := setup(t)
 	h.cfg.Fingerprint.Models = []string{"gpt-6-sol"}
 	h.cfg.Fingerprint.Confidence = ptr(1.0)
 	h.answers["gpt-6-sol"] = h.answers["gpt-5.6-luna"]
 	h.cycle()
 	s := h.m.Snapshot(h.a)
-	if s.Blocked || s.Results[0].Status != "inconclusive" {
-		t.Fatalf("low confidence blocked: %+v", s)
+	if !s.Blocked || s.Results[0].Status != "inconclusive" || s.Reason != "fingerprint_low_confidence" || h.m.Allowed(h.a, "gpt-6-sol") || !s.LastMismatchAt.IsZero() {
+		t.Fatalf("low confidence allowed or mislabeled: %+v", s)
 	}
 }
 
@@ -293,7 +293,7 @@ func TestRateLimitStopsCycleWithoutDisabling(t *testing.T) {
 	}
 	h.cycle()
 	s := h.m.Snapshot(h.a)
-	if h.calls != 1 || s.Blocked || s.Results[0].Error != "upstream_http_429" {
+	if h.calls != 1 || !s.Blocked || s.Results[0].Error != "upstream_http_429" || h.m.Allowed(h.a, "gpt-6-sol") || !h.m.Allowed(h.a, "gpt-6-astra") || h.a.Disabled {
 		t.Fatal("rate limit retried or mislabeled")
 	}
 }
