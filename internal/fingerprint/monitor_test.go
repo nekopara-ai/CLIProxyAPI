@@ -121,7 +121,7 @@ func TestMonitorErrorsMissingAndBudget(t *testing.T) {
 	h.answers["gpt-6-sol"] = []Answer{{"", 300}, {"no", 310}, {"", 304}}
 	h.cycle()
 	s := h.m.Snapshot(h.a)
-	if s.Results[0].Status != "insufficient" || s.Results[0].Probability != nil || !s.Blocked {
+	if s.Results[0].Status != "pending" || s.Results[0].Probability != nil || !s.Blocked {
 		t.Fatalf("%+v", s)
 	}
 	h.now = h.now.Add(time.Hour)
@@ -135,7 +135,7 @@ func TestMonitorErrorsMissingAndBudget(t *testing.T) {
 		t.Fatal("UTC budget did not reset or insufficient result lost its block")
 	}
 }
-func TestInsufficientResultInvalidatesPriorMatch(t *testing.T) {
+func TestInsufficientResultPreservesPriorMatch(t *testing.T) {
 	h := setup(t)
 	h.cfg.Fingerprint.Models = []string{"gpt-6-astra"}
 	good := h.answers["gpt-6-astra"]
@@ -156,7 +156,7 @@ func TestInsufficientResultInvalidatesPriorMatch(t *testing.T) {
 	h.now = h.now.Add(time.Hour)
 	h.cycle()
 	s := h.m.Snapshot(h.a)
-	if s.Results[0].Status != "insufficient" || s.Results[0].Error != "insufficient_valid_answers" || !s.Blocked || s.Reason != "fingerprint_insufficient_answers" || h.m.Allowed(h.a, "gpt-6-astra") {
+	if s.Results[0].Status != "pending" || s.Results[0].Error != "insufficient_valid_answers" || s.Blocked || s.Reason != "" || !h.m.Allowed(h.a, "gpt-6-astra") {
 		t.Fatalf("insufficient result preserved routing: %+v", s)
 	}
 

@@ -88,7 +88,7 @@ func TestQuotaCheckedBeforeEachQuestionAndRetry(t *testing.T) {
 	}
 }
 
-func TestQuotaFailureRevokesVerdictAndPreservesRetryDelay(t *testing.T) {
+func TestQuotaFailurePreservesVerdictAndRetryDelay(t *testing.T) {
 	for _, mismatch := range []bool{false, true} {
 		t.Run(fmt.Sprint(mismatch), func(t *testing.T) {
 			h := setup(t)
@@ -108,7 +108,7 @@ func TestQuotaFailureRevokesVerdictAndPreservesRetryDelay(t *testing.T) {
 			h.cycle()
 			s := h.m.Snapshot(h.a)
 			ms := s.ModelStates["gpt-6-sol"]
-			if ms.Result.Status != "error" || ms.Result.Error != "upstream_http_429" || !ms.Blocked || ms.Failures != before.Failures+1 || h.m.Allowed(h.a, "gpt-6-sol") || !ms.NextRunAt.Equal(h.now.Add(5*time.Hour)) {
+			if ms.Result.Status != "pending" || ms.Result.Error != "upstream_http_429" || ms.Blocked != before.Blocked || ms.Failures != before.Failures+1 || h.m.Allowed(h.a, "gpt-6-sol") == mismatch || !ms.NextRunAt.Equal(h.now.Add(5*time.Hour)) {
 				t.Fatalf("quota failed to revoke classification or preserve retry delay: %+v", ms)
 			}
 			// Editing the fingerprint cooldown must not shorten the quota wait.

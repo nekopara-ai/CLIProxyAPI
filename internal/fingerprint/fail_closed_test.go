@@ -12,7 +12,7 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
-func TestFailedProbeInvalidatesPriorMatch(t *testing.T) {
+func TestIncompleteProbePreservesPriorMatch(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		outputs int
@@ -51,7 +51,7 @@ func TestFailedProbeInvalidatesPriorMatch(t *testing.T) {
 			h.cycle()
 			s := h.m.Snapshot(h.a)
 			ms := s.ModelStates["gpt-6-astra"]
-			if ms.Result.Status != "error" || ms.Result.Error != tc.code || ms.Result.UsedOutputs != tc.outputs || !ms.Blocked || h.m.Allowed(h.a, "gpt-6-astra(high)") || s.Reason != "fingerprint_check_error" {
+			if ms.Result.Status != "pending" || ms.Result.Error != tc.code || ms.Result.UsedOutputs != tc.outputs || ms.Blocked || !h.m.Allowed(h.a, "gpt-6-astra(high)") || s.Reason != "" || ms.Failures != 1 || (ms.Wait == nil && !ms.NextRunAt.Equal(h.now.Add(retryDelay(s.Effective, 1)))) || ms.Result.Probability != nil {
 				t.Fatalf("failed probe preserved routing or lost its cause: %+v", ms)
 			}
 			if !h.m.Allowed(h.a, "gpt-6-sol") || !h.m.Allowed(h.a, "gpt-5.6-sol") || h.a.Disabled || !ms.LastMismatchAt.IsZero() || !ms.CooldownUntil.IsZero() {
@@ -63,7 +63,7 @@ func TestFailedProbeInvalidatesPriorMatch(t *testing.T) {
 				t.Fatal("error ignored retry schedule")
 			}
 			restarted := New(h.m.cfg, h.m.auths, h.m.probe)
-			if restarted.Allowed(h.a, "gpt-6-astra") || !restarted.Allowed(h.a, "gpt-6-sol") {
+			if !restarted.Allowed(h.a, "gpt-6-astra") || !restarted.Allowed(h.a, "gpt-6-sol") {
 				t.Fatal("restart lost the model-specific block")
 			}
 			h.m.probe = original

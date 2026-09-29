@@ -71,8 +71,13 @@ provider-side quota reservation or cancellation of in-flight traffic is claimed.
 
 Deferrals are persisted separately in each model's `wait` (reason, scope, retry_at).
 Local admission deferrals preserve the last verdict, failure count and fingerprint exclusion.
-An actual upstream error revokes the tested model's prior match while retaining
-the retry wait; only a new complete match restores eligibility. Provider
+A probe with fewer than three valid answers is pending, including upstream request
+errors. It preserves prior eligibility and hides partial predictions. Incomplete attempts
+use the existing retry counter and exponential backoff (`retry-seconds`, capped by
+`max-retry-seconds`); they are not match or mismatch verdicts. Each retry runs the
+three-question test again and only a complete set of three valid answers is judged.
+Models without a prior result remain blocked until a complete match. Persisted
+pending results retain these semantics across restarts. Provider
 RetryAfter/reset hints determine the earliest retry; missing/expired hints fall
 back to configured retry/max-retry seconds. Longer known cooldowns always win.
 Policy edits and restarts cannot shorten a persisted wait. Model-scoped limits do
@@ -104,16 +109,17 @@ operator-controlled secret file, not a business client's key or command-line val
 ## Decisions and recovery
 
 - A usable answer contains at least max(80, ceil(expected count × 0.55)) parsed
-  numbers. `minimum-answers` defaults to all three questions.
+  numbers. All three questions are required for a verdict, even when legacy
+  `minimum-answers` configuration is lower.
 - A high-scoring prediction matching `expected-models[requested]` (or the requested
   name) passes. An unknown reference-bank model is an error, not a mismatch.
 - A sufficiently confident mismatch immediately excludes only that
   **credential + resolved upstream model**. Healthy sibling models, models omitted
   from monitoring and other credentials are unaffected. Routing aliases are
   checked after upstream-model resolution.
-- Zero valid outputs, errors and low confidence are separate states with no
-  invented 0% probability. They do not newly disable a credential, and never
-  restore a previously blocked one.
+- Incomplete outputs remain pending with no prediction or probability. They
+  preserve prior eligibility and never restore a blocked model. Configuration
+  errors and complete low-confidence results remain separate blocking states.
 - After a model's cooldown, only its diagnostic traffic resumes. Its own fresh
   successful test restores it immediately, without waiting for other models. A
   new mismatch restarts only its cooldown. Errors and inconclusive results never

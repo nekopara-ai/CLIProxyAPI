@@ -208,7 +208,7 @@ func New(cfg func() *config.Config, auths func() []*coreauth.Auth, probe Probe) 
 				return m
 			}
 			// Earlier versions kept routing open after failed or inconclusive tests.
-			if ms.Result != nil && ms.Result.Status != "match" && !ms.Blocked {
+			if ms.Result != nil && ms.Result.Status != "match" && ms.Result.Status != "pending" && !ms.Blocked {
 				ms.Blocked = true
 				corrected = true
 			}
@@ -639,11 +639,14 @@ func (m *Monitor) run(ctx context.Context, a *coreauth.Auth, p config.Fingerprin
 			if r.Deferred != nil && r.Error == "" {
 				r.Status, r.Error = "deferred", ""
 				r.Prediction, r.Probability = "", nil
+			} else if r.UsedOutputs < 3 {
+				r.Status = "pending"
+				if r.Error == "" {
+					r.Error = "insufficient_valid_answers"
+				}
+				r.Prediction, r.Probability = "", nil
 			} else if requestError {
 				r.Status = "error"
-			} else if r.UsedOutputs < *p.MinimumAnswers {
-				r.Status = "insufficient"
-				r.Error = "insufficient_valid_answers"
 			} else if r.Probability == nil || *r.Probability < *p.Confidence {
 				r.Status = "inconclusive"
 				r.Error = "low_confidence"

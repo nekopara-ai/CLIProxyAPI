@@ -157,6 +157,8 @@ func modelBlockReason(ms *ModelState) string {
 		switch ms.Result.Status {
 		case "mismatch":
 			return "fingerprint_model_mismatch"
+		case "pending":
+			return "fingerprint_pending_retry"
 		case "insufficient":
 			return "fingerprint_insufficient_answers"
 		case "error":
@@ -179,9 +181,21 @@ func applyModelResult(s *State, p config.FingerprintPolicy, r ModelResult, stamp
 		refreshSummary(s, p)
 		return
 	}
+	// An incomplete probe is not a new verdict. Preserve prior eligibility;
+	// without a prior result, wait for a complete verification before routing.
+	if r.Status == "pending" && ms.Result == nil {
+		ms.Blocked = true
+	}
 	ms.Wait = nil
 	ms.Result, ms.ResultSignature, ms.ResultPolicy, ms.LastRunAt = &r, stamp, copyPolicy(p), now
 	switch r.Status {
+	case "pending":
+		// Count incomplete attempts for the existing retry backoff, not as verdicts.
+		ms.Failures++
+		ms.NextRunAt = now.Add(retryDelay(p, ms.Failures))
+		if ms.CooldownUntil.After(ms.NextRunAt) {
+			ms.NextRunAt = ms.CooldownUntil
+		}
 	case "match":
 		ms.Blocked, ms.Failures = false, 0
 		ms.LastMismatchAt, ms.CooldownUntil = time.Time{}, time.Time{}
