@@ -289,7 +289,7 @@ func TestRateLimitStopsCycleWithoutDisabling(t *testing.T) {
 	h.cfg.Fingerprint.QuestionRetries = ptr(2)
 	h.m.probe = func(context.Context, *coreauth.Auth, string, string) (string, error) {
 		h.calls++
-		return "", statusFailure(429)
+		return "", quotaFailure{credential: true}
 	}
 	h.cycle()
 	s := h.m.Snapshot(h.a)

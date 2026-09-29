@@ -46,7 +46,8 @@ completed test, not wall-clock cron. Only due models are included in a cycle.
 Startup defaults to 30 seconds (0 also selects this default), plus deterministic
 jitter. Each credential's UTC daily budget is reserved durably **before** a request,
 including retries. Question retries are only for unusable answers or errors, never
-to discard a valid mismatch. HTTP 401/403/429 stops the current cycle. Failed or
+to discard a valid mismatch. Credential-scoped quota/auth failures stop all remaining
+models. A dispatched probe error ends the current cycle without revoking sibling verdicts. Failed or
 inconclusive cycles retry exponentially, bounded by retry/max-retry seconds.
 No cancellation of already admitted business requests is attempted. Diagnostic
 requests use terminal-aware SSE processing: completion/failure ends the request
@@ -55,6 +56,30 @@ cancel obsolete diagnostics even when every worker is occupied. No post-connect
 network deadline is added; genuine ongoing generation can still occupy a worker.
 Snapshots expose model/question/attempt, start times, completed questions and
 stream activity without retaining raw text.
+
+### Quota-aware admission and deferral
+
+Diagnostics bypass only their own fingerprint exclusion. They reuse business
+auth/model admission before scheduling, before every question/retry and immediately
+before dispatch with a fresh credential snapshot. Known quota, forced cooldown,
+expired access tokens and manual disablement cannot be bypassed by a stale auth.
+Skipping local admission consumes no upstream request or daily request budget.
+New HTTP or terminal-SSE quota/auth failures feed the normal scheduler; successful
+diagnostics do not clear concurrent business failures. Already dispatched requests
+can race with an independent business request exhausting the limit; no atomic
+provider-side quota reservation or cancellation of in-flight traffic is claimed.
+
+Deferrals are persisted separately in each model's `wait` (reason, scope, retry_at).
+Local admission deferrals preserve the last verdict, failure count and fingerprint exclusion.
+An actual upstream error revokes the tested model's prior match while retaining
+the retry wait; only a new complete match restores eligibility. Provider
+RetryAfter/reset hints determine the earliest retry; missing/expired hints fall
+back to configured retry/max-retry seconds. Longer known cooldowns always win.
+Policy edits and restarts cannot shorten a persisted wait. Model-scoped limits do
+not pause healthy siblings; credential-scoped limits defer all monitored models.
+Non-due models also record known cooldowns, and skipped accounts occupy no worker.
+At recovery time admission is rechecked, not assumed successful. This does not
+actively poll a provider's quota API or infer model identity from quota headers.
 
 ### Internal system caller
 
@@ -134,3 +159,12 @@ with each result. The pinned bank is the same one used in the September 2026
 three-question experiments; sanitized golden fixtures compare Go results to the
 reference JavaScript probabilities with tolerance 1e-10. `bank-file` permits a
 reviewed replacement without recompiling; each cycle loads and validates it.
+
+### Version 8 configuration layout
+
+Version 8 stores global fingerprint settings under `credentials.fingerprint` and
+per-credential overrides under `credentials.policies`. Timezone overrides move to
+`requests.timezone-override` (and country/region/city counterparts); the internal
+request attribution digest moves to `access.internal-request-api-key-sha256`.
+Legacy configuration remains readable and is migrated on save. The v0 management
+API remains available to existing panels.

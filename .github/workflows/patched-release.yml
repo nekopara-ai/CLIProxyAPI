@@ -202,21 +202,9 @@ jobs:
         if: steps.metadata.outputs.already_released != 'true'
         run: bash .github/scripts/refresh-model-catalogs.sh
 
-      - name: Run patched-path tests
+      - name: Run complete test suite
         if: steps.metadata.outputs.already_released != 'true'
-        run: |
-          # These three Claude fingerprint tests also fail on the unmodified
-          # upstream main at v7.2.140 (MacOS is emitted while Linux is expected).
-          # Keep the exception exact so every other executor test still gates release.
-          go test \
-            -skip '^(TestApplyClaudeHeaders_DisableDeviceProfileStabilization|TestApplyClaudeHeaders_LegacyModePreservesConfiguredUserAgentOverrideForClaudeClients|TestClaudeExecutor_NonClaudeRequestUsesClaudeCode220CLIFingerprint)$' \
-            ./internal/api/handlers/management \
-            ./internal/pluginhost \
-            ./internal/redisqueue \
-            ./internal/runtime/executor/... \
-            ./sdk/api/handlers/openai \
-            ./sdk/cliproxy/... \
-            ./sdk/pluginapi
+        run: go test ./...
 
       - name: Verify server build
         if: steps.metadata.outputs.already_released != 'true'

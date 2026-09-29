@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -84,6 +85,9 @@ func TestFingerprintProbeUsesOwnProxyAndCredentialWithoutTools(t *testing.T) {
 	s := &Service{cfg: cfg, coreManager: coreauth.NewManager(nil, nil, nil)}
 	s.coreManager.RegisterExecutor(runtimeexecutor.NewCodexExecutor(cfg))
 	a := &coreauth.Auth{ID: t.Name(), Provider: "codex", ProxyURL: proxy.URL, Attributes: map[string]string{"base_url": "http://fingerprint.invalid"}, Metadata: map[string]any{"email": "selected@example.invalid", "access_token": "synthetic"}}
+	if _, err := s.coreManager.Register(context.Background(), a); err != nil {
+		t.Fatal(err)
+	}
 	for _, prompt := range fingerprint.Prompts {
 		text, err := s.probeFingerprint(context.Background(), a, "gpt-6-sol", prompt)
 		if err != nil || text != "87, 213" {
@@ -138,6 +142,9 @@ func TestFingerprintProbeTerminalDoesNotWaitForEOF(t *testing.T) {
 			s := &Service{cfg: cfg, coreManager: coreauth.NewManager(nil, nil, nil)}
 			s.coreManager.RegisterExecutor(runtimeexecutor.NewCodexExecutor(cfg))
 			a := &coreauth.Auth{ID: "synthetic", Provider: "codex", ProxyURL: proxy.URL, Attributes: map[string]string{"base_url": "http://fingerprint.invalid", "api_key": "synthetic"}}
+			if _, err := s.coreManager.Register(context.Background(), a); err != nil {
+				t.Fatal(err)
+			}
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			done := make(chan error, 1)
@@ -155,6 +162,49 @@ func TestFingerprintProbeTerminalDoesNotWaitForEOF(t *testing.T) {
 				}
 			case <-time.After(3 * time.Second):
 				t.Fatal("terminal event incorrectly waits for upstream EOF")
+			}
+		})
+	}
+}
+
+func TestFingerprintQuotaAdmissionAndFailureFeedback(t *testing.T) {
+	for _, path := range []string{"http", "sse"} {
+		t.Run(path, func(t *testing.T) {
+			var calls atomic.Int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				w.Header().Set("X-Codex-Primary-Used-Percent", "100")
+				if path == "http" {
+					w.WriteHeader(429)
+					_, _ = fmt.Fprint(w, `{"error":{"type":"usage_limit_reached","resets_in_seconds":18000}}`)
+				} else {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = fmt.Fprint(w, "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"type\":\"usage_limit_reached\",\"resets_in_seconds\":18000}}}\n\n")
+				}
+			}))
+			defer upstream.Close()
+			cfg := &config.Config{}
+			s := &Service{cfg: cfg, coreManager: coreauth.NewManager(nil, nil, nil)}
+			s.coreManager.RegisterExecutor(runtimeexecutor.NewCodexExecutor(cfg))
+			a := &coreauth.Auth{ID: t.Name(), Provider: "codex", ProxyURL: upstream.URL, Attributes: map[string]string{"base_url": "http://fingerprint.invalid", "api_key": "synthetic"}}
+			if _, err := s.coreManager.Register(context.Background(), a); err != nil {
+				t.Fatal(err)
+			}
+			before := time.Now()
+			_, err := s.probeFingerprint(context.Background(), a, "gpt-6-sol", "synthetic")
+			var status interface{ StatusCode() int }
+			if !errors.As(err, &status) || status.StatusCode() != 429 {
+				t.Fatalf("lost typed quota error: %v", err)
+			}
+			current, _ := s.coreManager.GetByID(a.ID)
+			if current.Quota.Reason != "credential_quota" || current.Quota.NextRecoverAt.Before(before.Add(5*time.Hour)) || current.Quota.Signals["X-Codex-Primary-Used-Percent"] != "100" {
+				t.Fatalf("quota not fed to business scheduler: %+v", current.Quota)
+			}
+			// The originally selected stale auth cannot bypass the final admission check.
+			_, err = s.probeFingerprint(context.Background(), a, "gpt-6-astra", "synthetic")
+			var deferred *coreauth.DiagnosticUnavailable
+			if !errors.As(err, &deferred) || deferred.Reason != "quota" || calls.Load() != 1 {
+				t.Fatal("stale auth dispatched during quota")
 			}
 		})
 	}
