@@ -26,7 +26,7 @@ func TestPendingRetriesWithExistingBackoffWithoutVerdict(t *testing.T) {
 				h.index = map[string]int{}
 				h.cycle()
 				ms := h.m.Snapshot(h.a).ModelStates["gpt-6-sol"]
-				if ms.Result.Status != "pending" || ms.Result.UsedOutputs != 1 || ms.Failures != i+1 || !ms.NextRunAt.Equal(h.now.Add([]time.Duration{time.Minute, 2 * time.Minute, 3 * time.Minute, 3 * time.Minute}[i])) || h.m.Allowed(h.a, "gpt-6-sol") != (prior == "match") {
+				if ms.Result.Status != "pending" || ms.Result.UsedOutputs != 1 || ms.Result.Prediction != "" || ms.Result.Probability != nil || len(ms.Result.Candidates) != 0 || ms.Failures != i+1 || !ms.NextRunAt.Equal(h.now.Add([]time.Duration{time.Minute, 2 * time.Minute, 3 * time.Minute, 3 * time.Minute}[i])) || h.m.Allowed(h.a, "gpt-6-sol") != (prior == "match") {
 					t.Fatalf("invalid pending state: %+v", ms)
 				}
 				restarted := New(h.m.cfg, h.m.auths, h.m.probe)

@@ -644,7 +644,7 @@ func (m *Monitor) run(ctx context.Context, a *coreauth.Auth, p config.Fingerprin
 				if r.Error == "" {
 					r.Error = "insufficient_valid_answers"
 				}
-				r.Prediction, r.Probability = "", nil
+				r.Prediction, r.Probability, r.Candidates = "", nil, nil
 			} else if requestError {
 				r.Status = "error"
 			} else if r.Probability == nil || *r.Probability < *p.Confidence {
