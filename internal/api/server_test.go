@@ -17,23 +17,24 @@ import (
 	"time"
 
 	gin "github.com/gin-gonic/gin"
-	managementHandlers "github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/management"
-	claudemodels "github.com/router-for-me/CLIProxyAPI/v7/internal/client/claude/models"
-	codexmodels "github.com/router-for-me/CLIProxyAPI/v7/internal/client/codex/models"
-	proxyconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
-	runtimehelps "github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
-	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executionregistry"
-	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/google/uuid"
+	managementHandlers "github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
+	claudemodels "github.com/router-for-me/CLIProxyAPI/v8/internal/client/claude/models"
+	codexmodels "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/models"
+	proxyconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/redisqueue"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
+	runtimehelps "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executionregistry"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	"gopkg.in/yaml.v3"
 )
 
@@ -880,9 +881,12 @@ func TestCodexAlphaSearchForwardsRequest(t *testing.T) {
 		t.Fatalf("response Content-Type = %q", got)
 	}
 	traceID := rr.Header().Get(internallogging.CPATraceIDHeader)
-	parts := strings.Split(traceID, "-")
-	if len(parts) != 3 || parts[1] != credential.Index || len(parts[2]) != 8 {
+	parts := strings.SplitN(traceID, "-", 3)
+	if len(parts) != 3 || parts[1] != credential.Index || parts[2] == "" {
 		t.Fatalf("trace ID = %q, want timestamp-%s-requestID", traceID, credential.Index)
+	}
+	if _, errParseUUID := uuid.Parse(parts[2]); errParseUUID != nil {
+		t.Fatalf("trace requestID = %q: %v", parts[2], errParseUUID)
 	}
 	if _, errParse := time.Parse("20060102150405", parts[0]); errParse != nil {
 		t.Fatalf("trace timestamp = %q: %v", parts[0], errParse)
