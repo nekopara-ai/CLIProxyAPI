@@ -55,13 +55,13 @@ type oauthStatusError struct {
 func (e oauthStatusError) Error() string   { return fmt.Sprintf("status %d: %s", e.code, e.msg) }
 func (e oauthStatusError) StatusCode() int { return e.code }
 
-func TestRefreshAuthForRequest_NormalDisabledAuth_RefreshesTokenSuccessfully(t *testing.T) {
+func TestRefreshAuthForRequest_NormalDisabledAuth_DoesNotRefresh(t *testing.T) {
 	ctx := context.Background()
 	manager := NewManager(nil, &RoundRobinSelector{}, nil)
 	executor := &mockOAuthErrorExecutor{id: "test-provider"}
 	manager.RegisterExecutor(executor)
 
-	// Normal disabled auth without invalid_grant should refresh tokens normally (expected behavior)
+	// Manual OFF stops all upstream work, including ordinary token refresh.
 	auth := &Auth{
 		ID:       "normal-disabled-auth",
 		Provider: "test-provider",
@@ -76,15 +76,15 @@ func TestRefreshAuthForRequest_NormalDisabledAuth_RefreshesTokenSuccessfully(t *
 		t.Fatalf("Register error: %v", err)
 	}
 
-	refreshed, errRefresh := manager.refreshAuthForRequest(ctx, auth.ID, "")
-	if errRefresh != nil {
-		t.Fatalf("expected successful refresh for normal disabled auth, got error: %v", errRefresh)
+	_, errRefresh := manager.refreshAuthForRequest(ctx, auth.ID, "")
+	if errRefresh == nil {
+		t.Fatal("expected disabled credential error")
 	}
-	if executor.refreshCalls.Load() != 1 {
-		t.Fatalf("executor.Refresh called %d times, want 1 for normal disabled auth", executor.refreshCalls.Load())
+	if executor.refreshCalls.Load() != 0 {
+		t.Fatalf("executor.Refresh called %d times, want 0", executor.refreshCalls.Load())
 	}
-	if refreshed.Metadata["access_token"] != "new-valid-token" {
-		t.Fatalf("refreshed token = %v, want new-valid-token", refreshed.Metadata["access_token"])
+	if current, _ := manager.GetByID(auth.ID); current.Metadata["access_token"] != "expired-token" {
+		t.Fatal("disabled credential token changed")
 	}
 }
 
@@ -115,10 +115,13 @@ func TestRefreshAuthForRequest_DisabledAuth_InvalidGrant_NeverRetries(t *testing
 		t.Fatalf("Register error: %v", err)
 	}
 
-	// 1st call encounters invalid_grant
+	// Even the first call must not reach upstream while disabled.
 	_, errRefresh := manager.refreshAuthForRequest(ctx, auth.ID, "")
 	if errRefresh == nil {
 		t.Fatalf("expected refresh error, got nil")
+	}
+	if executor.refreshCalls.Load() != 0 {
+		t.Fatal("disabled credential reached token endpoint")
 	}
 
 	manager.mu.RLock()

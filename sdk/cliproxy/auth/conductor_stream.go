@@ -120,11 +120,12 @@ func readStreamBootstrap(ctx context.Context, ch <-chan cliproxyexecutor.StreamC
 	}
 }
 
-func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, resultModel, routeModel string, headers http.Header, buffered []cliproxyexecutor.StreamChunk, remaining <-chan cliproxyexecutor.StreamChunk, aliasResult OAuthModelAliasResult, ephemeralResult bool, opts cliproxyexecutor.Options) *cliproxyexecutor.StreamResult {
+func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, resultModel, routeModel string, headers http.Header, buffered []cliproxyexecutor.StreamChunk, remaining <-chan cliproxyexecutor.StreamChunk, aliasResult OAuthModelAliasResult, ephemeralResult bool, opts cliproxyexecutor.Options, finish func()) *cliproxyexecutor.StreamResult {
 	out := make(chan cliproxyexecutor.StreamChunk)
 	streamStart := time.Now()
 	go func() {
 		defer close(out)
+		defer finish()
 		var failed bool
 		forward := true
 		var rewriter *StreamRewriter
@@ -132,6 +133,9 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 			rewriter = NewStreamRewriter(StreamRewriteOptions{RewriteModel: aliasResult.OriginalAlias})
 		}
 		emit := func(chunk cliproxyexecutor.StreamChunk) bool {
+			if context.Cause(ctx) == errCredentialStopped {
+				return false
+			}
 			if chunk.Err != nil && !failed {
 				failed = true
 				entry := logEntryWithRequestID(ctx)
@@ -186,7 +190,21 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 				return
 			}
 		}
-		for chunk := range remaining {
+	streamLoop:
+		for {
+			var chunk cliproxyexecutor.StreamChunk
+			var ok bool
+			select {
+			case <-ctx.Done():
+				if !failed && !ephemeralResult && context.Cause(ctx) != errCredentialStopped && claudeOAuthRequestCancellation(ctx, auth, nil) != nil {
+					m.recordExecutionResult(ctx, Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Error: NewRequestScopedError(ctx.Err().Error(), 0), Options: opts}, auth, false)
+				}
+				return
+			case chunk, ok = <-remaining:
+				if !ok {
+					break streamLoop
+				}
+			}
 			if ok := emit(chunk); !ok {
 				discardStreamChunks(remaining)
 				return
@@ -198,7 +216,7 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 				return
 			}
 		}
-		if !failed && (ephemeralResult || claudeOAuthRequestCancellation(ctx, auth, nil) == nil) {
+		if !failed && ctx.Err() == nil && (ephemeralResult || claudeOAuthRequestCancellation(ctx, auth, nil) == nil) {
 			m.recordExecutionResult(ctx, Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: true, Options: opts}, auth, ephemeralResult)
 		}
 	}()
@@ -209,6 +227,23 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 	if executor == nil {
 		return nil, &Error{Code: "executor_not_found", Message: "executor not registered"}
 	}
+	finish := func() {}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if !ephemeralResult {
+		var errOperation error
+		ctx, finish, errOperation = m.BeginCredentialOperation(ctx, auth)
+		if errOperation != nil {
+			return nil, errOperation
+		}
+	}
+	streamOwnsOperation := false
+	defer func() {
+		if !streamOwnsOperation {
+			finish()
+		}
+	}()
 	executor = executorForAuth(executor, auth)
 	ctx = contextWithRequestedModelAlias(ctx, opts, routeModel)
 	var lastErr error
@@ -455,7 +490,8 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			remaining = closedCh
 		}
 		attemptAliasResult := resolveAttemptAliasResult(routing, auth, routeModel, execModel, aliasResult)
-		return m.wrapStreamResult(ctx, auth.Clone(), provider, resultModel, routeModel, streamResult.Headers, buffered, remaining, attemptAliasResult, ephemeralResult, execOpts), nil
+		streamOwnsOperation = true
+		return m.wrapStreamResult(ctx, auth.Clone(), provider, resultModel, routeModel, streamResult.Headers, buffered, remaining, attemptAliasResult, ephemeralResult, execOpts, finish), nil
 	}
 	if lastErr == nil {
 		lastErr = &Error{Code: "auth_not_found", Message: "no upstream model available"}

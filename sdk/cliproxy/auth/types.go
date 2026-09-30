@@ -108,8 +108,9 @@ type Auth struct {
 	Success int64 `json:"-"`
 	Failed  int64 `json:"-"`
 
-	recentRequests recentRequestRing `json:"-"`
-	indexAssigned  bool              `json:"-"`
+	manualCooldownReset bool
+	recentRequests      recentRequestRing `json:"-"`
+	indexAssigned       bool              `json:"-"`
 }
 
 const (
@@ -872,4 +873,12 @@ func normaliseUnix(raw int64) time.Time {
 		return time.UnixMilli(raw)
 	}
 	return time.Unix(raw, 0)
+}
+
+// RequestCooldownReset marks an explicit operator status command. This transient
+// intent is consumed by Update, and never persisted or replayed by file watchers.
+func (a *Auth) RequestCooldownReset() {
+	if a != nil {
+		a.manualCooldownReset = true
+	}
 }

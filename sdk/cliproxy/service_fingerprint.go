@@ -34,6 +34,7 @@ func (s *Service) startFingerprintMonitor(ctx context.Context) {
 	s.fingerprintMonitor = fingerprint.New(s.currentConfig, s.coreManager.List, s.probeFingerprint)
 	fingerprint.SetCurrent(s.fingerprintMonitor)
 	s.coreManager.SetExecutionModelGuard(s.fingerprintMonitor.Allowed)
+	s.coreManager.SetCooldownResetHook(s.fingerprintMonitor.ResetCooldown)
 	s.fingerprintMonitor.Start(ctx)
 }
 func (s *Service) probeFingerprint(ctx context.Context, a *coreauth.Auth, model, prompt string) (_ string, probeErr error) {
@@ -55,6 +56,11 @@ func (s *Service) probeFingerprint(ctx context.Context, a *coreauth.Auth, model,
 	if wait := coreauth.DiagnosticAvailability(a, model, time.Now()); wait != nil {
 		return "", wait
 	}
+	ctx, finish, errOperation := s.coreManager.BeginCredentialOperation(ctx, a)
+	if errOperation != nil {
+		return "", errOperation
+	}
+	defer finish()
 	ctx = logging.WithFreshResponseHeadersHolder(ctx)
 	provider, ok := s.coreManager.Executor(a.Provider)
 	if !ok {
@@ -77,7 +83,17 @@ func (s *Service) probeFingerprint(ctx context.Context, a *coreauth.Auth, model,
 	if err != nil {
 		return "", err
 	}
-	for chunk := range response.Chunks {
+	for {
+		var chunk executor.StreamChunk
+		var open bool
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case chunk, open = <-response.Chunks:
+		}
+		if !open {
+			break
+		}
 		if chunk.Err != nil {
 			return "", chunk.Err
 		}

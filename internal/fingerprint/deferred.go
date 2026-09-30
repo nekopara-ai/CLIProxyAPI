@@ -59,6 +59,9 @@ func (m *Monitor) filterAvailable(s *State, a *coreauth.Auth, p config.Fingerpri
 func (m *Monitor) deferProbe(a *coreauth.Auth, model string, p config.FingerprintPolicy, wait *coreauth.DiagnosticUnavailable) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.runInvalidatedLocked(authKey(a)) {
+		return
+	}
 	s := m.states[authKey(a)]
 	for _, candidate := range p.Models {
 		if modelKey(candidate) == modelKey(model) || wait.Scope == "credential" {

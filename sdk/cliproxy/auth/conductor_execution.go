@@ -527,6 +527,12 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		if len(models) == 0 {
 			continue
 		}
+		execCtx, finish, errOperation := m.BeginCredentialOperation(execCtx, auth)
+		if errOperation != nil {
+			lastErr = errOperation
+			continue
+		}
+		defer finish()
 		attempted[auth.ID] = struct{}{}
 		var errPrepare error
 		auth, errPrepare = m.prepareRequestAuth(execCtx, executor, auth)
@@ -584,6 +590,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 			startExec := time.Now()
 			resp, errExec := executor.Execute(execCtx, auth, execReq, execOpts)
+			if execCtx.Err() != nil {
+				return cliproxyexecutor.Response{}, execCtx.Err()
+			}
 			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 			durationExec := time.Since(startExec)
 			if errExec != nil {
@@ -601,6 +610,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 					startRetry := time.Now()
 					resp, errExec = executor.Execute(execCtx, auth, execReq, execOpts)
+					if execCtx.Err() != nil {
+						return cliproxyexecutor.Response{}, execCtx.Err()
+					}
 					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 					durationRetry := time.Since(startRetry)
 					if errExec != nil {
@@ -739,6 +751,12 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		if len(models) == 0 {
 			continue
 		}
+		execCtx, finish, errOperation := m.BeginCredentialOperation(execCtx, auth)
+		if errOperation != nil {
+			lastErr = errOperation
+			continue
+		}
+		defer finish()
 		attempted[auth.ID] = struct{}{}
 		var errPrepare error
 		auth, errPrepare = m.prepareRequestAuth(execCtx, executor, auth)
@@ -796,6 +814,9 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 			startExec := time.Now()
 			resp, errExec := executor.CountTokens(execCtx, auth, execReq, execOpts)
+			if execCtx.Err() != nil {
+				return cliproxyexecutor.Response{}, execCtx.Err()
+			}
 			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 			durationExec := time.Since(startExec)
 			if errExec != nil {
@@ -813,6 +834,9 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 					execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 					startRetry := time.Now()
 					resp, errExec = executor.CountTokens(execCtx, auth, execReq, execOpts)
+					if execCtx.Err() != nil {
+						return cliproxyexecutor.Response{}, execCtx.Err()
+					}
 					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 					durationRetry := time.Since(startRetry)
 					if errExec != nil {
@@ -1528,6 +1552,11 @@ func (m *Manager) PrepareRequestAuth(ctx context.Context, preparer RequestAuthPr
 	if m == nil || preparer == nil || auth == nil || !preparer.ShouldPrepareRequestAuth(auth) {
 		return auth, nil
 	}
+	ctx, finish, errOperation := m.BeginCredentialOperation(ctx, auth)
+	if errOperation != nil {
+		return auth, errOperation
+	}
+	defer finish()
 
 	id := strings.TrimSpace(auth.ID)
 	if id == "" {
@@ -1545,6 +1574,9 @@ func (m *Manager) PrepareRequestAuth(ctx context.Context, preparer RequestAuthPr
 	}
 	prepareMu.Lock()
 	defer prepareMu.Unlock()
+	if ctx.Err() != nil {
+		return auth, ctx.Err()
+	}
 
 	target := auth.Clone()
 	m.mu.RLock()
@@ -1563,6 +1595,9 @@ func (m *Manager) PrepareRequestAuth(ctx context.Context, preparer RequestAuthPr
 
 	base := target.Clone()
 	updated, errPrepare := preparer.PrepareRequestAuth(ctx, base.Clone())
+	if ctx.Err() != nil {
+		return auth, ctx.Err()
+	}
 	if errPrepare != nil {
 		return auth, errPrepare
 	}
@@ -2065,7 +2100,28 @@ func (m *Manager) HttpRequest(ctx context.Context, auth *Auth, req *http.Request
 	if exec == nil {
 		return nil, &Error{Code: "provider_not_found", Message: "executor not registered for provider: " + providerKey}
 	}
-	return exec.HttpRequest(ctx, auth, req)
+	if m.HomeEnabled() {
+		// Home owns ephemeral credential and response-body cancellation.
+		return exec.HttpRequest(ctx, auth, req)
+	}
+	ctx, finish, errOperation := m.BeginCredentialOperation(ctx, auth)
+	if errOperation != nil {
+		return nil, errOperation
+	}
+	resp, errRequest := exec.HttpRequest(ctx, auth, req.Clone(ctx))
+	errContext := ctx.Err()
+	if errRequest != nil || resp == nil || resp.Body == nil || errContext != nil {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		finish()
+		if errContext != nil && errRequest == nil {
+			errRequest = errContext
+		}
+		return resp, errRequest
+	}
+	resp.Body = &credentialResponseBody{ReadCloser: resp.Body, finish: finish}
+	return resp, nil
 }
 
 func ensureCanonicalSessionMetadata(metadata map[string]any, headers http.Header, payload []byte) map[string]any {

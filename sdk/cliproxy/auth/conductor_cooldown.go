@@ -565,8 +565,9 @@ func (m *Manager) ResetQuota(ctx context.Context, authID string) (*Auth, []strin
 	if m.scheduler != nil && snapshot != nil {
 		m.scheduler.upsertAuth(snapshot)
 	}
-	if errPersist != nil {
-		return nil, nil, errPersist
+	errReset := m.notifyCooldownReset(snapshot)
+	if errPersist != nil || errReset != nil {
+		return nil, nil, errors.Join(errPersist, errReset)
 	}
 	return snapshot, models, nil
 }
@@ -791,6 +792,11 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 
 	m.mu.Lock()
 	if auth, ok := m.auths[result.AuthID]; ok && auth != nil {
+		if selected, _ := ctx.Value(credentialOperationKey{}).(*Auth); selected != nil &&
+			(selected.ID != auth.ID || m.credentialStoppedLocked(selected, auth)) {
+			m.mu.Unlock()
+			return
+		}
 		if modelKey == "" && strings.TrimSpace(result.RouteModel) != "" {
 			if m != nil {
 				modelKey = m.selectionModelKeyForAuth(auth, result.RouteModel)

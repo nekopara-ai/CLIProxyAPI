@@ -21,7 +21,7 @@ type authAutoRefreshLoop struct {
 	dirty map[string]struct{}
 
 	wakeCh chan struct{}
-	jobs   chan string
+	jobs   chan *Auth
 }
 
 func newAuthAutoRefreshLoop(manager *Manager, interval time.Duration, concurrency int) *authAutoRefreshLoop {
@@ -42,7 +42,7 @@ func newAuthAutoRefreshLoop(manager *Manager, interval time.Duration, concurrenc
 		index:       make(map[string]*refreshHeapItem),
 		dirty:       make(map[string]struct{}),
 		wakeCh:      make(chan struct{}, 1),
-		jobs:        make(chan string, jobBuffer),
+		jobs:        make(chan *Auth, jobBuffer),
 	}
 }
 
@@ -80,14 +80,23 @@ func (l *authAutoRefreshLoop) worker(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case authID := <-l.jobs:
-			if authID == "" {
+		case auth := <-l.jobs:
+			if auth == nil {
 				continue
 			}
-			l.manager.refreshAuth(ctx, authID)
-			l.queueReschedule(authID)
+			l.runJob(ctx, auth)
 		}
 	}
+}
+
+func (l *authAutoRefreshLoop) runJob(ctx context.Context, auth *Auth) {
+	ctx, finish, err := l.manager.BeginCredentialOperation(ctx, auth)
+	if err != nil {
+		return
+	}
+	defer finish()
+	l.manager.refreshAuth(ctx, auth.ID)
+	l.queueReschedule(auth.ID)
 }
 
 func (l *authAutoRefreshLoop) rebuild(now time.Time) {
@@ -264,10 +273,14 @@ func (l *authAutoRefreshLoop) handleDueAuth(ctx context.Context, now time.Time, 
 		return
 	}
 
+	queued, ok := manager.GetByID(authID)
+	if !ok || queued.Disabled || queued.Status == StatusDisabled {
+		return
+	}
 	select {
 	case <-ctx.Done():
 		return
-	case l.jobs <- authID:
+	case l.jobs <- queued:
 	}
 }
 
@@ -337,7 +350,7 @@ func (l *authAutoRefreshLoop) remove(authID string) {
 }
 
 func nextRefreshCheckAt(now time.Time, auth *Auth, interval time.Duration) (time.Time, bool) {
-	if auth == nil {
+	if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
 		return time.Time{}, false
 	}
 	if hasUnauthorizedAuthFailure(auth) || hasDisabledInvalidGrantFailure(auth) {
