@@ -581,7 +581,7 @@ func (m *Monitor) run(ctx context.Context, a *coreauth.Auth, p config.Fingerprin
 		r := ModelResult{Model: model, ExpectedModel: expected, StartedAt: m.now(), Status: "error", Confidence: *p.Confidence}
 		answers := []Answer{}
 		requestError := false
-		if !bank.HasModel(expected) {
+		if decisionMode(p) == config.FingerprintDecisionExact && !bank.HasModel(expected) {
 			r.Error = "model_not_in_reference_bank"
 		} else {
 			for i, prompt := range Prompts {
@@ -691,9 +691,9 @@ func (m *Monitor) run(ctx context.Context, a *coreauth.Auth, p config.Fingerprin
 			} else if r.Probability == nil || *r.Probability < *p.Confidence {
 				r.Status = "inconclusive"
 				r.Error = "low_confidence"
-			} else if r.Prediction != expected {
+			} else if accepted, reason := acceptsPrediction(p, expected, r.Prediction); !accepted {
 				r.Status = "mismatch"
-				r.Error = ""
+				r.Error = reason
 			} else {
 				r.Status = "match"
 				r.Error = ""

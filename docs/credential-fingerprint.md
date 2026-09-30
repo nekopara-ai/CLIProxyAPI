@@ -149,6 +149,16 @@ results. Cooldown duration changes are applied at the next scheduler tick.
 Raw answers are omitted by default; opt in with `retain-answers`. Secure state
 backups and management access as credential operational data.
 
+## Decision modes
+
+The `reject-luna` mode keeps the existing three-question prompts, number
+parsing, reference-bank feature extraction, candidate probabilities, and
+confidence threshold unchanged. A complete high-confidence result passes when
+the classifier prediction is any non-Luna label and blocks when the prediction
+contains `luna`. The requested model name does not need to be present in the
+reference bank, so targets such as `gpt-6.1-sol` can be monitored immediately.
+Set `decision-mode: exact` to retain the legacy requested-model equality check.
+
 ## Statistical limitations and attribution
 
 Scores are **reference-bank-relative statistical probabilities**, not proof of
