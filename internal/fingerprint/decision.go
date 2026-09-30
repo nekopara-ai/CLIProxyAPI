@@ -22,6 +22,9 @@ func isLunaPrediction(model string) bool {
 }
 
 func acceptsPrediction(p config.FingerprintPolicy, expected, prediction string) (bool, string) {
+	if strings.TrimSpace(prediction) == "" {
+		return false, "fingerprint_unverified"
+	}
 	if decisionMode(p) == config.FingerprintDecisionRejectLuna {
 		if isLunaPrediction(prediction) {
 			return false, "luna_model_detected"

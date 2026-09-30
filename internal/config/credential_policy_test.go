@@ -32,3 +32,18 @@ func TestCredentialPolicyRejectInvalid(t *testing.T) {
 		}
 	}
 }
+
+func TestFingerprintDecisionModeInheritance(t *testing.T) {
+	p := DefaultFingerprintPolicy()
+	if p.DecisionMode == nil || *p.DecisionMode != FingerprintDecisionRejectLuna {
+		t.Fatal("missing reject-luna default")
+	}
+	for _, mode := range []string{FingerprintDecisionExact, FingerprintDecisionRejectLuna, "invalid", ""} {
+		override := FingerprintPolicy{DecisionMode: &mode}
+		merged := MergeFingerprintPolicy(p, override)
+		valid := mode == FingerprintDecisionExact || mode == FingerprintDecisionRejectLuna
+		if *merged.DecisionMode != mode || (merged.Validate() == nil) != valid {
+			t.Fatal(mode)
+		}
+	}
+}
