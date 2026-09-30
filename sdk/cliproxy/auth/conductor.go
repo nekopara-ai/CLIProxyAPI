@@ -146,6 +146,13 @@ type resultPolicyHolder struct {
 // gates whose state lives outside the auth manager, such as fingerprint cooldowns.
 type ExecutionModelGuard func(auth *Auth, model string) bool
 
+// CooldownResetHook synchronizes independent cooldown owners after manual resets.
+type CooldownResetHook func(auth *Auth) error
+
+type cooldownResetHookHolder struct {
+	hook CooldownResetHook
+}
+
 type executionModelGuardHolder struct {
 	guard ExecutionModelGuard
 }
@@ -160,6 +167,9 @@ type Manager struct {
 	hook                      Hook
 	resultPolicy              atomic.Pointer[resultPolicyHolder]
 	executionModelGuard       atomic.Pointer[executionModelGuardHolder]
+	cooldownResetHook         atomic.Pointer[cooldownResetHookHolder]
+	credentialOperations      map[string]map[*credentialOperation]context.CancelFunc
+	credentialStopGeneration  map[string]credentialVersion
 	mu                        sync.RWMutex
 	selectorMu                sync.Mutex
 	configCooldownMu          sync.Mutex
@@ -291,4 +301,24 @@ func (m *Manager) executionModelAllowed(auth *Auth, model string) bool {
 	}
 	holder := m.executionModelGuard.Load()
 	return holder == nil || holder.guard == nil || holder.guard(auth, model)
+}
+
+// SetCooldownResetHook installs a synchronous manual cooldown reset listener.
+// The listener runs outside the manager lock and may query current auth state.
+func (m *Manager) SetCooldownResetHook(hook CooldownResetHook) {
+	if m == nil {
+		return
+	}
+	if hook == nil {
+		m.cooldownResetHook.Store(nil)
+		return
+	}
+	m.cooldownResetHook.Store(&cooldownResetHookHolder{hook: hook})
+}
+
+func (m *Manager) notifyCooldownReset(auth *Auth) error {
+	if holder := m.cooldownResetHook.Load(); holder != nil && holder.hook != nil {
+		return holder.hook(auth.Clone())
+	}
+	return nil
 }

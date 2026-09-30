@@ -115,8 +115,17 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 	auth.Generation = 1
 	authClone := auth.Clone()
 	m.auths[auth.ID] = authClone
+	if auth.Disabled || auth.Status == StatusDisabled {
+		m.stopCredentialOperationsLocked(auth)
+		auth.NextRefreshAfter = time.Time{}
+		authClone.NextRefreshAfter = time.Time{}
+	}
 	schedulerSnapshot := authClone.Clone()
 	m.mu.Unlock()
+	var errReset error
+	if auth.Disabled || auth.Status == StatusDisabled {
+		errReset = m.notifyCooldownReset(auth)
+	}
 	if !shouldDeferAPIKeyModelAliasRebuild(ctx) {
 		m.rebuildAPIKeyModelAliasFromRuntimeConfig()
 	}
@@ -124,11 +133,18 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 		m.scheduler.upsertAuth(schedulerSnapshot)
 	}
 	m.structuralEpoch.Add(1)
-	m.queueRefreshReschedule(auth.ID)
+	if auth.Disabled || auth.Status == StatusDisabled {
+		m.queueRefreshUnschedule(auth.ID)
+	} else {
+		m.queueRefreshReschedule(auth.ID)
+	}
 	_ = m.persist(ctx, auth)
 	m.hook.OnAuthRegistered(ctx, auth.Clone())
 	if cooldownStateChanged {
 		m.persistCooldownStates(context.Background())
+	}
+	if errReset != nil {
+		return auth.Clone(), fmt.Errorf("stop independent credential scheduling: %w", errReset)
 	}
 	return auth.Clone(), nil
 }
@@ -171,6 +187,11 @@ func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode upd
 	if !ok || existing == nil {
 		m.mu.Unlock()
 		return nil, nil
+	}
+	if (mode == updateModeRefresh || mode == updateModePrepare) && base != nil &&
+		(ctx != nil && ctx.Err() != nil || m.credentialStoppedLocked(base, existing)) {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("update auth %s: credential operation stopped", auth.ID)
 	}
 	if m.authEpochs == nil {
 		m.authEpochs = make(map[string]uint64)
@@ -216,6 +237,9 @@ func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode upd
 	} else {
 		auth.Generation++
 	}
+	disabledChanged := (existing.Disabled || existing.Status == StatusDisabled) != (auth.Disabled || auth.Status == StatusDisabled)
+	resetCooldown := disabledChanged || mode == updateModeReplace && auth.manualCooldownReset
+	auth.manualCooldownReset = false
 	cooldownStateChanged := false
 	if !existing.Disabled && existing.Status != StatusDisabled && !auth.Disabled && auth.Status != StatusDisabled {
 		if mode != updateModeRefresh && len(auth.ModelStates) == 0 && len(existing.ModelStates) > 0 {
@@ -250,7 +274,7 @@ func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode upd
 	if mode == updateModeReplace && !existing.Disabled && existing.Status != StatusDisabled && !auth.Disabled && auth.Status != StatusDisabled {
 		cooldownStateChanged = preserveForcedCooldownsOnReplacement(auth, existing, now) || cooldownStateChanged
 	}
-	if m.cooldownDisabledForAuth(auth) || auth.Disabled || auth.Status == StatusDisabled {
+	if resetCooldown || m.cooldownDisabledForAuth(auth) || auth.Disabled || auth.Status == StatusDisabled {
 		cooldownStateChanged = clearCooldownStateForAuth(auth, now) || cooldownStateChanged
 	}
 	if mode == updateModeRefresh && m.cooldownStore != nil {
@@ -272,8 +296,17 @@ func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode upd
 	}
 	authClone := auth.Clone()
 	m.auths[auth.ID] = authClone
+	if auth.Disabled || auth.Status == StatusDisabled {
+		m.stopCredentialOperationsLocked(auth)
+		auth.NextRefreshAfter = time.Time{}
+		authClone.NextRefreshAfter = time.Time{}
+	}
 	schedulerSnapshot := authClone.Clone()
 	m.mu.Unlock()
+	var errReset error
+	if resetCooldown {
+		errReset = m.notifyCooldownReset(auth)
+	}
 	if !shouldDeferAPIKeyModelAliasRebuild(ctx) {
 		m.rebuildAPIKeyModelAliasFromRuntimeConfig()
 	}
@@ -281,13 +314,20 @@ func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode upd
 		m.scheduler.upsertAuth(schedulerSnapshot)
 	}
 	m.structuralEpoch.Add(1)
-	m.queueRefreshReschedule(auth.ID)
+	if auth.Disabled || auth.Status == StatusDisabled {
+		m.queueRefreshUnschedule(auth.ID)
+	} else {
+		m.queueRefreshReschedule(auth.ID)
+	}
 	if !persistMetaMint {
 		_ = m.persist(ctx, auth)
 	}
 	m.hook.OnAuthUpdated(ctx, auth.Clone())
 	if cooldownStateChanged {
 		m.persistCooldownStates(context.Background())
+	}
+	if errReset != nil {
+		return auth.Clone(), fmt.Errorf("reset independent cooldowns: %w", errReset)
 	}
 	return auth.Clone(), nil
 }
@@ -367,6 +407,7 @@ func (m *Manager) Remove(ctx context.Context, id string) {
 		return
 	}
 	provider := strings.TrimSpace(existing.Provider)
+	m.stopCredentialOperationsLocked(existing)
 	delete(m.auths, id)
 	if m.modelPoolOffsets != nil {
 		delete(m.modelPoolOffsets, id)

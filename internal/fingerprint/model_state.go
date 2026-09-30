@@ -75,6 +75,10 @@ func retryDelay(p config.FingerprintPolicy, failures int) time.Duration {
 
 func syncModels(s *State, p config.FingerprintPolicy, stamp string, now time.Time) []string {
 	migrateModelStates(s)
+	if s.Suspended {
+		clearSchedule(s)
+		return nil
+	}
 	changed := s.PolicySignature != stamp
 	due := []string{}
 	for _, model := range p.Models {
@@ -118,6 +122,11 @@ func syncModels(s *State, p config.FingerprintPolicy, stamp string, now time.Tim
 
 // The credential summary is informational only; Allowed checks ModelStates.
 func refreshSummary(s *State, p config.FingerprintPolicy) {
+	defer func() {
+		if s.Suspended {
+			clearSchedule(s)
+		}
+	}()
 	s.Blocked, s.Reason, s.TriggerModel = false, "", ""
 	s.LastMismatchAt, s.CooldownUntil, s.NextRunAt = time.Time{}, time.Time{}, time.Time{}
 	s.Results = nil

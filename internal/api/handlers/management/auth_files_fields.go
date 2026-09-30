@@ -241,6 +241,7 @@ func applyAuthDisabledState(auth *coreauth.Auth, disabled bool) {
 	if auth == nil {
 		return
 	}
+	auth.RequestCooldownReset()
 	auth.Disabled = disabled
 	if disabled {
 		auth.Status = coreauth.StatusDisabled

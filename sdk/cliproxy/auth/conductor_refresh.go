@@ -115,7 +115,7 @@ func (m *Manager) queueRefreshUnschedule(authID string) {
 }
 
 func (m *Manager) shouldRefresh(a *Auth, now time.Time) bool {
-	if a == nil {
+	if a == nil || a.Disabled || a.Status == StatusDisabled {
 		return false
 	}
 	if hasUnauthorizedAuthFailure(a) || hasDisabledInvalidGrantFailure(a) {
@@ -325,7 +325,7 @@ func lookupMetadataTime(meta map[string]any, keys ...string) (time.Time, bool) {
 func (m *Manager) markRefreshPending(id string, now time.Time) bool {
 	m.mu.Lock()
 	auth, ok := m.auths[id]
-	if !ok || auth == nil || hasDisabledInvalidGrantFailure(auth) {
+	if !ok || auth == nil || auth.Disabled || auth.Status == StatusDisabled || hasDisabledInvalidGrantFailure(auth) {
 		m.mu.Unlock()
 		return false
 	}
@@ -534,6 +534,15 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 		return nil, errors.New("auth id is empty")
 	}
 
+	selected, ok := m.GetByID(id)
+	if !ok {
+		return nil, errors.New("auth not found")
+	}
+	ctx, finish, errOperation := m.BeginCredentialOperation(ctx, selected)
+	if errOperation != nil {
+		return nil, errOperation
+	}
+	defer finish()
 	lockValue, _ := m.refreshLocks.LoadOrStore(id, &authRefreshLock{})
 	lock, _ := lockValue.(*authRefreshLock)
 	if lock == nil {
@@ -542,6 +551,9 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 	}
 	lock.mu.Lock()
 	defer lock.mu.Unlock()
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 
 	m.mu.RLock()
 	auth := m.auths[id]
@@ -550,6 +562,7 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 		// Use the same effective provider key as request execution so OpenAI-compat
 		// auths registered under namespaced keys still resolve for refresh.
 		exec, _ = m.executorLocked(executorKeyFromAuth(auth))
+		auth = auth.Clone()
 	}
 	m.mu.RUnlock()
 	if auth == nil || exec == nil {
@@ -558,7 +571,6 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 	if hasDisabledInvalidGrantFailure(auth) {
 		return nil, errors.New("auth is disabled with invalid grant")
 	}
-
 	// Another request may already have refreshed this credential.
 	if failedAccessToken != "" {
 		if currentToken := authAccessToken(auth); currentToken != "" && currentToken != failedAccessToken {
@@ -568,6 +580,9 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 
 	base := auth.Clone()
 	updated, err := exec.Refresh(ctx, base.Clone())
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	if err != nil && errors.Is(err, context.Canceled) {
 		log.Debugf("refresh canceled for %s, %s", auth.Provider, auth.ID)
 		return nil, err
@@ -582,6 +597,10 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 		isPermanentlyDisabled := false
 		m.mu.Lock()
 		if current := m.auths[id]; current != nil {
+			if ctx.Err() != nil || m.credentialStoppedLocked(base, current) {
+				m.mu.Unlock()
+				return nil, context.Canceled
+			}
 			if base != nil && current.RegistrationEpoch != base.RegistrationEpoch {
 				m.mu.Unlock()
 				return nil, err
@@ -741,16 +760,16 @@ func (m *Manager) ForceRefreshAll(ctx context.Context) []ForceRefreshResult {
 		ctx = context.Background()
 	}
 	m.mu.RLock()
-	ids := make([]string, 0, len(m.auths))
-	for id, auth := range m.auths {
-		if auth != nil && !auth.Disabled && (authHasRefreshCredential(auth) || auth.Runtime != nil) {
-			ids = append(ids, id)
+	selected := make([]*Auth, 0, len(m.auths))
+	for _, auth := range m.auths {
+		if auth != nil && !auth.Disabled && auth.Status != StatusDisabled && (authHasRefreshCredential(auth) || auth.Runtime != nil) {
+			selected = append(selected, auth.Clone())
 		}
 	}
 	m.mu.RUnlock()
 
-	results := make([]ForceRefreshResult, len(ids))
-	if len(ids) == 0 {
+	results := make([]ForceRefreshResult, len(selected))
+	if len(selected) == 0 {
 		return results
 	}
 
@@ -758,18 +777,18 @@ func (m *Manager) ForceRefreshAll(ctx context.Context) []ForceRefreshResult {
 	if workers <= 0 {
 		workers = 1
 	}
-	if workers > len(ids) {
-		workers = len(ids)
+	if workers > len(selected) {
+		workers = len(selected)
 	}
 
 	type refreshJob struct {
-		index  int
-		authID string
+		index int
+		auth  *Auth
 	}
 
-	jobCh := make(chan refreshJob, len(ids))
-	for i, id := range ids {
-		jobCh <- refreshJob{index: i, authID: id}
+	jobCh := make(chan refreshJob, len(selected))
+	for i, auth := range selected {
+		jobCh <- refreshJob{index: i, auth: auth}
 	}
 	close(jobCh)
 
@@ -781,15 +800,19 @@ func (m *Manager) ForceRefreshAll(ctx context.Context) []ForceRefreshResult {
 			for job := range jobCh {
 				if errCtx := ctx.Err(); errCtx != nil {
 					results[job.index] = ForceRefreshResult{
-						ID:      job.authID,
+						ID:      job.auth.ID,
 						Success: false,
 						Error:   errCtx.Error(),
 					}
 					continue
 				}
 
-				_, err := m.ForceRefreshAuth(ctx, job.authID)
-				res := ForceRefreshResult{ID: job.authID, Success: err == nil}
+				jobCtx, finish, err := m.BeginCredentialOperation(ctx, job.auth)
+				if err == nil {
+					_, err = m.ForceRefreshAuth(jobCtx, job.auth.ID)
+				}
+				finish()
+				res := ForceRefreshResult{ID: job.auth.ID, Success: err == nil}
 				if err != nil {
 					res.Error = err.Error()
 				}

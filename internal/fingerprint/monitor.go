@@ -47,6 +47,10 @@ type Progress struct {
 	ReceivedBytes      int64     `json:"received_bytes"`
 }
 type State struct {
+	// Fence auth-list snapshots captured before an explicit operator reset.
+	resetGeneration uint64
+	resetEpoch      uint64
+	Suspended       bool                      `json:"suspended,omitempty"`
 	ModelStates     map[string]*ModelState    `json:"model_states,omitempty"`
 	PolicySignature string                    `json:"policy_signature,omitempty"`
 	ResultSignature string                    `json:"result_signature,omitempty"`
@@ -94,11 +98,15 @@ type Monitor struct {
 }
 
 type activeRun struct {
-	signature string
-	cancel    context.CancelFunc
+	invalidated bool
+	signature   string
+	cancel      context.CancelFunc
 }
 
 func supported(a *coreauth.Auth) bool { return a != nil && a.Provider == "codex" }
+func disabled(a *coreauth.Auth) bool {
+	return a != nil && (a.Disabled || a.Status == coreauth.StatusDisabled)
+}
 
 func copyPolicy(p config.FingerprintPolicy) *config.FingerprintPolicy {
 	raw, _ := json.Marshal(p)
@@ -274,7 +282,7 @@ func (m *Monitor) saveLocked() error {
 	return err
 }
 func (m *Monitor) Allowed(a *coreauth.Auth, model string) bool {
-	if a == nil || a.Disabled {
+	if a == nil || disabled(a) {
 		return false
 	}
 	if !supported(a) {
@@ -316,7 +324,7 @@ func (m *Monitor) Allowed(a *coreauth.Auth, model string) bool {
 func (m *Monitor) Snapshot(a *coreauth.Auth) Snapshot {
 	cfg := m.cfg()
 	p, err := policyFor(cfg, a)
-	out := Snapshot{Supported: supported(a), Enabled: supported(a) && masterEnabled(cfg) && p.Enabled != nil && *p.Enabled, ManuallyDisabled: a.Disabled, Effective: p}
+	out := Snapshot{Supported: supported(a), Enabled: supported(a) && masterEnabled(cfg) && p.Enabled != nil && *p.Enabled, ManuallyDisabled: disabled(a), Effective: p}
 	if !out.Supported {
 		return out
 	}
@@ -338,6 +346,10 @@ func (m *Monitor) Snapshot(a *coreauth.Auth) Snapshot {
 			}
 			ms.ResultsStale = ms.Result != nil && (ms.ResultSignature == "" || ms.ResultSignature != signature(cfg, a, p))
 			out.ResultsStale = out.ResultsStale || ms.ResultsStale
+		}
+		if disabled(a) {
+			out.Suspended = true
+			clearSchedule(out.State)
 		}
 		if out.Running {
 			out.NextRunAt = time.Time{}
@@ -381,11 +393,24 @@ func (m *Monitor) Stop() {
 func (m *Monitor) tick(ctx context.Context) {
 	cfg := m.cfg()
 	auths := m.auths()
+	// Reconcile disabled credentials even when monitoring is globally off.
+	// This also removes legacy plans loaded before lifecycle hooks were installed.
+	for _, a := range auths {
+		if supported(a) {
+			m.mu.Lock()
+			s := m.states[authKey(a)]
+			needsStop := s != nil && (s.Suspended != disabled(a) || disabled(a) && (s.Running || !s.NextRunAt.IsZero()))
+			m.mu.Unlock()
+			if needsStop {
+				_ = m.ResetCooldown(a)
+			}
+		}
+	}
 	// Reconcile active work even while disabled or every worker is occupied.
 	// This cancels obsolete requests without introducing network timeouts.
 	valid := make(map[string]string)
 	for _, a := range auths {
-		if !supported(a) || a.Disabled || !masterEnabled(cfg) {
+		if !supported(a) || disabled(a) || !masterEnabled(cfg) {
 			continue
 		}
 		if p, err := policyFor(cfg, a); err == nil && p.Enabled != nil && *p.Enabled {
@@ -408,7 +433,7 @@ func (m *Monitor) tick(ctx context.Context) {
 		workers = 1
 	}
 	for _, a := range auths {
-		if !supported(a) || a.Disabled {
+		if !supported(a) || disabled(a) {
 			continue
 		}
 		p, err := policyFor(cfg, a)
@@ -438,6 +463,10 @@ func (m *Monitor) tick(ctx context.Context) {
 			}
 			s = &State{Identity: identity(a), NextRunAt: m.started.Add(time.Duration(delay+jitter) * time.Second)}
 			m.states[key] = s
+		}
+		if s.resetIsNewerThan(a) || s.Suspended {
+			m.mu.Unlock()
+			continue
 		}
 		stamp := signature(cfg, a, p)
 		models := syncModels(s, p, stamp, now)
@@ -469,11 +498,17 @@ func (m *Monitor) stillCurrent(a *coreauth.Auth, stamp string) bool {
 	return m.currentAuth(a, stamp) != nil
 }
 func (m *Monitor) currentAuth(a *coreauth.Auth, stamp string) *coreauth.Auth {
+	m.mu.Lock()
+	invalidated := m.runInvalidatedLocked(authKey(a))
+	m.mu.Unlock()
+	if invalidated {
+		return nil
+	}
 	cfg := m.cfg()
 	for _, latest := range m.auths() {
 		if latest != nil && authKey(latest) == authKey(a) {
 			p, err := policyFor(cfg, latest)
-			if err == nil && !latest.Disabled && signature(cfg, latest, p) == stamp {
+			if err == nil && !disabled(latest) && signature(cfg, latest, p) == stamp {
 				return latest
 			}
 			return nil
@@ -485,7 +520,7 @@ func (m *Monitor) reserve(a *coreauth.Auth, p config.FingerprintPolicy) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	s := m.states[authKey(a)]
-	if s == nil || m.storageError != "" {
+	if s == nil || m.storageError != "" || m.runInvalidatedLocked(authKey(a)) {
 		return false
 	}
 	day := m.now().UTC().Format("2006-01-02")
@@ -517,7 +552,7 @@ func (m *Monitor) run(ctx context.Context, a *coreauth.Auth, p config.Fingerprin
 	ctx = context.WithValue(ctx, activityKey{}, func(bytes int) {
 		m.mu.Lock()
 		defer m.mu.Unlock()
-		if s := m.states[key]; s != nil && s.Progress != nil {
+		if s := m.states[key]; s != nil && s.Progress != nil && !m.runInvalidatedLocked(key) {
 			s.Progress.LastEventAt = m.now()
 			s.Progress.ReceivedBytes += int64(bytes)
 		}
@@ -562,6 +597,10 @@ func (m *Monitor) run(ctx context.Context, a *coreauth.Auth, p config.Fingerprin
 						break
 					}
 					m.mu.Lock()
+					if m.runInvalidatedLocked(key) {
+						m.mu.Unlock()
+						return
+					}
 					progress := m.states[key].Progress
 					progress.Model, progress.Question, progress.Attempt = model, i+1, attempt+1
 					progress.RequestStartedAt = m.now()
@@ -632,7 +671,9 @@ func (m *Monitor) run(ctx context.Context, a *coreauth.Auth, p config.Fingerprin
 					break
 				}
 				m.mu.Lock()
-				m.states[key].Progress.CompletedQuestions++
+				if s := m.states[key]; s != nil && s.Progress != nil && !m.runInvalidatedLocked(key) {
+					s.Progress.CompletedQuestions++
+				}
 				m.mu.Unlock()
 			}
 			r.Classification = bank.Classify(answers)
@@ -667,6 +708,10 @@ func (m *Monitor) run(ctx context.Context, a *coreauth.Auth, p config.Fingerprin
 			return
 		}
 		m.mu.Lock()
+		if m.runInvalidatedLocked(key) {
+			m.mu.Unlock()
+			return
+		}
 		m.states[key].CurrentResults = append([]ModelResult{}, results...)
 		applyModelResult(m.states[key], p, r, stamp, m.now())
 		_ = m.saveLocked()
@@ -683,6 +728,9 @@ func (m *Monitor) finish(a *coreauth.Auth, p config.FingerprintPolicy, results [
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.runInvalidatedLocked(authKey(a)) {
+		return
+	}
 	s := m.states[authKey(a)]
 	now := m.now()
 	if issue != "" {
