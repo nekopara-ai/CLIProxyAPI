@@ -111,8 +111,9 @@ operator-controlled secret file, not a business client's key or command-line val
 - A usable answer contains at least max(80, ceil(expected count × 0.55)) parsed
   numbers. All three questions are required for a verdict, even when legacy
   `minimum-answers` configuration is lower.
-- A high-scoring prediction matching `expected-models[requested]` (or the requested
-  name) passes. An unknown reference-bank model is an error, not a mismatch.
+- The default `reject-luna` decision mode passes a high-scoring non-Luna
+  prediction. `exact` mode instead requires `expected-models[requested]` (or
+  the requested name) to match; an unknown expected label is an error in that mode.
 - A sufficiently confident mismatch immediately excludes only that
   **credential + resolved upstream model**. Healthy sibling models, models omitted
   from monitoring and other credentials are unaffected. Routing aliases are
@@ -149,13 +150,25 @@ results. Cooldown duration changes are applied at the next scheduler tick.
 Raw answers are omitted by default; opt in with `retain-answers`. Secure state
 backups and management access as credential operational data.
 
+## Decision modes
+
+The default `reject-luna` mode keeps the existing three-question prompts, number
+parsing, reference-bank feature extraction, candidate probabilities, and
+confidence threshold unchanged. A complete high-confidence result passes when
+the classifier prediction is any non-Luna label and blocks when the prediction
+contains `luna`. The requested model name does not need to be present in the
+reference bank, so targets such as `gpt-6.1-sol` can be monitored immediately.
+Set `decision-mode: exact` to retain the legacy requested-model equality check.
+
 ## Statistical limitations and attribution
 
 Scores are **reference-bank-relative statistical probabilities**, not proof of
 upstream model identity and not calibrated certainty that an account is degraded.
 False positives and reference drift are possible. Default confidence is 0.95;
-review results before enabling automatic gating broadly. Nine baseline requests
-per cycle (three models × three questions) consume quota; retries cost extra.
+review results before enabling automatic gating broadly. Twelve baseline requests
+per default cycle (four models × three questions) consume quota; retries cost extra.
+An explicit `models` list replaces the defaults. `expected-models` only affects
+`exact` decisions; it does not change classifications in either mode.
 
 The classifier and embedded `internal/fingerprint/data/unified_bank.json` reproduce
 [ModelTrace](https://github.com/xqy2006/ModelTrace)'s nuisance-projected Hellinger,

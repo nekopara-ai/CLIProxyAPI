@@ -17,11 +17,21 @@ type CredentialPolicy struct {
 	Fingerprint FingerprintPolicy `yaml:"fingerprint,omitempty" json:"fingerprint,omitempty"`
 }
 
+const (
+	// FingerprintDecisionExact requires the classifier prediction to equal the
+	// configured expected model. It remains available for legacy policies.
+	FingerprintDecisionExact = "exact"
+	// FingerprintDecisionRejectLuna accepts any confident non-Luna prediction.
+	// This is useful for models that are not yet present in the reference bank.
+	FingerprintDecisionRejectLuna = "reject-luna"
+)
+
 // Pointer options distinguish inheritance from explicit false/zero values.
 type FingerprintPolicy struct {
 	Enabled           *bool             `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 	Models            []string          `yaml:"models,omitempty" json:"models,omitempty"`
 	ExpectedModels    map[string]string `yaml:"expected-models,omitempty" json:"expected-models,omitempty"`
+	DecisionMode      *string           `yaml:"decision-mode,omitempty" json:"decision-mode,omitempty"`
 	IntervalSeconds   *int              `yaml:"interval-seconds,omitempty" json:"interval-seconds,omitempty"`
 	CooldownSeconds   *int              `yaml:"cooldown-seconds,omitempty" json:"cooldown-seconds,omitempty"`
 	RetrySeconds      *int              `yaml:"retry-seconds,omitempty" json:"retry-seconds,omitempty"`
@@ -52,6 +62,9 @@ func MergeFingerprintPolicy(base, override FingerprintPolicy) FingerprintPolicy 
 	}
 	if override.ExpectedModels != nil {
 		base.ExpectedModels = override.ExpectedModels
+	}
+	if override.DecisionMode != nil {
+		base.DecisionMode = override.DecisionMode
 	}
 	if override.IntervalSeconds != nil {
 		base.IntervalSeconds = override.IntervalSeconds
@@ -90,10 +103,17 @@ func DefaultFingerprintPolicy() FingerprintPolicy {
 	yes, no := true, false
 	interval, cooldown, retry, maxRetry, minAnswers, retries, daily, history := 3600, 1800, 300, 3600, 3, 1, 300, 10
 	confidence := 0.95
-	return FingerprintPolicy{Enabled: &yes, Models: []string{"gpt-5.6-sol", "gpt-6-sol", "gpt-6-astra"}, IntervalSeconds: &interval, CooldownSeconds: &cooldown, RetrySeconds: &retry, MaxRetrySeconds: &maxRetry, Confidence: &confidence, MinimumAnswers: &minAnswers, QuestionRetries: &retries, DailyRequestLimit: &daily, HistoryLimit: &history, RetainAnswers: &no}
+	decisionMode := FingerprintDecisionRejectLuna
+	return FingerprintPolicy{Enabled: &yes, Models: []string{"gpt-5.6-sol", "gpt-6-sol", "gpt-6-astra", "gpt-6.1-sol"}, DecisionMode: &decisionMode, IntervalSeconds: &interval, CooldownSeconds: &cooldown, RetrySeconds: &retry, MaxRetrySeconds: &maxRetry, Confidence: &confidence, MinimumAnswers: &minAnswers, QuestionRetries: &retries, DailyRequestLimit: &daily, HistoryLimit: &history, RetainAnswers: &no}
 }
 
 func (p FingerprintPolicy) Validate() error {
+	if p.DecisionMode != nil {
+		mode := strings.ToLower(strings.TrimSpace(*p.DecisionMode))
+		if mode != FingerprintDecisionExact && mode != FingerprintDecisionRejectLuna {
+			return fmt.Errorf("fingerprint.decision-mode must be %q or %q", FingerprintDecisionExact, FingerprintDecisionRejectLuna)
+		}
+	}
 	for _, r := range []struct {
 		name     string
 		v        *int

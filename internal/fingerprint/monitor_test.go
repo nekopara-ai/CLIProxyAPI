@@ -29,7 +29,8 @@ type harness struct {
 func setup(t *testing.T) *harness {
 	t.Helper()
 	h := &harness{now: time.Date(2026, 9, 26, 0, 0, 0, 0, time.UTC), answers: map[string][]Answer{}, index: map[string]int{}}
-	h.cfg = &config.Config{AuthDir: t.TempDir(), Fingerprint: config.FingerprintConfig{FingerprintPolicy: config.FingerprintPolicy{Enabled: ptr(true), Models: []string{"gpt-6-sol", "gpt-6-astra"}, QuestionRetries: ptr(0)}, StartupDelaySeconds: 1}}
+	exact := config.FingerprintDecisionExact
+	h.cfg = &config.Config{AuthDir: t.TempDir(), Fingerprint: config.FingerprintConfig{FingerprintPolicy: config.FingerprintPolicy{Enabled: ptr(true), Models: []string{"gpt-6-sol", "gpt-6-astra"}, DecisionMode: &exact, QuestionRetries: ptr(0)}, StartupDelaySeconds: 1}}
 	h.a = &coreauth.Auth{ID: "test", FileName: "account.json", Provider: "codex", Metadata: map[string]any{"account_id": "synthetic"}}
 	for _, c := range parityCases(t) {
 		h.answers[c.Prediction] = c.Answers
@@ -96,6 +97,32 @@ func TestMonitorMismatchBlocksOnlyItsModelAndRecovers(t *testing.T) {
 	h.cycle()
 	if !h.m.Allowed(h.a, "gpt-6-astra") {
 		t.Fatalf("all passed but still blocked: %+v", h.m.Snapshot(h.a))
+	}
+}
+
+func TestRejectLunaModeAllowsUnknownModelWhenPredictionIsNonLuna(t *testing.T) {
+	h := setup(t)
+	mode := config.FingerprintDecisionRejectLuna
+	h.cfg.Fingerprint.DecisionMode = &mode
+	h.cfg.Fingerprint.Models = []string{"gpt-6.1-sol"}
+	h.answers["gpt-6.1-sol"] = h.answers["gpt-6-sol"]
+	h.cycle()
+	s := h.m.Snapshot(h.a)
+	if s.Results[0].Status != "match" || s.Results[0].Prediction == "" || isLunaPrediction(s.Results[0].Prediction) || !h.m.Allowed(h.a, "gpt-6.1-sol") {
+		t.Fatalf("non-Luna prediction did not pass unknown target: %+v", s.Results[0])
+	}
+}
+
+func TestRejectLunaModeBlocksLunaPrediction(t *testing.T) {
+	h := setup(t)
+	mode := config.FingerprintDecisionRejectLuna
+	h.cfg.Fingerprint.DecisionMode = &mode
+	h.cfg.Fingerprint.Models = []string{"gpt-6.1-sol"}
+	h.answers["gpt-6.1-sol"] = h.answers["gpt-5.6-luna"]
+	h.cycle()
+	s := h.m.Snapshot(h.a)
+	if s.Results[0].Status != "mismatch" || s.Results[0].Error != "luna_model_detected" || !s.Blocked || h.m.Allowed(h.a, "gpt-6.1-sol") {
+		t.Fatalf("Luna prediction did not block: %+v", s)
 	}
 }
 func TestMonitorManualDisableAndStaleResult(t *testing.T) {
