@@ -206,7 +206,11 @@ func TestManualDisableInvalidatesQueuedRefreshAfterReenable(t *testing.T) {
 	m.RegisterExecutor(e)
 	a, _ := m.Register(context.Background(), &Auth{ID: "queued", Provider: "test"})
 	l := newAuthAutoRefreshLoop(m, time.Second, 1)
-	l.jobs <- a
+	job := m.markRefreshPending(l, a.ID, a.RegistrationEpoch, time.Now())
+	if job == nil {
+		t.Fatal("refresh was not queued")
+	}
+	l.jobs <- job
 	off := disableCredential(t, m, a)
 	on := off.Clone()
 	on.Disabled, on.Status = false, StatusActive
