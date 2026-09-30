@@ -2,6 +2,7 @@ package helps
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -43,6 +44,7 @@ type utlsRoundTripper struct {
 // request has released it.
 type utlsConnection struct {
 	client    *http2.ClientConn
+	tlsConn   *tls.UConn
 	addr      string
 	inFlight  int
 	idleSince time.Time
@@ -207,7 +209,7 @@ func runUtlsConnectionStage(ctx context.Context, conn net.Conn, timeout time.Dur
 	return nil
 }
 
-func (t *utlsRoundTripper) createConnection(ctx context.Context, host, addr string) (*http2.ClientConn, error) {
+func (t *utlsRoundTripper) createConnection(ctx context.Context, host, addr string) (*tls.UConn, error) {
 	conn, errDial := t.dialConnection(ctx, addr)
 	if errDial != nil {
 		return nil, errDial
@@ -227,16 +229,7 @@ func (t *utlsRoundTripper) createConnection(ctx context.Context, host, addr stri
 		return nil, closeUtlsConnection(conn, "TLS handshake", errHandshake)
 	}
 
-	tr := &http2.Transport{}
-	h2Conn, errClientConn := tr.NewClientConn(tlsConn)
-	if errClientConn != nil {
-		if errClose := tlsConn.Close(); errClose != nil {
-			return nil, fmt.Errorf("utls: initialize HTTP/2 connection: %w; close TLS connection: %v", errClientConn, errClose)
-		}
-		return nil, fmt.Errorf("utls: initialize HTTP/2 connection: %w", errClientConn)
-	}
-
-	return h2Conn, nil
+	return tlsConn, nil
 }
 
 // canServeRequest reports whether a pooled connection may take another request.
@@ -276,9 +269,16 @@ func (t *utlsRoundTripper) acquireConnection(ctx context.Context, host, addr str
 	}
 	t.mu.Unlock()
 
-	client, err := t.createConnection(ctx, host, addr)
+	tlsConn, err := t.createConnection(ctx, host, addr)
 	if err != nil {
 		return nil, err
+	}
+	if tlsConn.ConnectionState().NegotiatedProtocol != "h2" {
+		return &utlsConnection{tlsConn: tlsConn, addr: addr, unpooled: true, inFlight: 1}, nil
+	}
+	client, err := (&http2.Transport{}).NewClientConn(tlsConn)
+	if err != nil {
+		return nil, closeUtlsConnection(tlsConn, "initialize HTTP/2 connection", err)
 	}
 	created := &utlsConnection{client: client, addr: addr, inFlight: 1}
 
@@ -286,6 +286,9 @@ func (t *utlsRoundTripper) acquireConnection(ctx context.Context, host, addr str
 	defer t.mu.Unlock()
 	if existing := t.connections[addr]; existing == nil || (existing.canServeRequest() == false && existing.inFlight == 0) {
 		existing.close()
+		if t.connections == nil {
+			t.connections = make(map[string]*utlsConnection)
+		}
 		t.connections[addr] = created
 		return created, nil
 	}
@@ -344,6 +347,9 @@ func (t *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 		return nil, err
 	}
 
+	if conn.tlsConn != nil {
+		return roundTripUtlsConnection(req, conn.tlsConn)
+	}
 	resp, err := conn.client.RoundTrip(req)
 	if err != nil {
 		t.releaseConnection(conn)
@@ -359,6 +365,90 @@ func (t *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 	resp.Body = &releaseConnectionBody{
 		ReadCloser: resp.Body,
 		release:    func() { t.releaseConnection(conn) },
+	}
+	return resp, nil
+}
+
+type closeConnectionBody struct {
+	io.ReadCloser
+	closeConnection func() error
+	once            sync.Once
+	err             error
+}
+
+func (b *closeConnectionBody) Close() error {
+	if b == nil {
+		return nil
+	}
+	b.once.Do(func() {
+		var errConnection error
+		if b.closeConnection != nil {
+			errConnection = b.closeConnection()
+		}
+		var errBody error
+		if b.ReadCloser != nil {
+			errBody = b.ReadCloser.Close()
+		}
+		b.err = errors.Join(errBody, errConnection)
+	})
+	return b.err
+}
+
+// roundTripUtlsConnection selects the HTTP protocol before sending the request.
+// Empty ALPN is HTTP/1.1, including when a TLS-inspecting proxy omits ALPN.
+func roundTripUtlsConnection(req *http.Request, tlsConn *tls.UConn) (*http.Response, error) {
+	closeConnection := func() error {
+		// The HTTP/1.1 transport may already have closed its non-pooled
+		// connection after reading the response or canceling the request.
+		if errClose := tlsConn.Close(); errClose != nil && !errors.Is(errClose, net.ErrClosed) {
+			return errClose
+		}
+		return nil
+	}
+	var resp *http.Response
+	var err error
+	switch protocol := tlsConn.ConnectionState().NegotiatedProtocol; protocol {
+	case "h2":
+		h2Conn, errClientConn := (&http2.Transport{}).NewClientConn(tlsConn)
+		if errClientConn != nil {
+			err = fmt.Errorf("utls: initialize HTTP/2 connection: %w", errClientConn)
+			break
+		}
+		closeConnection = h2Conn.Close
+		resp, err = h2Conn.RoundTrip(req)
+	case "", "http/1.1":
+		// Reuse the already-handshaken uTLS connection. A fresh, non-pooling
+		// transport retains net/http's cancellation and request-body handling
+		// without changing the TLS fingerprint or redialing through another path.
+		transport := &http.Transport{
+			DisableKeepAlives: true,
+			DialTLSContext: func(context.Context, string, string) (net.Conn, error) {
+				return tlsConn, nil
+			},
+		}
+		resp, err = transport.RoundTrip(req)
+		transport.CloseIdleConnections()
+	default:
+		err = fmt.Errorf("utls: unsupported negotiated protocol %q", protocol)
+	}
+	if err != nil {
+		if errClose := closeConnection(); errClose != nil {
+			log.Debugf("utls: close connection after round trip failure: %v", errClose)
+		}
+		return nil, err
+	}
+	if resp == nil {
+		if errClose := closeConnection(); errClose != nil {
+			log.Debugf("utls: close connection after empty response: %v", errClose)
+		}
+		return nil, fmt.Errorf("utls: upstream returned an empty response")
+	}
+	if resp.Body == nil {
+		resp.Body = http.NoBody
+	}
+	resp.Body = &closeConnectionBody{
+		ReadCloser:      resp.Body,
+		closeConnection: closeConnection,
 	}
 	return resp, nil
 }
