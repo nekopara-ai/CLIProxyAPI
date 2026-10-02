@@ -798,11 +798,7 @@ requestLoop:
 					return
 				}
 				attemptedUpstreamMode = upstreamModeForAuth(selectedAuth)
-				steeringEnabled := duplexInput != nil
-				if h.Cfg.OAuthOnlyFields["codex.response-steering"] && selectedAuth.AuthKind() == coreauth.AuthKindAPIKey {
-					steeringEnabled = false
-				}
-				codexDuplexStream.Store(steeringEnabled && attemptedUpstreamMode == responsesWebsocketUpstreamModeWS && strings.EqualFold(strings.TrimSpace(selectedAuth.Provider), "codex"))
+				codexDuplexStream.Store(duplexInput != nil && attemptedUpstreamMode == responsesWebsocketUpstreamModeWS && strings.EqualFold(strings.TrimSpace(selectedAuth.Provider), "codex"))
 			})
 			executionAuthID := ""
 			if !routeOverridesModelResolution {
