@@ -121,7 +121,11 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 		auth.NextRefreshAfter = time.Time{}
 		authClone.NextRefreshAfter = time.Time{}
 	}
-	schedulerSnapshot := authClone.Clone()
+	// Snapshot before unlocking: MarkResult mutates the published auth in place.
+	var schedulerSnapshot *Auth
+	if m.scheduler != nil {
+		schedulerSnapshot = authClone.Clone()
+	}
 	m.mu.Unlock()
 	var errReset error
 	if auth.Disabled || auth.Status == StatusDisabled {
@@ -306,7 +310,11 @@ func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode upd
 		auth.NextRefreshAfter = time.Time{}
 		authClone.NextRefreshAfter = time.Time{}
 	}
-	schedulerSnapshot := authClone.Clone()
+	// Snapshot before unlocking: MarkResult mutates the published auth in place.
+	var schedulerSnapshot *Auth
+	if m.scheduler != nil {
+		schedulerSnapshot = authClone.Clone()
+	}
 	m.mu.Unlock()
 	var errReset error
 	if resetCooldown {
