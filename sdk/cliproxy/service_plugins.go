@@ -29,6 +29,7 @@ const (
 )
 
 type modelRegistrationTask struct {
+	authID   string
 	phase    int
 	category string
 	run      func(*openAICompatibilityRegistrationCache)
@@ -52,7 +53,7 @@ var registerPluginExecutors = func(host *pluginhost.Host, manager *coreauth.Mana
 // modelRegistrationTaskHook, if set, runs after auth-update commits and before
 // model registration workers start. Tests use it to prove registration no longer
 // holds authUpdateMu.
-var modelRegistrationTaskHook func()
+var modelRegistrationTaskHook func(modelRegistrationTask)
 
 // RegisterUsagePlugin registers a usage plugin on the global usage manager.
 // This allows external code to monitor API usage and token consumption.
@@ -163,8 +164,9 @@ func (s *Service) refreshPluginModelRegistrations(ctx context.Context) {
 	if s == nil || s.pluginHost == nil || s.coreManager == nil {
 		return
 	}
+	// Native capability probes publish and refresh their scheduler entries
+	// asynchronously; startup and config updates must not wait for network I/O.
 	s.registerModelsForAuthBatch(ctx, s.coreManager.List())
-	s.waitAntigravityProbesContext(ctx)
 }
 
 func (s *Service) registerModelsForAuthBatch(ctx context.Context, auths []*coreauth.Auth) {
@@ -260,7 +262,7 @@ func (s *Service) runModelRegistrationTaskPhase(ctx context.Context, tasks []mod
 						default:
 						}
 						if modelRegistrationTaskHook != nil {
-							modelRegistrationTaskHook()
+							modelRegistrationTaskHook(task)
 						}
 						task.run(compatCache)
 					}(task)

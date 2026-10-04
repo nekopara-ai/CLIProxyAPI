@@ -1754,3 +1754,29 @@ func TestApplyRequestInterceptors_ReadOnlyInterceptorDoesNotReallocatePayload_Is
 		t.Fatal("applyRequestInterceptorsBeforeAuth reallocated opts.OriginalRequest when interceptor did not mutate body")
 	}
 }
+
+func TestNextStreamChunkCancellationWinsOverReadySource(t *testing.T) {
+	for _, source := range []string{"buffered", "closed", "pending", "known-closed"} {
+		t.Run(source, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			chunks := make(chan coreexecutor.StreamChunk, 1)
+			var pending []coreexecutor.StreamChunk
+			closed := false
+			switch source {
+			case "buffered":
+				chunks <- coreexecutor.StreamChunk{Payload: []byte("data")}
+			case "closed":
+				close(chunks)
+			case "pending":
+				pending = []coreexecutor.StreamChunk{{Payload: []byte("data")}}
+			case "known-closed":
+				closed = true
+			}
+			_, ok, canceled := nextStreamChunk(ctx, &pending, &closed, chunks)
+			if ok || !canceled {
+				t.Fatalf("ok=%t canceled=%t", ok, canceled)
+			}
+		})
+	}
+}

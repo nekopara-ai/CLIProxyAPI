@@ -161,7 +161,6 @@ func (e *GeminiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	body = fixGeminiImageAspectRatio(baseModel, body)
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
-	body = helps.ApplyPayloadConfigWithRequest(helps.ConfigForAuth(e.cfg, auth), baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
 	body = helps.SetStringIfDifferent(body, "model", baseModel)
 	body = capGeminiMaxOutputTokens(body, baseModel)
 	body = internalsignature.SanitizeGeminiRequestThoughtSignatures(body, "contents")
@@ -185,6 +184,7 @@ func (e *GeminiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	body, _ = sjson.DeleteBytes(body, "session_id")
 	reporter.SetTranslatedReasoningEffort(body, to.String())
 
+	body = helps.ApplyPayloadConfigWithRequest(helps.ConfigForAuth(e.cfg, auth), baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return resp, err
@@ -287,7 +287,6 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	body = fixGeminiImageAspectRatio(baseModel, body)
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
-	body = helps.ApplyPayloadConfigWithRequest(helps.ConfigForAuth(e.cfg, auth), baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
 	body = helps.SetStringIfDifferent(body, "model", baseModel)
 	body = capGeminiMaxOutputTokens(body, baseModel)
 	body = internalsignature.SanitizeGeminiRequestThoughtSignatures(body, "contents")
@@ -304,6 +303,7 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	body, _ = sjson.DeleteBytes(body, "session_id")
 	reporter.SetTranslatedReasoningEffort(body, to.String())
 
+	body = helps.ApplyPayloadConfigWithRequest(helps.ConfigForAuth(e.cfg, auth), baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -439,12 +439,12 @@ func (e *GeminiExecutor) executeInteractions(ctx context.Context, auth *cliproxy
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
 	fromProtocol := opts.SourceFormat.String()
-	body = helps.ApplyPayloadConfigWithRequest(helps.ConfigForAuth(e.cfg, auth), targetName, "interactions", fromProtocol, "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
 	body = sanitizeGeminiInteractionsUnsupportedInputIDs(body)
-	reporter.SetTranslatedRequestMetadata(body, "interactions")
+	continuation, body := helps.PrepareAntigravityInteractions(auth, req, opts, targetName, body)
 
 	baseURL := resolveGeminiBaseURL(auth)
 	url := fmt.Sprintf("%s/%s/interactions", baseURL, glAPIVersion)
+	body = helps.ApplyPayloadConfigWithRequest(helps.ConfigForAuth(e.cfg, auth), targetName, "interactions", fromProtocol, "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
 	httpReq, errRequest := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if errRequest != nil {
 		return resp, errRequest
@@ -493,6 +493,7 @@ func (e *GeminiExecutor) executeInteractions(ctx context.Context, auth *cliproxy
 		err = statusErr{code: httpResp.StatusCode, msg: string(data)}
 		return resp, err
 	}
+	continuation.Observe(data)
 	reporter.ObserveResponseModel(data)
 	targetFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 	var param any
@@ -525,12 +526,13 @@ func (e *GeminiExecutor) executeInteractionsStream(ctx context.Context, auth *cl
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
 	fromProtocol := opts.SourceFormat.String()
-	body = helps.ApplyPayloadConfigWithRequest(helps.ConfigForAuth(e.cfg, auth), targetName, "interactions", fromProtocol, "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
 	body = sanitizeGeminiInteractionsUnsupportedInputIDs(body)
+	continuation, body := helps.PrepareAntigravityInteractions(auth, req, opts, targetName, body)
 	body = helps.SetBoolIfDifferent(body, "stream", true)
 	reporter.SetTranslatedRequestMetadata(body, "interactions")
 	baseURL := resolveGeminiBaseURL(auth)
 	url := fmt.Sprintf("%s/%s/interactions", baseURL, glAPIVersion)
+	body = helps.ApplyPayloadConfigWithRequest(helps.ConfigForAuth(e.cfg, auth), targetName, "interactions", fromProtocol, "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
 	httpReq, errRequest := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if errRequest != nil {
 		return nil, errRequest
@@ -609,6 +611,7 @@ func (e *GeminiExecutor) executeInteractionsStream(ctx context.Context, auth *cl
 				payload = trimmed
 			}
 			if len(payload) > 0 {
+				continuation.Observe(payload)
 				reporter.ObserveResponseModel(payload)
 				if detail, ok := helps.ParseInteractionsStreamUsage(payload); ok {
 					streamUsage.Observe(detail, true)
@@ -684,6 +687,10 @@ func (e *GeminiExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 	to := sdktranslator.FromString("gemini")
 	translatedReq := helps.TranslateRequestWithAPIKeyModelCompatibility(ctx, opts.Headers, e.cfg, from, to, baseModel, req.Payload, false, helps.APIKeyModelIsCompat(req))
+	originalTranslatedForPayload := append([]byte(nil), translatedReq...)
+	if len(opts.OriginalRequest) > 0 {
+		originalTranslatedForPayload = helps.TranslateRequestWithAPIKeyModelCompatibility(ctx, opts.Headers, e.cfg, from, to, baseModel, opts.OriginalRequest, false, helps.APIKeyModelIsCompat(req))
+	}
 
 	translatedReq, err := helps.ApplyRequestThinking(translatedReq, req, opts, from.String(), to.String(), e.Identifier())
 	if err != nil {
@@ -702,6 +709,7 @@ func (e *GeminiExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 	baseURL := resolveGeminiBaseURL(auth)
 	url := fmt.Sprintf("%s/%s/models/%s:%s", baseURL, glAPIVersion, baseModel, "countTokens")
 
+	translatedReq = helps.NewPayloadFinalizer(helps.ConfigForAuth(e.cfg, auth), e.Identifier(), baseModel, to.String(), "", originalTranslatedForPayload, req, opts)(translatedReq)
 	requestBody := bytes.NewReader(translatedReq)
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, requestBody)
