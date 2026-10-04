@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -133,7 +134,11 @@ func TestXAIExecutorAppliesTimezoneOverride(t *testing.T) {
 	}))
 	defer server.Close()
 
-	payload := []byte(`{"model":"grok-4.6","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"` + timezoneExecutorEnvText + `"}]}],"stream":true}`)
+	textJSON, errMarshal := json.Marshal(timezoneExecutorEnvText)
+	if errMarshal != nil {
+		t.Fatal(errMarshal)
+	}
+	payload := []byte(`{"model":"grok-4.6","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":` + string(textJSON) + `}]}],"stream":true}`)
 	exec := NewXAIExecutor(&config.Config{TimezoneOverride: "America/New_York"})
 	auth := &cliproxyauth.Auth{
 		ID:         "xai-auth",
