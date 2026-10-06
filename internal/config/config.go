@@ -6,6 +6,9 @@ package config
 
 // Config represents the application's configuration, loaded from a YAML file.
 type Config struct {
+	// Models selects optional catalog sources independently for each catalog.
+	Models ModelCatalogs `yaml:"models" json:"models"`
+
 	SDKConfig          `yaml:",inline"`
 	CredentialPolicies map[string]CredentialPolicy `yaml:"credential-policies,omitempty" json:"credential-policies,omitempty"`
 	Fingerprint        FingerprintConfig           `yaml:"fingerprint,omitempty" json:"fingerprint,omitempty"`
