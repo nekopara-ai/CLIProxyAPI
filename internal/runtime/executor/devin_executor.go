@@ -396,13 +396,28 @@ func (e *DevinExecutor) prepareDevinHTTPRequest(ctx context.Context, auth *clipr
 	payload := req.Payload
 	isInteractionsSource := opts.SourceFormat == "" || opts.SourceFormat == sdktranslator.FormatInteractions
 	if !isInteractionsSource {
-		payload = sdktranslator.TranslateRequest(opts.SourceFormat, sdktranslator.FormatInteractions, req.Model, payload, opts.Stream)
+		translated := sdktranslator.TranslateRequestEnvelope(ctx, opts.SourceFormat, sdktranslator.FormatInteractions, sdktranslator.RequestEnvelope{
+			Format: opts.SourceFormat,
+			Model:  req.Model,
+			Stream: opts.Stream,
+			Body:   payload,
+		})
+		if translated.Err != nil {
+			return nil, "", nil, translated.Err
+		}
+		payload = translated.Body
 	}
 	// Devin serializes the interactions payload into a protobuf request instead of
 	// forwarding JSON, so the shared payload funnel (and its timezone rewrite) does
 	// not run for this provider. Apply the rewrite to the intermediate payload here.
 	payload = helps.ApplyTimezoneOverride(helps.ConfigForAuth(e.cfg, auth), payload)
 	systemPrompt, prompts, tools, temp, maxTokens, sessionID, cascadeID, thinkingLevel, budgetTokens := parseInteractionsPayload(payload, opts.OriginalRequest)
+	// Devin cannot fetch a remote uri or take audio, video or documents. A user turn left
+	// with nothing else to send is refused here, before any upstream call.
+	prompts, errTurns := helps.CheckDevinUserTurns(prompts)
+	if errTurns != nil {
+		return nil, "", nil, errTurns
+	}
 	sessionID, cascadeID = resolveDevinSessionAndCascadeIDs(ctx, sessionID, cascadeID, opts)
 
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
@@ -414,6 +429,7 @@ func (e *DevinExecutor) prepareDevinHTTPRequest(ctx context.Context, auth *clipr
 
 	chatModelUID := helps.ResolveDevinChatModelUID(req.Model, thinkingLevel, budgetTokens)
 
+	helps.RestoreDevinToolCallIDs(prompts)
 	matcher := e.getSensitiveWordMatcher()
 
 	protoBytes := helps.BuildDevinGetChatMessageRequest(
@@ -675,6 +691,7 @@ func (e *DevinExecutor) streamDevinFrames(
 	}
 
 	emitToolCall := func(tc helps.DevinToolCallDelta) bool {
+		tc.ID = helps.EncodeDevinToolCallID(tc.ID)
 		if thoughtStarted {
 			stopEvent, _ := sjson.SetBytes([]byte(`{"event_type":"step.stop","index":0}`), "index", stepIndex)
 			if !emitInteractionsEvent(stopEvent) {
@@ -1434,10 +1451,11 @@ func consumeDevinFramesToInteractions(body io.Reader, model, chatModelUID string
 	}
 
 	for _, tc := range toolCalls {
+		id := helps.EncodeDevinToolCallID(tc.ID)
 		fnStep := []byte(`{"type":"function_call","name":"","id":"","call_id":"","arguments":{}}`)
 		fnStep, _ = sjson.SetBytes(fnStep, "name", tc.Name)
-		fnStep, _ = sjson.SetBytes(fnStep, "id", tc.ID)
-		fnStep, _ = sjson.SetBytes(fnStep, "call_id", tc.ID)
+		fnStep, _ = sjson.SetBytes(fnStep, "id", id)
+		fnStep, _ = sjson.SetBytes(fnStep, "call_id", id)
 		if tc.Arguments != "" {
 			if json.Valid([]byte(tc.Arguments)) {
 				fnStep, _ = sjson.SetRawBytes(fnStep, "arguments", []byte(tc.Arguments))
@@ -1595,12 +1613,13 @@ func parseInteractionsPayload(payload, originalRequest []byte) (
 			stepType := strings.ToLower(strings.TrimSpace(step.Get("type").String()))
 			switch stepType {
 			case "user_input":
-				text, images := extractInteractionsStepContent(step)
+				text, images, droppedPart := extractInteractionsStepContent(step)
 				prompts = append(prompts, helps.DevinPrompt{
-					MessageID: uuid.New().String(),
-					Source:    1,
-					Content:   text,
-					Images:    images,
+					MessageID:   uuid.New().String(),
+					Source:      1,
+					Content:     text,
+					Images:      images,
+					DroppedPart: droppedPart,
 				})
 
 			case "model_output":
@@ -1707,12 +1726,13 @@ func parseInteractionsPayload(payload, originalRequest []byte) (
 					systemPrompt = m.Get("content").String()
 				}
 			case "user":
-				text, images := extractInteractionsStepContent(m)
+				text, images, droppedPart := extractInteractionsStepContent(m)
 				prompts = append(prompts, helps.DevinPrompt{
-					MessageID: uuid.New().String(),
-					Source:    1,
-					Content:   text,
-					Images:    images,
+					MessageID:   uuid.New().String(),
+					Source:      1,
+					Content:     text,
+					Images:      images,
+					DroppedPart: droppedPart,
 				})
 			case "assistant":
 				text := extractInteractionsStepText(m)
@@ -1883,7 +1903,8 @@ func extractDevinImage(part gjson.Result) (helps.DevinImage, bool) {
 	}
 
 	if base64Data == "" {
-		url := firstNonEmpty(part.Get("image_url.url").String(), part.Get("image_url").String(), part.Get("url").String())
+		// uri and file_uri are Interactions spellings of url; only a data URL is usable.
+		url := firstNonEmpty(part.Get("image_url.url").String(), part.Get("image_url").String(), part.Get("url").String(), part.Get("uri").String(), part.Get("file_uri").String(), part.Get("fileUri").String())
 		if m, d, ok := parseDataURL(url); ok {
 			base64Data = d
 			if mimeType == "" {
@@ -2112,10 +2133,27 @@ func extractFunctionResultContent(step gjson.Result) (string, []helps.DevinImage
 	return resText, images
 }
 
-func extractInteractionsStepContent(step gjson.Result) (string, []helps.DevinImage) {
+// devinUnsendableMediaType names the type of a media part that Devin cannot send, or
+// returns "" for text and for parts that are not media. Devin only takes inline images,
+// so a remote uri or any audio, video or document part is unsendable.
+func devinUnsendableMediaType(part gjson.Result) string {
+	if part.Get("text").String() != "" {
+		return ""
+	}
+	switch partType := strings.ToLower(strings.TrimSpace(part.Get("type").String())); partType {
+	case "image", "input_image", "image_url", "audio", "input_audio", "video", "document", "file", "input_file":
+		return partType
+	}
+	return ""
+}
+
+// extractInteractionsStepContent returns the text and inline images of a user step. The
+// third result is the type of the first media part Devin could not send, or "".
+func extractInteractionsStepContent(step gjson.Result) (string, []helps.DevinImage, string) {
 	content := step.Get("content")
 	var textParts []string
 	var images []helps.DevinImage
+	droppedPart := ""
 
 	extractFromPart := func(p gjson.Result) {
 		if img, ok := extractDevinImage(p); ok {
@@ -2124,6 +2162,9 @@ func extractInteractionsStepContent(step gjson.Result) (string, []helps.DevinIma
 		}
 		if t := p.Get("text").String(); t != "" {
 			textParts = append(textParts, t)
+		}
+		if droppedPart == "" {
+			droppedPart = devinUnsendableMediaType(p)
 		}
 	}
 
@@ -2153,7 +2194,7 @@ func extractInteractionsStepContent(step gjson.Result) (string, []helps.DevinIma
 		}
 	}
 
-	return text, images
+	return text, images, droppedPart
 }
 
 func extractInteractionsStepText(step gjson.Result) string {

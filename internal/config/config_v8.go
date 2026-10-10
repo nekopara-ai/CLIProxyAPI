@@ -75,6 +75,7 @@ func buildV8Paths() []configPath {
 		{"timezone-override", "requests.timezone-override"}, {"timezone-override-country", "requests.timezone-override-country"},
 		{"timezone-override-region", "requests.timezone-override-region"}, {"timezone-override-city", "requests.timezone-override-city"},
 		{"host", "server.host"}, {"port", "server.port"}, {"trusted-proxies", "server.trusted-proxies"},
+		{"github-token", "server.github-token"},
 		{"tls", "server.tls"}, {"commercial-mode", "server.commercial-mode"}, {"discovery", "server.discovery"},
 		{"remote-management", "management"}, {"api-keys", "access.api-keys"},
 		{"credential-concurrency", "credentials.concurrency"}, {"credential-in-flight", "credentials.in-flight"},

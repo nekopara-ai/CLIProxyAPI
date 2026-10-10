@@ -310,6 +310,11 @@ func (t *utlsRoundTripper) releaseConnection(conn *utlsConnection) {
 		conn.inFlight--
 	}
 	conn.idleSince = time.Now()
+	// A draining HTTP/2 connection may still carry other active streams.
+	// Close it only after the final response releases its reservation.
+	if conn.inFlight > 0 {
+		return
+	}
 	if conn.unpooled || t.connections[conn.addr] != conn {
 		conn.close()
 		return

@@ -1279,6 +1279,7 @@ func configureXAIWebsocketConn(sess *codexWebsocketSession, conn *websocket.Conn
 	if sess == nil || conn == nil {
 		return
 	}
+	sess.resetTerminalError(conn)
 	sess.resetUpstreamDisconnectError(conn)
 	conn.SetPingHandler(func(appData string) error {
 		sessionID := ""

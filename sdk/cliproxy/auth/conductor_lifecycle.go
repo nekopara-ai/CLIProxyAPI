@@ -119,6 +119,11 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 	}
 	m.authEpochs[auth.ID]++
 	auth.RegistrationEpoch = m.authEpochs[auth.ID]
+	if existing, exists := m.auths[auth.ID]; exists && existing != nil {
+		auth.CredentialVersion = max(auth.CredentialVersion, existing.CredentialVersion) + 1
+	} else if auth.CredentialVersion == 0 {
+		auth.CredentialVersion = 1
+	}
 	auth.Generation = 1
 	// Serialize this credential, but release the manager lock during store I/O.
 	// Persist failures stay non-fatal, but must not be silent: a restart would
@@ -230,6 +235,12 @@ func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode upd
 		m.mu.Unlock()
 		return nil, fmt.Errorf("update auth %s: stale registration epoch %d != %d", auth.ID, base.RegistrationEpoch, existing.RegistrationEpoch)
 	}
+	// Do not let an in-flight refresh overwrite credentials committed after its snapshot.
+	if mode == updateModeRefresh && base != nil && (existing.CredentialVersion != base.CredentialVersion || CredentialsChanged(base, existing)) {
+		current := existing.Clone()
+		m.mu.Unlock()
+		return current, nil
+	}
 	if mode == updateModeRefresh {
 		merged := MergeRefreshedAuth(base, existing, auth)
 		if merged != nil {
@@ -267,19 +278,35 @@ func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode upd
 	disabledChanged := (existing.Disabled || existing.Status == StatusDisabled) != (auth.Disabled || auth.Status == StatusDisabled)
 	resetCooldown := disabledChanged || mode == updateModeReplace && auth.manualCooldownReset
 	auth.manualCooldownReset = false
+	existingVersion := existing.CredentialVersion
+	if existingVersion == 0 {
+		existingVersion = 1
+	}
+	credChanged := CredentialsChanged(existing, auth)
+	if credChanged {
+		auth.CredentialVersion = max(auth.CredentialVersion, existingVersion) + 1
+	} else {
+		auth.CredentialVersion = existingVersion
+	}
 	cooldownStateChanged := false
 	if !existing.Disabled && existing.Status != StatusDisabled && !auth.Disabled && auth.Status != StatusDisabled {
 		if mode != updateModeRefresh && len(auth.ModelStates) == 0 && len(existing.ModelStates) > 0 {
 			auth.ModelStates = existing.ModelStates
 		}
+		if credChanged || mode == updateModeRefresh {
+			auth.RejectedAccessToken = ""
+		} else {
+			auth.RejectedAccessToken = existing.RejectedAccessToken
+		}
 		// Refresh already reconciles cooldowns through MergeRefreshedAuth.
 		// Apply credential replacement recovery only to other update paths.
-		if mode != updateModeRefresh && CredentialsChanged(existing, auth) {
+		if mode != updateModeRefresh && credChanged {
 			if hasUnauthorizedAuthFailure(existing) || (auth.LastError != nil && isUnauthorizedError(auth.LastError)) {
 				auth.Unavailable = false
 				auth.LastError = nil
 				auth.StatusMessage = ""
 				auth.Status = StatusActive
+				cooldownStateChanged = true
 			}
 			resumed := clearUnauthorizedModelStates(auth, time.Now())
 			if len(resumed) > 0 {
@@ -546,6 +573,15 @@ func (m *Manager) Load(ctx context.Context) error {
 		m.authEpochs[auth.ID] = max(m.authEpochs[auth.ID], auth.RegistrationEpoch) + 1
 		auth.RegistrationEpoch = m.authEpochs[auth.ID]
 		auth.Generation = 1
+		if prev, exists := previousAuths[auth.ID]; exists && prev != nil {
+			auth.CredentialVersion = max(auth.CredentialVersion, prev.CredentialVersion)
+			if CredentialsChanged(prev, auth) {
+				auth.CredentialVersion++
+			}
+		}
+		if auth.CredentialVersion == 0 {
+			auth.CredentialVersion = 1
+		}
 		m.auths[auth.ID] = auth.Clone()
 	}
 
