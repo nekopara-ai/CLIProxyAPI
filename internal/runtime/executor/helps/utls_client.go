@@ -53,7 +53,7 @@ type utlsConnection struct {
 
 const (
 	utlsDialTimeout         = 30 * time.Second
-	utlsTLSHandshakeTimeout = 10 * time.Second
+	utlsTLSHandshakeTimeout = 30 * time.Second
 	// utlsIdleConnectionTTL bounds how long an unused connection is kept, so a
 	// connection silently dropped by an upstream is not reused forever.
 	utlsIdleConnectionTTL = 90 * time.Second
