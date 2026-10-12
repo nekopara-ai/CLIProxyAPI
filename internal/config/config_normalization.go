@@ -44,6 +44,7 @@ func (cfg *Config) SanitizeCodexHeaderDefaults() {
 	cfg.Codex.ClientIdentity.Version = strings.TrimSpace(cfg.Codex.ClientIdentity.Version)
 	cfg.Codex.ClientIdentity.Originator = strings.TrimSpace(cfg.Codex.ClientIdentity.Originator)
 	cfg.Codex.ClientIdentity.UserAgent = strings.TrimSpace(cfg.Codex.ClientIdentity.UserAgent)
+	cfg.Codex.SignInWithChatGPTIdentifier = strings.TrimSpace(cfg.Codex.SignInWithChatGPTIdentifier)
 }
 
 // SanitizeClaudeHeaderDefaults trims surrounding whitespace from the
