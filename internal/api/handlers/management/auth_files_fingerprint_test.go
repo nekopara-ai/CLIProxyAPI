@@ -44,7 +44,7 @@ func TestAuthFileFingerprintModelBlockKeepsCredentialAvailable(t *testing.T) {
 	fingerprint.SetCurrent(monitor)
 	t.Cleanup(func() { fingerprint.SetCurrent(previous) })
 	h := NewHandlerWithoutConfigFilePath(cfg, nil)
-	entry := h.buildAuthFileEntry(a)
+	entry := h.buildAuthFileEntry(a, authFileQuotaContext{})
 	if entry == nil || entry["disabled"] != false || entry["unavailable"] != false || entry["status"] != coreauth.StatusActive {
 		t.Fatalf("model block incorrectly disabled whole credential: %+v", entry)
 	}

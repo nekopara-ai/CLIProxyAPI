@@ -856,7 +856,7 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 	}
 	clientBody := finalizePayload(body)
 	var identityState codexIdentityConfuseState
-	upstreamBody, identityState := applyCodexIdentityConfuseBody(e.cfg, auth, originalPayloadSource, body)
+	upstreamBody, identityState := applyCodexIdentityConfuseBody(e.cfg, auth, originalPayloadSource, clientBody)
 	if errValidate := helps.ValidateCodexEncryptedInput(upstreamBody); errValidate != nil {
 		return nil, errValidate
 	}

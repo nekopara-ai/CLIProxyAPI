@@ -204,7 +204,7 @@ func (l *authAutoRefreshLoop) nextWait(now time.Time) (time.Duration, bool) {
 }
 
 func (l *authAutoRefreshLoop) resetTimer(timer *time.Timer, timerCh *<-chan time.Time, now time.Time) {
-	next, ok := l.peek()
+	wait, ok := l.nextWait(now)
 	if !ok {
 		if !timer.Stop() {
 			select {
@@ -216,10 +216,6 @@ func (l *authAutoRefreshLoop) resetTimer(timer *time.Timer, timerCh *<-chan time
 		return
 	}
 
-	wait := next.Sub(now)
-	if wait < 0 {
-		wait = 0
-	}
 	if !timer.Stop() {
 		select {
 		case <-timer.C:

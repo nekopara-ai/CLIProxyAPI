@@ -176,6 +176,7 @@ func expireSessionAffinityPriorityModelCooldown(t *testing.T, manager *Manager, 
 	expired := time.Now().Add(-time.Second)
 	state.NextRetryAfter = expired
 	state.Quota.NextRecoverAt = expired
+	state.ForcedCooldownUntil = expired
 }
 
 func TestManagerSessionAffinityRebindOnQuotaPreservesBindingAcrossTransientFailover(t *testing.T) {

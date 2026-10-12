@@ -489,11 +489,7 @@ type authFileQuotaContext struct {
 	v8 bool
 }
 
-func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth, quotas ...authFileQuotaContext) gin.H {
-	var quota authFileQuotaContext
-	if len(quotas) > 0 {
-		quota = quotas[0]
-	}
+func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth, quota authFileQuotaContext) gin.H {
 	authFileEntryMu.Lock()
 	defer authFileEntryMu.Unlock()
 	return h.buildAuthFileEntryLocked(auth, quota)
