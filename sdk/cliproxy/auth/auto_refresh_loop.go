@@ -10,6 +10,8 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+const maxRefreshTimerWait = 30 * time.Second
+
 type authAutoRefreshLoop struct {
 	manager     *Manager
 	interval    time.Duration
@@ -184,6 +186,21 @@ func (l *authAutoRefreshLoop) loop(ctx context.Context) {
 			l.resetTimer(timer, &timerCh, now)
 		}
 	}
+}
+
+func (l *authAutoRefreshLoop) nextWait(now time.Time) (time.Duration, bool) {
+	next, ok := l.peek()
+	if !ok {
+		return 0, false
+	}
+	wait := next.Sub(now)
+	if wait < 0 {
+		wait = 0
+	}
+	if wait > maxRefreshTimerWait {
+		wait = maxRefreshTimerWait
+	}
+	return wait, true
 }
 
 func (l *authAutoRefreshLoop) resetTimer(timer *time.Timer, timerCh *<-chan time.Time, now time.Time) {
@@ -393,12 +410,23 @@ func nextRefreshCheckAt(now time.Time, auth *Auth, interval time.Duration) (time
 		return time.Time{}, false
 	}
 
-	if auth.AuthKind() == AuthKindAPIKey {
-		return time.Time{}, false
-	}
-
 	if !auth.NextRefreshAfter.IsZero() && now.Before(auth.NextRefreshAfter) {
 		return auth.NextRefreshAfter, true
+	}
+
+	if siwcDueAt, hasSIWC, _ := CodexSIWCNeedsRefresh(auth, now); hasSIWC {
+		minDue := siwcDueAt
+		if outerDueAt, hasOuter, _ := CodexOuterNeedsRefresh(auth, now); hasOuter && outerDueAt.Before(minDue) {
+			minDue = outerDueAt
+		}
+		if !minDue.After(now) {
+			return now, true
+		}
+		return minDue, true
+	}
+
+	if auth.AuthKind() == AuthKindAPIKey {
+		return time.Time{}, false
 	}
 
 	if evaluator, ok := auth.Runtime.(RefreshEvaluator); ok && evaluator != nil {

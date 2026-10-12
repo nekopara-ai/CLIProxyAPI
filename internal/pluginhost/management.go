@@ -3,6 +3,7 @@ package pluginhost
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -243,7 +244,12 @@ func (h *Host) ServeManagementHTTP(w http.ResponseWriter, r *http.Request) bool 
 		var errRead error
 		body, errRead = io.ReadAll(r.Body)
 		if errRead != nil {
-			http.Error(w, "failed to read plugin management request body", http.StatusBadRequest)
+			status := http.StatusBadRequest
+			var maxBytesErr *http.MaxBytesError
+			if errors.As(errRead, &maxBytesErr) {
+				status = http.StatusRequestEntityTooLarge
+			}
+			http.Error(w, "failed to read plugin management request body", status)
 			return true
 		}
 		if errClose := r.Body.Close(); errClose != nil {
