@@ -19,14 +19,6 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-func (s *Service) currentConfig() *config.Config {
-	if s == nil {
-		return nil
-	}
-	s.cfgMu.RLock()
-	defer s.cfgMu.RUnlock()
-	return s.cfg
-}
 func (s *Service) startFingerprintMonitor(ctx context.Context) {
 	if s == nil || s.coreManager == nil {
 		return

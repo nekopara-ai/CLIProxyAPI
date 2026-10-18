@@ -28,6 +28,9 @@ func defaultWatcherFactory(configPath, authDir string, reload func(*config.Confi
 			w.SetOAuthModelAliasReloadCallback(callback)
 		},
 		snapshotAuths: func() []*coreauth.Auth { return w.SnapshotCoreAuths() },
+		snapshotAuthFile: func(path string) ([]*coreauth.Auth, error) {
+			return w.SnapshotAuthFile(path)
+		},
 		setUpdateQueue: func(queue chan<- watcher.AuthUpdate) {
 			w.SetAuthUpdateQueue(queue)
 		},

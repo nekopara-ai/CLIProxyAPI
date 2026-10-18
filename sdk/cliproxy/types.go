@@ -5,6 +5,7 @@ package cliproxy
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -105,14 +106,15 @@ type WatcherWrapper struct {
 	stop  func() error
 
 	setConfig                        func(cfg *config.Config)
-	setOAuthModelAliasReloadCallback func(callback func(*config.Config))
 	snapshotAuths                    func() []*coreauth.Auth
+	snapshotAuthFile                 func(path string) ([]*coreauth.Auth, error)
 	setUpdateQueue                   func(queue chan<- watcher.AuthUpdate)
 	dispatchRuntimeUpdate            func(update watcher.AuthUpdate) bool
 	dispatchPersistedAuth            func(update watcher.AuthUpdate) bool
 	dispatchPersistedAuthWithRev     func(update *watcher.AuthUpdate) (bool, uint64)
 	setPluginAuthParser              func(parser PluginAuthParser)
 	reloadConfigIfChanged            func()
+	setOAuthModelAliasReloadCallback func(callback func(*config.Config))
 }
 
 // Start proxies to the underlying watcher Start implementation.
@@ -218,6 +220,14 @@ func (w *WatcherWrapper) SnapshotAuths() []*coreauth.Auth {
 		return nil
 	}
 	return w.snapshotAuths()
+}
+
+// SnapshotAuthFile re-synthesizes a single file and preserves parsing errors.
+func (w *WatcherWrapper) SnapshotAuthFile(path string) ([]*coreauth.Auth, error) {
+	if w == nil || w.snapshotAuthFile == nil {
+		return nil, fmt.Errorf("file auth snapshot is unavailable")
+	}
+	return w.snapshotAuthFile(path)
 }
 
 // SetAuthUpdateQueue registers the channel used to propagate auth updates.

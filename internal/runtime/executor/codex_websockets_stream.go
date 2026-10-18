@@ -852,9 +852,13 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 	}
 	body = helps.SanitizeCodexInputItemIDs(body)
 	if useSIWC {
-		body = applyCodexSIWCWebsocketBodyRules(body, hasExplicitInstructions)
+		body = applyCodexSIWCWebsocketBodyRules(body, hasExplicitInstructions, cliproxyexecutor.Options{KeepTopLevelEffort: thinking.HasThinkingSuffix(req.Model)})
 	}
 	clientBody := finalizePayload(body)
+	clientBody, err = normalizeCodexOAuthWebSearchHistory(clientBody, auth, opts.Headers)
+	if err != nil {
+		return nil, err
+	}
 	var identityState codexIdentityConfuseState
 	upstreamBody, identityState := applyCodexIdentityConfuseBody(e.cfg, auth, originalPayloadSource, clientBody)
 	if errValidate := helps.ValidateCodexEncryptedInput(upstreamBody); errValidate != nil {
