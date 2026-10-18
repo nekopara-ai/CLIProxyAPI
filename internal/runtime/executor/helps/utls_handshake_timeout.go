@@ -82,10 +82,11 @@ func classifyHandshakeError(parentCtx, handshakeCtx context.Context, err error) 
 	if err == nil || tlsHandshakeTimeoutFromContext(parentCtx) <= 0 {
 		return err
 	}
-	if parentCtx != nil && parentCtx.Err() != nil {
+	if parentCtx != nil && utlsStageContextError(parentCtx) != nil {
 		return err
 	}
-	if handshakeCtx == nil || !errors.Is(handshakeCtx.Err(), context.DeadlineExceeded) {
+	// Socket deadlines can fire before the context timer publishes Err().
+	if handshakeCtx == nil || !errors.Is(utlsStageContextError(handshakeCtx), context.DeadlineExceeded) {
 		return err
 	}
 	if !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {

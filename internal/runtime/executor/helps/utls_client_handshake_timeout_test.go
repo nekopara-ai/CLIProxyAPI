@@ -20,6 +20,31 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
+type handshakeDeadlineBeforeTimerContext struct {
+	context.Context
+	deadline time.Time
+}
+
+func (c handshakeDeadlineBeforeTimerContext) Deadline() (time.Time, bool) {
+	return c.deadline, true
+}
+
+func TestClassifyHandshakeDeadlineBeforeContextTimer(t *testing.T) {
+	parent := withTLSHandshakeTimeout(context.Background(), time.Second)
+	expired := handshakeDeadlineBeforeTimerContext{Context: parent, deadline: time.Now().Add(-time.Second)}
+	if expired.Err() != nil {
+		t.Fatal("fixture must reproduce an expired deadline before Err is published")
+	}
+	err := classifyHandshakeError(parent, expired, context.DeadlineExceeded)
+	if !cliproxyexecutor.IsConfiguredTLSHandshakeTimeoutError(err) {
+		t.Fatalf("internal deadline not classified: %v", err)
+	}
+	err = classifyHandshakeError(expired, expired, context.DeadlineExceeded)
+	if cliproxyexecutor.IsConfiguredTLSHandshakeTimeoutError(err) {
+		t.Fatal("caller deadline classified as an internal timeout")
+	}
+}
+
 // silentTLSListener accepts one TCP connection, drains the TLS ClientHello,
 // and never sends anything back, reproducing the silent-upstream shape from
 // Issue #6615. The returned channel closes once the client side has closed
