@@ -116,3 +116,22 @@ func TestCodexWebSearchHistoryExtendsAdditionalTools(t *testing.T) {
 		}
 	}
 }
+
+func TestCodexWebSearchHistoryNonArrayToolsDoNotCountAsDeclarations(t *testing.T) {
+	for _, tools := range []string{`{}`, `"invalid"`, `true`, `123`} {
+		for _, lite := range []bool{false, true} {
+			body := []byte(`{"input":[{"type":"web_search_call"},{"type":"additional_tools","tools":` + tools + `}],"tools":` + tools + `,"tool_choice":"auto"}`)
+			got, err := EnsureCodexWebSearchHistoryTool(body, lite)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := "tools"
+			if lite {
+				path = "input.1.tools"
+			}
+			if !gjson.GetBytes(got, path).IsArray() || gjson.GetBytes(got, path+".0.type").String() != "web_search" || gjson.GetBytes(got, "tool_choice").String() != "none" {
+				t.Fatalf("invalid tools counted as caller declarations: %s", got)
+			}
+		}
+	}
+}

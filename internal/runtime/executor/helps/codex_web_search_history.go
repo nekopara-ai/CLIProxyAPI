@@ -27,7 +27,7 @@ func EnsureCodexWebSearchHistoryTool(body []byte, lite bool) ([]byte, error) {
 	if hasCodexWebSearchTool(topTools) {
 		return body, nil
 	}
-	hasHistory, hasTools, additional := false, len(topTools.Array()) > 0, -1
+	hasHistory, hasTools, additional := false, topTools.IsArray() && len(topTools.Array()) > 0, -1
 	for i, item := range items {
 		switch strings.TrimSpace(item.Get("type").String()) {
 		case "web_search_call":
@@ -37,7 +37,7 @@ func EnsureCodexWebSearchHistoryTool(body []byte, lite bool) ([]byte, error) {
 			if hasCodexWebSearchTool(tools) {
 				return body, nil
 			}
-			hasTools = hasTools || len(tools.Array()) > 0
+			hasTools = hasTools || (tools.IsArray() && len(tools.Array()) > 0)
 			if additional < 0 {
 				additional = i
 			}
