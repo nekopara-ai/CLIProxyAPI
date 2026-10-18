@@ -74,7 +74,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 			body = ensureImageGenerationTool(body, baseModel, auth, opts.Headers)
 		}
 	} else {
-		body = applyCodexSIWCRequestBodyRules(body, hasExplicitInstructions)
+		body = applyCodexSIWCRequestBodyRules(body, hasExplicitInstructions, cliproxyexecutor.Options{KeepTopLevelEffort: thinking.HasThinkingSuffix(req.Model)})
 	}
 	body = sanitizeOpenAIResponsesReasoningEncryptedContentWithCompat(ctx, "codex executor", body, isCompat)
 	body = normalizeCodexParallelToolCalls(body, opts.Headers)
@@ -144,11 +144,12 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	upstreamData := applyCodexIdentityConfuseResponsePayload(data, identityState)
 	helps.AppendAPIResponseChunk(ctx, e.cfg, upstreamData)
 
-	lines := bytes.Split(upstreamData, []byte("\n"))
+	events := helps.NewCodexSSEScanner(ctx, bytes.NewReader(upstreamData), len(upstreamData)+1)
 	outputItemsByIndex := make(map[int64][]byte)
 	var outputItemsFallback [][]byte
 	sawOutputDelta := false
-	for _, line := range lines {
+	for events.Scan() {
+		line := events.Bytes()
 		if !bytes.HasPrefix(line, dataTag) {
 			continue
 		}
@@ -266,7 +267,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 		body = normalizeCodexInstructions(body, helps.IsNativeCodexRequest(req.Payload, opts))
 	} else {
 		hasExplicitInstructions := gjson.GetBytes(req.Payload, "instructions").Exists() && strings.TrimSpace(gjson.GetBytes(req.Payload, "instructions").String()) != ""
-		body = applyCodexSIWCCompactBodyRules(body, hasExplicitInstructions)
+		body = applyCodexSIWCCompactBodyRules(body, hasExplicitInstructions, cliproxyexecutor.Options{KeepTopLevelEffort: thinking.HasThinkingSuffix(req.Model)})
 	}
 	body = sanitizeOpenAIResponsesReasoningEncryptedContentWithCompat(ctx, "codex executor", body, isCompat)
 	body = normalizeCodexParallelToolCalls(body, opts.Headers)

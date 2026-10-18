@@ -29,11 +29,17 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Refresh models catalog
-        run: bash .github/scripts/refresh-model-catalogs.sh
       - name: Test patched release integration
         if: github.base_ref == 'codex/cpa-transport-effective-tier'
         run: go test ./... -count=1 -timeout=240s
+      # Snapshot-dependent tests use committed fixtures. Refreshed production
+      # catalogs receive separate schema and rendering checks before compilation.
+      - name: Refresh models catalog
+        run: bash .github/scripts/refresh-model-catalogs.sh
+      - name: Test refreshed catalog rendering
+        run: |
+          go test ./internal/registry -run '^TestEmbeddedCodexClientModelsCatalogIsValid$' -count=1
+          go test ./internal/client/codex/models -run '^TestCurrentCatalogBuildsModelResponse$' -count=1
       - name: Build
         run: |
           go build -o test-output ./cmd/server
