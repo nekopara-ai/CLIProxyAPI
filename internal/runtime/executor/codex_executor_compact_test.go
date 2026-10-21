@@ -265,7 +265,7 @@ func TestCodexExecutorReplayedWebSearchCallHistoryEnsuresWebSearchTool_Issue6770
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			body, _ := io.ReadAll(r.Body)
 			gotBody = body
-			if hasWebSearchCallInInput(body) && countWebSearchTools(body) == 0 {
+			if !strings.HasSuffix(r.URL.Path, "/responses/compact") && hasWebSearchCallInInput(body) && countWebSearchTools(body) == 0 {
 				w.WriteHeader(http.StatusBadGateway)
 				_, _ = w.Write([]byte(`{"error":{"message":"response protection is unavailable","type":"internal_error","param":null,"code":null}}`))
 				return

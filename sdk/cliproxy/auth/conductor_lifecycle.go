@@ -525,37 +525,53 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 }
 
 // Configuration replacements can contain no runtime state, or an older snapshot.
-// The manager owns explicit cooldowns: preserve only an active forced action,
-// never an ordinary deadline copied from the caller's old snapshot.
+// The manager owns cooldown state: preserve active credential and model
+// deadlines from current, never deadlines copied from the caller's old snapshot.
 func preserveForcedCooldownsOnReplacement(auth, current *Auth, now time.Time) bool {
 	if auth == nil || current == nil {
 		return false
 	}
 	beforeForced := auth.ForcedCooldownUntil
 	beforeNextRetry := auth.NextRetryAfter
+	beforeQuota := cooldownFieldsOf(auth.Quota)
+	beforeLastError := cloneError(auth.LastError)
 	beforeUnavailable := auth.Unavailable
 	beforeStatus := auth.Status
+	beforeStatusMessage := auth.StatusMessage
 	beforeScope := auth.lastFailureScope
 
-	forced := current.ForcedCooldownUntil.After(now)
-	if forced {
+	credentialCooldown := current.lastFailureScope == cooldownFailureScopeCredential &&
+		(current.Unavailable || current.NextRetryAfter.After(now) ||
+			current.Quota.Exceeded && current.Quota.NextRecoverAt.After(now) ||
+			current.ForcedCooldownUntil.After(now))
+	if credentialCooldown {
 		auth.ForcedCooldownUntil = current.ForcedCooldownUntil
-		auth.NextRetryAfter = current.ForcedCooldownUntil
-		if current.Quota.Exceeded && current.Quota.Reason == "credential_quota" && current.Quota.NextRecoverAt.After(auth.NextRetryAfter) {
-			auth.NextRetryAfter = current.Quota.NextRecoverAt
-		}
-		auth.Unavailable = true
-		if auth.Status != StatusDisabled {
-			auth.Status = StatusError
-		}
-		auth.lastFailureScope = cooldownFailureScopeCredential
+		auth.NextRetryAfter = current.NextRetryAfter
+		applyCooldownFields(&auth.Quota, current.Quota)
+		auth.LastError = cloneError(current.LastError)
+		auth.Unavailable = current.Unavailable
+		auth.Status = current.Status
+		auth.StatusMessage = current.StatusMessage
+		auth.lastFailureScope = current.lastFailureScope
 	} else {
 		auth.ForcedCooldownUntil = time.Time{}
+		auth.NextRetryAfter = time.Time{}
+		applyCooldownFields(&auth.Quota, QuotaState{})
+		auth.LastError = nil
+		auth.Unavailable = false
+		if auth.Status == StatusError {
+			auth.Status = StatusActive
+		}
+		auth.StatusMessage = ""
+		auth.lastFailureScope = ""
 	}
 	authChanged := !auth.ForcedCooldownUntil.Equal(beforeForced) ||
 		!auth.NextRetryAfter.Equal(beforeNextRetry) ||
+		!cooldownQuotaEqual(cooldownFieldsOf(auth.Quota), beforeQuota) ||
+		!cooldownErrorEqual(auth.LastError, beforeLastError) ||
 		auth.Unavailable != beforeUnavailable ||
 		auth.Status != beforeStatus ||
+		auth.StatusMessage != beforeStatusMessage ||
 		auth.lastFailureScope != beforeScope
 	var states map[string]*ModelState
 	modelsChanged := false
@@ -575,7 +591,6 @@ func preserveForcedCooldownsOnReplacement(auth, current *Auth, now time.Time) bo
 		if state == nil {
 			state = &ModelState{}
 		}
-		recoverModelStateOnSuccess(state, now)
 		if incoming != nil {
 			state.Quota = mergeQuotaObservation(state.Quota, incoming.Quota)
 			if incoming.Status == StatusDisabled {
@@ -586,12 +601,12 @@ func preserveForcedCooldownsOnReplacement(auth, current *Auth, now time.Time) bo
 		modelsChanged = true
 	}
 	for model, state := range auth.ModelStates {
-		if state != nil && !state.ForcedCooldownUntil.IsZero() {
+		if state != nil && (!state.ForcedCooldownUntil.IsZero() || isModelStateActiveCooldown(state, now)) {
 			copyCurrentModel(model)
 		}
 	}
 	for model, state := range current.ModelStates {
-		if state != nil && state.ForcedCooldownUntil.After(now) {
+		if state != nil && (state.ForcedCooldownUntil.After(now) || isModelStateActiveCooldown(state, now)) {
 			copyCurrentModel(model)
 		}
 	}
@@ -602,17 +617,18 @@ func preserveForcedCooldownsOnReplacement(auth, current *Auth, now time.Time) bo
 	return authChanged || modelsChanged
 }
 
-// preserveIndependentCredentialCooldown keeps only the two independently owned
-// credential limits across a refresh or model-level recovery: an active forced
-// action and an active credential quota. Ordinary retry deadlines and errors,
-// including model-derived aggregates, remain eligible for success recovery.
+// preserveIndependentCredentialCooldown keeps an independent credential
+// failure across a refresh or model-level recovery. Model-derived aggregates
+// remain eligible for success recovery.
 func preserveIndependentCredentialCooldown(auth, current *Auth, now time.Time) bool {
-	if auth == nil || current == nil || auth.Disabled || auth.Status == StatusDisabled {
+	if auth == nil || current == nil || auth.Disabled || current.Disabled || auth.Status == StatusDisabled || current.Status == StatusDisabled {
 		return false
 	}
 	forced := current.ForcedCooldownUntil.After(now)
 	credentialQuota := current.Quota.Exceeded && current.Quota.Reason == "credential_quota" && current.Quota.NextRecoverAt.After(now)
-	if !forced && !credentialQuota {
+	credentialFailure := !forced && current.lastFailureScope == cooldownFailureScopeCredential &&
+		(current.Unavailable || current.NextRetryAfter.After(now) || current.Quota.NextRecoverAt.After(now))
+	if !forced && !credentialQuota && !credentialFailure {
 		return false
 	}
 
@@ -627,22 +643,32 @@ func preserveIndependentCredentialCooldown(auth, current *Auth, now time.Time) b
 
 	if forced {
 		auth.ForcedCooldownUntil = current.ForcedCooldownUntil
-		auth.NextRetryAfter = current.ForcedCooldownUntil
-		auth.lastFailureScope = cooldownFailureScopeCredential
+		auth.lastFailureScope = current.lastFailureScope
 	}
 	if credentialQuota {
 		applyCooldownFields(&auth.Quota, current.Quota)
-		if auth.NextRetryAfter.Before(current.Quota.NextRecoverAt) {
-			auth.NextRetryAfter = current.Quota.NextRecoverAt
-		}
 	} else if !(auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now)) {
 		// A forced-only action must not resurrect an ordinary quota window.
 		applyCooldownFields(&auth.Quota, QuotaState{})
 	}
-
 	if forced || credentialQuota {
+		nextRetry := auth.ForcedCooldownUntil
+		if credentialQuota && current.Quota.NextRecoverAt.After(nextRetry) {
+			nextRetry = current.Quota.NextRecoverAt
+		}
+		auth.NextRetryAfter = nextRetry
+	} else if credentialFailure {
+		auth.NextRetryAfter = current.NextRetryAfter
+	}
+
+	if forced || credentialQuota || credentialFailure {
 		auth.Unavailable = true
 		auth.Status = StatusError
+	}
+	if credentialFailure {
+		auth.StatusMessage = current.StatusMessage
+		auth.LastError = cloneError(current.LastError)
+		auth.lastFailureScope = current.lastFailureScope
 	}
 
 	return auth.Unavailable != beforeUnavailable ||
