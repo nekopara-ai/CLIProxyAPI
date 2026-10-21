@@ -71,6 +71,8 @@ func MergeRefreshedAuth(base, current, updated *Auth) *Auth {
 	if base != nil && current.RegistrationEpoch != base.RegistrationEpoch {
 		return merged
 	}
+	now := time.Now()
+
 	merged.CodexRefreshPatch = updated.CodexRefreshPatch
 
 	// 1. Refresh Lifecycle Timestamps
