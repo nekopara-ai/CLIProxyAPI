@@ -233,6 +233,13 @@ func MergeRefreshedAuth(base, current, updated *Auth) *Auth {
 			merged.Status = StatusActive
 		}
 	}
+	// A successful token refresh may heal ordinary model failures, but it is not
+	// an explicit reset of a manager-owned forced action. Rebase the final model
+	// map on current after the three-way merge so an executor snapshot that
+	// removed or reset a forced state cannot unblock the credential.
+	if !finalDisabled {
+		preserveForcedCooldownsOnReplacement(merged, current, now)
+	}
 
 	return merged
 }

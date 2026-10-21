@@ -609,15 +609,16 @@ func TestDetectClaudeCodeRequestRecognizesAgentSDKHaiku55Helpers(t *testing.T) {
 	webSearchPayload := []byte(`{"max_tokens":1024,"messages":[{"role":"user","content":[{"type":"text","text":"search query"}]}],"metadata":{"user_id":` + string(encodedUserID) + `},"model":"claude-haiku-5-5","output_config":{"effort":"medium"},"stream":true,"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.304.2e0; cc_entrypoint=sdk-ts"},{"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK."},{"type":"text","text":"Perform web search."}],"tool_choice":{"type":"auto"},"tools":[{"type":"web_search_20250305","name":"web_search"}]}`)
 
 	for _, tc := range []struct {
-		name    string
-		betas   string
-		payload []byte
+		name       string
+		betas      string
+		structured bool
+		payload    []byte
 	}{
-		{name: "sdk-ts title helper", betas: titleBetas, payload: titlePayload},
+		{name: "sdk-ts title helper", betas: titleBetas, structured: true, payload: titlePayload},
 		{name: "sdk-ts web_search helper", betas: webSearchBetas, payload: webSearchPayload},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			headers := measuredClaudeCodeHelperHeaders(tc.betas)
+			headers := measuredClaudeCodeHelperHeaders(tc.betas, tc.structured)
 			headers.Set("User-Agent", "claude-cli/2.1.304 (external, sdk-ts, agent-sdk/0.3.276)")
 			headers.Set("X-Stainless-Package-Version", "0.128.0")
 			headers.Del("X-Client-Request-Id")
