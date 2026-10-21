@@ -244,10 +244,10 @@ func (m *Manager) Modify(ctx context.Context, id string, expectedEpoch uint64, e
 	if expectedEpoch != 0 {
 		current.RegistrationEpoch = expectedEpoch
 	}
-	committedAuth, didCommit, persistCooldown, errUpdate := m.updateInternalLocked(ctx, nil, current, updateModeReplace)
+	committedAuth, didCommit, persistCooldown, resetCooldown, errUpdate := m.updateInternalLocked(ctx, nil, current, updateModeReplace)
 	releaseMutation()
 	if errUpdate == nil && didCommit && committedAuth != nil {
-		m.finishAuthUpdate(ctx, committedAuth, persistCooldown)
+		errUpdate = m.finishAuthUpdate(ctx, committedAuth, persistCooldown, resetCooldown)
 	}
 	return committedAuth, errUpdate == nil && didCommit && committedAuth != nil, errUpdate
 }

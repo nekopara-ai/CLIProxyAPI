@@ -164,7 +164,7 @@ func (m *Manager) BindCodexSIWC(ctx context.Context, id string, expectedEpoch ui
 		return nil, err
 	}
 	release()
-	m.finishAuthUpdate(ctx, committed, cooldownChanged)
+	m.finishAuthUpdate(ctx, committed, cooldownChanged, false)
 	return committed, nil
 }
 
