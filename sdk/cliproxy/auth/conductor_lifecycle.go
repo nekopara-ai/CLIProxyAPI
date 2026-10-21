@@ -525,10 +525,38 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 }
 
 // Configuration replacements can contain no runtime state, or an older snapshot.
-// The manager owns forced cooldowns: preserve current deadlines, including a
-// concurrent extension or reset, without restoring deadlines from the caller.
+// The manager owns explicit cooldowns: preserve only an active forced action,
+// never an ordinary deadline copied from the caller's old snapshot.
 func preserveForcedCooldownsOnReplacement(auth, current *Auth, now time.Time) bool {
-	authChanged := current.ForcedCooldownUntil.After(now) || !auth.ForcedCooldownUntil.IsZero()
+	if auth == nil || current == nil {
+		return false
+	}
+	beforeForced := auth.ForcedCooldownUntil
+	beforeNextRetry := auth.NextRetryAfter
+	beforeUnavailable := auth.Unavailable
+	beforeStatus := auth.Status
+	beforeScope := auth.lastFailureScope
+
+	forced := current.ForcedCooldownUntil.After(now)
+	if forced {
+		auth.ForcedCooldownUntil = current.ForcedCooldownUntil
+		auth.NextRetryAfter = current.ForcedCooldownUntil
+		if current.Quota.Exceeded && current.Quota.Reason == "credential_quota" && current.Quota.NextRecoverAt.After(auth.NextRetryAfter) {
+			auth.NextRetryAfter = current.Quota.NextRecoverAt
+		}
+		auth.Unavailable = true
+		if auth.Status != StatusDisabled {
+			auth.Status = StatusError
+		}
+		auth.lastFailureScope = cooldownFailureScopeCredential
+	} else {
+		auth.ForcedCooldownUntil = time.Time{}
+	}
+	authChanged := !auth.ForcedCooldownUntil.Equal(beforeForced) ||
+		!auth.NextRetryAfter.Equal(beforeNextRetry) ||
+		auth.Unavailable != beforeUnavailable ||
+		auth.Status != beforeStatus ||
+		auth.lastFailureScope != beforeScope
 	var states map[string]*ModelState
 	modelsChanged := false
 	copyCurrentModel := func(model string) {
@@ -539,11 +567,15 @@ func preserveForcedCooldownsOnReplacement(auth, current *Auth, now time.Time) bo
 			}
 		}
 		incoming := states[model]
-		state := current.ModelStates[model].Clone()
+		var currentState *ModelState
+		if current.ModelStates != nil {
+			currentState = current.ModelStates[model]
+		}
+		state := currentState.Clone()
 		if state == nil {
 			state = &ModelState{}
-			resetModelState(state, now)
 		}
+		recoverModelStateOnSuccess(state, now)
 		if incoming != nil {
 			state.Quota = mergeQuotaObservation(state.Quota, incoming.Quota)
 			if incoming.Status == StatusDisabled {
@@ -563,16 +595,6 @@ func preserveForcedCooldownsOnReplacement(auth, current *Auth, now time.Time) bo
 			copyCurrentModel(model)
 		}
 	}
-	if authChanged || modelsChanged {
-		auth.ForcedCooldownUntil = current.ForcedCooldownUntil
-		auth.NextRetryAfter = current.NextRetryAfter
-		auth.Unavailable = current.Unavailable
-		auth.Status = current.Status
-		auth.StatusMessage = current.StatusMessage
-		auth.LastError = cloneError(current.LastError)
-		auth.lastFailureScope = current.lastFailureScope
-		auth.Quota = mergeQuotaObservation(current.Quota.Clone(), auth.Quota)
-	}
 	if modelsChanged {
 		auth.ModelStates = states
 		updateAggregatedAvailability(auth, now)
@@ -580,23 +602,17 @@ func preserveForcedCooldownsOnReplacement(auth, current *Auth, now time.Time) bo
 	return authChanged || modelsChanged
 }
 
-// preserveIndependentCredentialCooldown keeps a manager-owned credential
-// failure from being replaced by model-level recovery. It only snapshots an
-// independently active deadline; a model-derived aggregate has no source and
-// remains eligible for recovery. Passive quota observations always come from
-// the destination so a refresh cannot roll them back.
+// preserveIndependentCredentialCooldown keeps only the two independently owned
+// credential limits across a refresh or model-level recovery: an active forced
+// action and an active credential quota. Ordinary retry deadlines and errors,
+// including model-derived aggregates, remain eligible for success recovery.
 func preserveIndependentCredentialCooldown(auth, current *Auth, now time.Time) bool {
-	if auth == nil || current == nil {
-		return false
-	}
-	if hasUnauthorizedAuthFailure(current) {
+	if auth == nil || current == nil || auth.Disabled || auth.Status == StatusDisabled {
 		return false
 	}
 	forced := current.ForcedCooldownUntil.After(now)
 	credentialQuota := current.Quota.Exceeded && current.Quota.Reason == "credential_quota" && current.Quota.NextRecoverAt.After(now)
-	credentialFailure := current.lastFailureScope == cooldownFailureScopeCredential &&
-		(current.Unavailable || current.NextRetryAfter.After(now) || current.Quota.NextRecoverAt.After(now))
-	if !forced && !credentialQuota && !credentialFailure {
+	if !forced && !credentialQuota {
 		return false
 	}
 
@@ -609,19 +625,24 @@ func preserveIndependentCredentialCooldown(auth, current *Auth, now time.Time) b
 	beforeForced := auth.ForcedCooldownUntil
 	beforeScope := auth.lastFailureScope
 
-	auth.Unavailable = current.Unavailable
-	auth.Status = current.Status
-	auth.StatusMessage = current.StatusMessage
-	auth.NextRetryAfter = current.NextRetryAfter
-	auth.ForcedCooldownUntil = current.ForcedCooldownUntil
-	applyCooldownFields(&auth.Quota, current.Quota)
-	auth.LastError = cloneError(current.LastError)
-	auth.lastFailureScope = current.lastFailureScope
+	if forced {
+		auth.ForcedCooldownUntil = current.ForcedCooldownUntil
+		auth.NextRetryAfter = current.ForcedCooldownUntil
+		auth.lastFailureScope = cooldownFailureScopeCredential
+	}
+	if credentialQuota {
+		applyCooldownFields(&auth.Quota, current.Quota)
+		if auth.NextRetryAfter.Before(current.Quota.NextRecoverAt) {
+			auth.NextRetryAfter = current.Quota.NextRecoverAt
+		}
+	} else if !(auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now)) {
+		// A forced-only action must not resurrect an ordinary quota window.
+		applyCooldownFields(&auth.Quota, QuotaState{})
+	}
 
-	if auth.Unavailable || auth.Quota.Exceeded || auth.ForcedCooldownUntil.After(now) {
+	if forced || credentialQuota {
+		auth.Unavailable = true
 		auth.Status = StatusError
-	} else if auth.Status == StatusError {
-		auth.Status = StatusActive
 	}
 
 	return auth.Unavailable != beforeUnavailable ||

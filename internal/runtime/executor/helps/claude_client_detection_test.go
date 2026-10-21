@@ -621,7 +621,9 @@ func TestDetectClaudeCodeRequestRecognizesAgentSDKHaiku55Helpers(t *testing.T) {
 			headers := measuredClaudeCodeHelperHeaders(tc.betas, tc.structured)
 			headers.Set("User-Agent", "claude-cli/2.1.304 (external, sdk-ts, agent-sdk/0.3.276)")
 			headers.Set("X-Stainless-Package-Version", "0.128.0")
+			headers.Set("Accept-Encoding", "gzip, deflate, br, zstd")
 			headers.Del("X-Client-Request-Id")
+			headers.Del("X-Stainless-Async")
 
 			detection := DetectClaudeCodeRequest(headers, tc.payload, false)
 			if !detection.Confirmed || !detection.StrongSignals || !detection.NativeClient || !detection.HelperProfile {

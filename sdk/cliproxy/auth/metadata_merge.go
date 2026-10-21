@@ -130,11 +130,6 @@ func MergeRefreshedAuth(base, current, updated *Auth) *Auth {
 			merged.Unavailable = current.Unavailable
 			merged.Status = current.Status
 			merged.StatusMessage = current.StatusMessage
-		} else if current.Unavailable && current.NextRetryAfter.After(time.Now()) {
-			// Preserve active cooldown
-			merged.Unavailable = current.Unavailable
-			merged.Status = current.Status
-			merged.StatusMessage = current.StatusMessage
 		} else if (updated.Status == StatusActive || updated.Status == "") && (merged.RejectedAccessToken == "" || authAccessToken(merged) != merged.RejectedAccessToken) {
 			// Successful refresh clears previous auth error and restores active
 			merged.Status = StatusActive

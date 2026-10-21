@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -194,7 +195,7 @@ func TestCodexExecutorReplayedWebSearchCallHistoryEnsuresWebSearchTool_Issue6770
 			body, _ := io.ReadAll(r.Body)
 			gotBody = body
 			w.Header().Set("Content-Type", "text/event-stream")
-			if hasWebSearchCallInInput(body) && countWebSearchTools(body) == 0 {
+			if !strings.HasSuffix(r.URL.Path, "/responses/compact") && hasWebSearchCallInInput(body) && countWebSearchTools(body) == 0 {
 				_, _ = w.Write([]byte("data: {\"type\":\"error\",\"error\":{\"message\":\"response protection is unavailable\",\"type\":\"internal_error\",\"param\":null,\"code\":null}}\n\n"))
 				return
 			}
@@ -231,7 +232,7 @@ func TestCodexExecutorReplayedWebSearchCallHistoryEnsuresWebSearchTool_Issue6770
 			body, _ := io.ReadAll(r.Body)
 			gotBody = body
 			w.Header().Set("Content-Type", "text/event-stream")
-			if hasWebSearchCallInInput(body) && countWebSearchTools(body) == 0 {
+			if !strings.HasSuffix(r.URL.Path, "/responses/compact") && hasWebSearchCallInInput(body) && countWebSearchTools(body) == 0 {
 				_, _ = w.Write([]byte("data: {\"type\":\"error\",\"error\":{\"message\":\"response protection is unavailable\",\"type\":\"internal_error\",\"param\":null,\"code\":null}}\n\n"))
 				return
 			}

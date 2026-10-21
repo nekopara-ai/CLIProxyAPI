@@ -400,13 +400,14 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				// deliver anything. Every other terminal failure is forwarded in-stream and
 				// legitimately terminates the session, so it keeps the notifying variant.
 				failoverPending := isCodexOverloadBootstrapFailure(terminalBody)
-				if failoverPending && timeoutReached {
+				deliverOverloadInStream := failoverPending && timeoutReached
+				if deliverOverloadInStream {
 					failoverPending = false
 					helps.LogWithRequestID(ctx).Debugf("codex websockets executor: bootstrap overload rejection after %d messages read / %v, time budget exhausted; delivering in-stream", bufferedFrames, timeSinceStart)
 				}
 				if sess != nil {
 					unlockStreamSession()
-					if failoverPending {
+					if failoverPending || deliverOverloadInStream {
 						e.invalidateUpstreamConnWithoutDisconnectNotify(sess, conn, "terminal_failure", streamErr)
 					} else {
 						e.invalidateUpstreamConn(sess, conn, "terminal_failure", streamErr)

@@ -22,9 +22,10 @@ import (
 // responsesLocalInterrupt cancels an in-flight HTTP turn. A websocket upstream
 // does not use it; that interrupt is written to the existing socket instead.
 type responsesLocalInterrupt struct {
-	mu     sync.Mutex
-	active bool
-	frames chan []byte
+	mu               sync.Mutex
+	active           bool
+	activeResponseID string
+	frames           chan []byte
 }
 
 func newResponsesLocalInterrupt() *responsesLocalInterrupt {
@@ -37,6 +38,7 @@ func (s *responsesLocalInterrupt) begin() {
 	}
 	s.mu.Lock()
 	s.active = true
+	s.activeResponseID = ""
 	s.mu.Unlock()
 }
 
@@ -46,9 +48,21 @@ func (s *responsesLocalInterrupt) end() {
 	}
 	s.mu.Lock()
 	s.active = false
+	s.activeResponseID = ""
 	select {
 	case <-s.frames:
 	default:
+	}
+	s.mu.Unlock()
+}
+
+func (s *responsesLocalInterrupt) setActiveResponseID(responseID string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.active {
+		s.activeResponseID = strings.TrimSpace(responseID)
 	}
 	s.mu.Unlock()
 }
@@ -60,6 +74,10 @@ func (s *responsesLocalInterrupt) deliver(payload []byte) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.active {
+		return false
+	}
+	responseID := strings.TrimSpace(gjson.GetBytes(payload, "response_id").String())
+	if responseID == "" || responseID != s.activeResponseID {
 		return false
 	}
 	select {

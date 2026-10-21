@@ -186,6 +186,9 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 				if eventType == "response.created" {
 					responseStarted = true
 					completed = false
+					if opts.localInterrupt != nil {
+						opts.localInterrupt.setActiveResponseID(responseCompletedIDFromPayload(payloads[i]))
+					}
 					outputItemsByIndex = make(map[int64][]byte)
 					outputItemsFallback = nil
 					pendingToolCallIDs = make(map[string]struct{})
@@ -221,6 +224,9 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 					completed = true
 					completedOutput = responseCompletedOutputFromPayload(payloads[i], outputItemsByIndex, outputItemsFallback)
 					completedResponseID = responseCompletedIDFromPayload(payloads[i])
+					if opts.localInterrupt != nil {
+						opts.localInterrupt.setActiveResponseID("")
+					}
 				}
 				markAPIResponseTimestamp(c)
 				if payloadErrMsg != nil {
