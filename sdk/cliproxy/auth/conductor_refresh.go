@@ -749,6 +749,7 @@ func clearUnauthorizedModelStates(auth *Auth, now time.Time) []string {
 	if auth == nil || len(auth.ModelStates) == 0 {
 		return nil
 	}
+	credentialSnapshot := auth.Clone()
 	recoverAggregate := modelStatesOwnAvailability(auth, now)
 	changed := false
 	var resumed []string
@@ -786,6 +787,9 @@ func clearUnauthorizedModelStates(auth *Auth, now time.Time) []string {
 	}
 	if changed && recoverAggregate {
 		recoverAggregatedAvailability(auth, now)
+	}
+	if changed && !devinQuotaObservationRestored(auth, credentialSnapshot, now) {
+		preserveIndependentCredentialCooldown(auth, credentialSnapshot, now)
 	}
 	return resumed
 }

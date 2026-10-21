@@ -171,6 +171,20 @@ func TestCodexExecutorReplayedWebSearchCallHistoryEnsuresWebSearchTool_Issue6770
 		}
 		return count
 	}
+	newOAuthAuth := func(serverURL string) *cliproxyauth.Auth {
+		return &cliproxyauth.Auth{
+			Provider: "codex",
+			Attributes: map[string]string{
+				"base_url":  serverURL,
+				"auth_kind": cliproxyauth.AuthKindOAuth,
+				"plan_type": "plus",
+			},
+			Metadata: map[string]any{
+				"type":         "codex",
+				"access_token": "test",
+			},
+		}
+	}
 
 	compactionPayloadWithEmptyTools := `{"model":"gpt-6.1-sol","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"search docs"}]},{"id":"ws_1","type":"web_search_call","status":"completed","action":{"type":"search","query":"openai responses web search"}},{"id":"ws_2","type":"web_search_call","status":"completed","action":{"type":"open_page","url":"https://platform.openai.com/docs"}},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Found docs."}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"Summarize conversation"}]}],"tools":[],"tool_choice":"auto"}`
 
@@ -189,14 +203,7 @@ func TestCodexExecutorReplayedWebSearchCallHistoryEnsuresWebSearchTool_Issue6770
 		defer server.Close()
 
 		executor := NewCodexExecutor(&config.Config{Codex: config.CodexConfig{StreamBootstrapBuffering: true}})
-		auth := &cliproxyauth.Auth{
-			Provider: "codex",
-			Attributes: map[string]string{
-				"base_url":  server.URL,
-				"api_key":   "test",
-				"plan_type": "plus",
-			},
-		}
+		auth := newOAuthAuth(server.URL)
 
 		streamResult, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
 			Model:   "gpt-6.1-sol",
@@ -233,13 +240,7 @@ func TestCodexExecutorReplayedWebSearchCallHistoryEnsuresWebSearchTool_Issue6770
 		defer server.Close()
 
 		executor := NewCodexExecutor(&config.Config{SDKConfig: config.SDKConfig{DisableImageGeneration: config.DisableImageGenerationAll}})
-		auth := &cliproxyauth.Auth{
-			Provider: "codex",
-			Attributes: map[string]string{
-				"base_url": server.URL,
-				"api_key":  "test",
-			},
-		}
+		auth := newOAuthAuth(server.URL)
 
 		_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
 			Model:   "gpt-6.1-sol",
@@ -258,7 +259,7 @@ func TestCodexExecutorReplayedWebSearchCallHistoryEnsuresWebSearchTool_Issue6770
 		}
 	})
 
-	t.Run("Execute compact endpoint injects web_search when input replays web_search_call", func(t *testing.T) {
+	t.Run("Execute compact endpoint preserves its wire shape", func(t *testing.T) {
 		var gotBody []byte
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			body, _ := io.ReadAll(r.Body)
@@ -274,13 +275,7 @@ func TestCodexExecutorReplayedWebSearchCallHistoryEnsuresWebSearchTool_Issue6770
 		defer server.Close()
 
 		executor := NewCodexExecutor(&config.Config{})
-		auth := &cliproxyauth.Auth{
-			Provider: "codex",
-			Attributes: map[string]string{
-				"base_url": server.URL,
-				"api_key":  "test",
-			},
-		}
+		auth := newOAuthAuth(server.URL)
 
 		compactPayload := `{"model":"gpt-6.1-sol","input":[{"type":"message","role":"user","content":"history"},{"id":"ws_1","type":"web_search_call","status":"completed","action":{"type":"search","query":"q"}},{"type":"compaction_trigger"}]}`
 		_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
@@ -293,21 +288,17 @@ func TestCodexExecutorReplayedWebSearchCallHistoryEnsuresWebSearchTool_Issue6770
 		if err != nil {
 			t.Fatalf("Execute compact error = %v", err)
 		}
-		if got := countWebSearchTools(gotBody); got != 1 {
-			t.Fatalf("compact web_search tool count = %d, want 1; body=%s", got, gotBody)
+		if got := countWebSearchTools(gotBody); got != 0 {
+			t.Fatalf("compact web_search tool count = %d, want 0; body=%s", got, gotBody)
+		}
+		if !hasWebSearchCallInInput(gotBody) {
+			t.Fatalf("compact request lost replayed web_search_call history: %s", gotBody)
 		}
 	})
 
 	t.Run("prepareCodexWebsocketStream injects web_search when input replays web_search_call", func(t *testing.T) {
 		wsExecutor := NewCodexWebsocketsExecutor(&config.Config{})
-		auth := &cliproxyauth.Auth{
-			Provider: "codex",
-			Attributes: map[string]string{
-				"base_url":  "http://127.0.0.1:1",
-				"api_key":   "test",
-				"plan_type": "plus",
-			},
-		}
+		auth := newOAuthAuth("http://127.0.0.1:1")
 		prepared, err := wsExecutor.prepareCodexWebsocketStream(context.Background(), auth, cliproxyexecutor.Request{
 			Model:   "gpt-6.1-sol",
 			Payload: []byte(compactionPayloadWithEmptyTools),
@@ -326,13 +317,7 @@ func TestCodexExecutorReplayedWebSearchCallHistoryEnsuresWebSearchTool_Issue6770
 	t.Run("existing web_search tool declaration is preserved without duplication", func(t *testing.T) {
 		payloadWithWebSearch := `{"model":"gpt-6.1-sol","input":[{"id":"ws_1","type":"web_search_call","status":"completed","action":{"type":"search","query":"q"}}],"tools":[{"type":"web_search","external_web_access":true}]}`
 		wsExecutor := NewCodexWebsocketsExecutor(&config.Config{SDKConfig: config.SDKConfig{DisableImageGeneration: config.DisableImageGenerationAll}})
-		auth := &cliproxyauth.Auth{
-			Provider: "codex",
-			Attributes: map[string]string{
-				"base_url": "http://127.0.0.1:1",
-				"api_key":  "test",
-			},
-		}
+		auth := newOAuthAuth("http://127.0.0.1:1")
 		prepared, err := wsExecutor.prepareCodexWebsocketStream(context.Background(), auth, cliproxyexecutor.Request{
 			Model:   "gpt-6.1-sol",
 			Payload: []byte(payloadWithWebSearch),
@@ -351,16 +336,10 @@ func TestCodexExecutorReplayedWebSearchCallHistoryEnsuresWebSearchTool_Issue6770
 		}
 	})
 
-	t.Run("Responses Lite request strips replayed web_search_call items without injecting top-level tools", func(t *testing.T) {
+	t.Run("Responses Lite request preserves search history in additional_tools", func(t *testing.T) {
 		litePayload := `{"model":"gpt-6.1-sol","input":[{"type":"additional_tools","role":"developer","tools":[{"type":"namespace","name":"functions","description":"","tools":[{"type":"custom","name":"exec"}]}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"search"}]},{"id":"ws_1","type":"web_search_call","status":"completed","action":{"type":"search","query":"q"}},{"id":"rs_1","type":"reasoning","summary":[]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]},{"type":"compaction_trigger"}],"client_metadata":{"ws_request_header_x_openai_internal_codex_responses_lite":"true"}}`
 		wsExecutor := NewCodexWebsocketsExecutor(&config.Config{})
-		auth := &cliproxyauth.Auth{
-			Provider: "codex",
-			Attributes: map[string]string{
-				"base_url": "http://127.0.0.1:1",
-				"api_key":  "test",
-			},
-		}
+		auth := newOAuthAuth("http://127.0.0.1:1")
 		headers := make(http.Header)
 		headers.Set(codexResponsesLiteHeader, "true")
 
@@ -378,16 +357,22 @@ func TestCodexExecutorReplayedWebSearchCallHistoryEnsuresWebSearchTool_Issue6770
 		if gjson.GetBytes(prepared.clientBody, "tools").Exists() {
 			t.Fatalf("Responses Lite request must not inject top-level tools: %s", prepared.clientBody)
 		}
-		if hasWebSearchCallInInput(prepared.clientBody) {
-			t.Fatalf("Responses Lite request must strip replayed web_search_call items: %s", prepared.clientBody)
+		if !hasWebSearchCallInInput(prepared.clientBody) {
+			t.Fatalf("Responses Lite request lost replayed web_search_call items: %s", prepared.clientBody)
 		}
 		inputItems := gjson.GetBytes(prepared.clientBody, "input").Array()
-		if len(inputItems) != 5 {
-			t.Fatalf("input len = %d, want 5; body=%s", len(inputItems), prepared.clientBody)
+		if len(inputItems) != 6 {
+			t.Fatalf("input len = %d, want 6; body=%s", len(inputItems), prepared.clientBody)
+		}
+		if search := gjson.GetBytes(prepared.clientBody, `input.#(type=="additional_tools").tools.#(type=="web_search")`); !search.Exists() || search.Get("external_web_access").Type != gjson.False {
+			t.Fatalf("Responses Lite request lacks cached-only web_search declaration: %s", prepared.clientBody)
+		}
+		if inputItems[len(inputItems)-1].Get("type").String() != "compaction_trigger" {
+			t.Fatalf("Responses Lite request moved compaction_trigger: %s", prepared.clientBody)
 		}
 	})
 
-	t.Run("PayloadFinalizer runs after ensureWebSearchToolForHistory", func(t *testing.T) {
+	t.Run("PayloadFinalizer runs before the OAuth compatibility helper", func(t *testing.T) {
 		var gotBody []byte
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			body, _ := io.ReadAll(r.Body)
@@ -411,13 +396,7 @@ func TestCodexExecutorReplayedWebSearchCallHistoryEnsuresWebSearchTool_Issue6770
 			},
 		}
 		executor := NewCodexExecutor(cfg)
-		auth := &cliproxyauth.Auth{
-			Provider: "codex",
-			Attributes: map[string]string{
-				"base_url": server.URL,
-				"api_key":  "test",
-			},
-		}
+		auth := newOAuthAuth(server.URL)
 
 		_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
 			Model:   "gpt-6.1-sol",
@@ -428,8 +407,41 @@ func TestCodexExecutorReplayedWebSearchCallHistoryEnsuresWebSearchTool_Issue6770
 		if err != nil {
 			t.Fatalf("Execute() error = %v", err)
 		}
-		if gjson.GetBytes(gotBody, "tools").Exists() {
-			t.Fatalf("expected user payload filter rule to remove tools after built-in injection, got body=%s", gotBody)
+		if got := countWebSearchTools(gotBody); got != 1 {
+			t.Fatalf("OAuth helper did not run after payload filtering: count=%d body=%s", got, gotBody)
+		}
+	})
+
+	t.Run("API-key request omits the search compatibility rewrite", func(t *testing.T) {
+		var gotBody []byte
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			gotBody = body
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}}}\n\n"))
+		}))
+		defer server.Close()
+
+		executor := NewCodexExecutor(&config.Config{})
+		auth := &cliproxyauth.Auth{
+			Provider: "codex",
+			Attributes: map[string]string{
+				"base_url": server.URL,
+				"api_key":  "test",
+			},
+		}
+		_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+			Model:   "gpt-6.1-sol",
+			Payload: []byte(compactionPayloadWithEmptyTools),
+		}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai-response")})
+		if err != nil {
+			t.Fatalf("Execute() error = %v", err)
+		}
+		if got := countWebSearchTools(gotBody); got != 0 {
+			t.Fatalf("API-key web_search tool count = %d, want 0; body=%s", got, gotBody)
+		}
+		if choice := gjson.GetBytes(gotBody, "tool_choice").String(); choice != "auto" {
+			t.Fatalf("API-key tool_choice = %q, want auto; body=%s", choice, gotBody)
 		}
 	})
 }

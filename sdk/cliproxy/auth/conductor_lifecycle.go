@@ -451,6 +451,9 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 				auth.Status = existing.Status
 			}
 		}
+		if !devinQuotaRestored {
+			cooldownStateChanged = preserveIndependentCredentialCooldown(auth, existing, time.Now()) || cooldownStateChanged
+		}
 	}
 	now := time.Now()
 	auth.UpdatedAt = now
@@ -575,6 +578,60 @@ func preserveForcedCooldownsOnReplacement(auth, current *Auth, now time.Time) bo
 		updateAggregatedAvailability(auth, now)
 	}
 	return authChanged || modelsChanged
+}
+
+// preserveIndependentCredentialCooldown keeps a manager-owned credential
+// failure from being replaced by model-level recovery. It only snapshots an
+// independently active deadline; a model-derived aggregate has no source and
+// remains eligible for recovery. Passive quota observations always come from
+// the destination so a refresh cannot roll them back.
+func preserveIndependentCredentialCooldown(auth, current *Auth, now time.Time) bool {
+	if auth == nil || current == nil {
+		return false
+	}
+	if hasUnauthorizedAuthFailure(current) {
+		return false
+	}
+	forced := current.ForcedCooldownUntil.After(now)
+	credentialQuota := current.Quota.Exceeded && current.Quota.Reason == "credential_quota" && current.Quota.NextRecoverAt.After(now)
+	credentialFailure := current.lastFailureScope == cooldownFailureScopeCredential &&
+		(current.Unavailable || current.NextRetryAfter.After(now) || current.Quota.NextRecoverAt.After(now))
+	if !forced && !credentialQuota && !credentialFailure {
+		return false
+	}
+
+	beforeQuota := cooldownFieldsOf(auth.Quota)
+	beforeLastError := cloneError(auth.LastError)
+	beforeUnavailable := auth.Unavailable
+	beforeStatus := auth.Status
+	beforeStatusMessage := auth.StatusMessage
+	beforeNextRetry := auth.NextRetryAfter
+	beforeForced := auth.ForcedCooldownUntil
+	beforeScope := auth.lastFailureScope
+
+	auth.Unavailable = current.Unavailable
+	auth.Status = current.Status
+	auth.StatusMessage = current.StatusMessage
+	auth.NextRetryAfter = current.NextRetryAfter
+	auth.ForcedCooldownUntil = current.ForcedCooldownUntil
+	applyCooldownFields(&auth.Quota, current.Quota)
+	auth.LastError = cloneError(current.LastError)
+	auth.lastFailureScope = current.lastFailureScope
+
+	if auth.Unavailable || auth.Quota.Exceeded || auth.ForcedCooldownUntil.After(now) {
+		auth.Status = StatusError
+	} else if auth.Status == StatusError {
+		auth.Status = StatusActive
+	}
+
+	return auth.Unavailable != beforeUnavailable ||
+		auth.Status != beforeStatus ||
+		auth.StatusMessage != beforeStatusMessage ||
+		!auth.NextRetryAfter.Equal(beforeNextRetry) ||
+		!auth.ForcedCooldownUntil.Equal(beforeForced) ||
+		!cooldownQuotaEqual(cooldownFieldsOf(auth.Quota), beforeQuota) ||
+		!cooldownErrorEqual(auth.LastError, beforeLastError) ||
+		auth.lastFailureScope != beforeScope
 }
 
 // Remove deletes an auth from runtime state without persisting.

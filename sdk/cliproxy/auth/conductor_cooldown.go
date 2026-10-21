@@ -971,6 +971,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			auth.Failed++
 		}
 		wasTerminalUnauthorized := hasUnauthorizedAuthFailure(auth)
+		credentialCooldownBefore := auth.Clone()
 
 		// retainModelCooldown pins a still-live model cooldown against a success
 		// from an execution dispatched before that cooldown was recorded. Such a
@@ -1365,6 +1366,12 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					auth.cooldownRecordedSeq = m.currentExecutionSeq()
 				}
 			}
+		}
+		// Request success may heal model-level failures, but it never owns an
+		// independent credential-level cooldown. The merged presentation can
+		// otherwise overwrite that layer from the recovered model state.
+		if result.Success && !wasTerminalUnauthorized {
+			preserveIndependentCredentialCooldown(auth, credentialCooldownBefore, now)
 		}
 
 		if !result.Success && !shouldSkipCredentialCooldown(result.Error) && (statusCodeFromResult(result.Error) == http.StatusUnauthorized || isUnauthorizedError(result.Error)) {
