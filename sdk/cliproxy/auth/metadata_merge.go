@@ -176,6 +176,14 @@ func MergeRefreshedAuth(base, current, updated *Auth) *Auth {
 
 			changedByExecutor := !reflect.DeepEqual(baseState, updState)
 			changedByUser := !reflect.DeepEqual(baseState, currentState)
+			// A refresh snapshot must not erase an independent model cooldown that
+			// is sitting beneath a still-live credential quota window.
+			if changedByExecutor && !changedByUser && current.Quota.Exceeded &&
+				current.Quota.Reason == "credential_quota" && current.Quota.NextRecoverAt.After(now) &&
+				currentState != nil && currentState.credentialQuotaShadow != nil &&
+				isModelStateActiveCooldown(currentState.credentialQuotaShadow, now) {
+				continue
+			}
 
 			if changedByExecutor && !changedByUser {
 				next := updState.Clone()

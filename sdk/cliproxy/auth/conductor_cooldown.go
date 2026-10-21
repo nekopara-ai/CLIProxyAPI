@@ -804,7 +804,22 @@ func cooldownErrorEqual(a, b *Error) bool {
 }
 
 func authCooldownStateRecord(auth *Auth, now time.Time) (CooldownStateRecord, bool) {
-	if auth == nil || !auth.Unavailable || auth.NextRetryAfter.IsZero() || !auth.NextRetryAfter.After(now) {
+	if auth == nil {
+		return CooldownStateRecord{}, false
+	}
+	nextRetryAfter := auth.NextRetryAfter
+	if !auth.Unavailable || !nextRetryAfter.After(now) {
+		if !hasPersistableCredentialCooldown(auth, now) {
+			return CooldownStateRecord{}, false
+		}
+		if auth.Quota.NextRecoverAt.After(nextRetryAfter) {
+			nextRetryAfter = auth.Quota.NextRecoverAt
+		}
+	}
+	if auth.ForcedCooldownUntil.After(nextRetryAfter) {
+		nextRetryAfter = auth.ForcedCooldownUntil
+	}
+	if !nextRetryAfter.After(now) {
 		return CooldownStateRecord{}, false
 	}
 	return CooldownStateRecord{
@@ -812,7 +827,7 @@ func authCooldownStateRecord(auth *Auth, now time.Time) (CooldownStateRecord, bo
 		AuthID:              auth.ID,
 		AuthFile:            cooldownAuthFile(auth),
 		Status:              "cooling",
-		NextRetryAfter:      auth.NextRetryAfter,
+		NextRetryAfter:      nextRetryAfter,
 		ForcedCooldownUntil: auth.ForcedCooldownUntil,
 		Reason:              cooldownReason(auth.StatusMessage, auth.Quota, auth.LastError),
 		Quota:               cooldownFieldsOf(auth.Quota),
@@ -820,6 +835,17 @@ func authCooldownStateRecord(auth *Auth, now time.Time) (CooldownStateRecord, bo
 		LastFailureScope:    auth.lastFailureScope,
 		UpdatedAt:           auth.UpdatedAt,
 	}, true
+}
+
+func hasPersistableCredentialCooldown(auth *Auth, now time.Time) bool {
+	if auth == nil {
+		return false
+	}
+	if auth.Quota.Exceeded && (auth.Quota.Reason == "credential_quota" || auth.lastFailureScope == cooldownFailureScopeCredential) && auth.Quota.NextRecoverAt.After(now) {
+		return true
+	}
+	return auth.lastFailureScope == cooldownFailureScopeCredential &&
+		(auth.Unavailable || auth.NextRetryAfter.After(now))
 }
 
 func modelCooldownStateRecord(auth *Auth, model string, state *ModelState, now time.Time) (CooldownStateRecord, bool) {
