@@ -991,12 +991,6 @@ func TestUsageReporterCodexOmittedTierIsAutoOnlyForCheckedObjects(t *testing.T) 
 			}
 		})
 	}
-	if record.EffectiveServiceTier != "priority" {
-		t.Fatalf("effective service tier = %q, want %q", record.EffectiveServiceTier, "priority")
-	}
-	if record.ResponseServiceTier != "default" {
-		t.Fatalf("response service tier = %q, want %q", record.ResponseServiceTier, "default")
-	}
 }
 
 func TestUsageReporterExtractsEffectiveServiceTierFromOutboundShapesUpstream(t *testing.T) {

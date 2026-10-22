@@ -19,7 +19,7 @@ func TestOpaqueCodexTokenIgnoresLegacyExpiryHint(t *testing.T) {
 		{"metadata-provider", "", map[string]any{"type": "codex", "access_token": "opaque-imported-token", "expired": past.Format(time.RFC3339)}, "", false},
 		{"upstream-rejected", "codex", map[string]any{"access_token": "opaque-imported-token", "expired": past.Format(time.RFC3339)}, "opaque-imported-token", true},
 		{"explicit-expiry", "codex", map[string]any{"access_token": "opaque-imported-token", "expired": now.Add(time.Hour).Format(time.RFC3339), "expires_at": past.Format(time.RFC3339)}, "", true},
-		{"relative-expiry", "codex", map[string]any{"access_token": "opaque-imported-token", "expired": past.Format(time.RFC3339), "expires_in": 60, "last_refresh": past.Format(time.RFC3339)}, "", true},
+		{"relative-expiry", "codex", map[string]any{"access_token": "opaque-imported-token", "expired": past.Format(time.RFC3339), "expires_in": 60, "issued_at": past.Format(time.RFC3339)}, "", true},
 		{"refreshable-oauth", "codex", map[string]any{"access_token": "opaque-imported-token", "refresh_token": "synthetic-refresh", "expired": past.Format(time.RFC3339)}, "", true},
 		{"refresh-alias", "codex", map[string]any{"access_token": "opaque-imported-token", "refreshToken": "synthetic-refresh", "expired": past.Format(time.RFC3339)}, "", true},
 		{"expired-jwt", "codex", map[string]any{"access_token": makeTestJWT(past.Unix()), "expired": now.Add(time.Hour).Format(time.RFC3339)}, "", true},

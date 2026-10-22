@@ -41,8 +41,6 @@ import (
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
-	log "github.com/sirupsen/logrus"
-	logtest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/tidwall/gjson"
 	"gopkg.in/yaml.v3"
 )
