@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -837,7 +838,22 @@ func (a *Auth) OuterExpirationTime() (time.Time, bool) {
 			return jwtExp, true
 		}
 	}
-	if ts, ok := expirationFromMap(a.Metadata); ok {
+	meta := a.Metadata
+	// Imported, non-refreshable Codex tokens can be opaque and carry an old
+	// OAuth "expired" hint. That hint is not bound to the current token; let
+	// the upstream validate it instead of permanently excluding the account.
+	// Keep explicit expiry metadata, JWT expiry and observed rejections intact.
+	provider := strings.ToLower(strings.TrimSpace(a.Provider))
+	if provider == "" {
+		provider = strings.ToLower(authMetadataString(a, "type"))
+	}
+	if provider == "codex" && tokenStr != "" && !strings.Contains(tokenStr, ".") && authRefreshToken(a) == "" {
+		if _, hasLegacyExpiry := meta["expired"]; hasLegacyExpiry {
+			meta = maps.Clone(meta)
+			delete(meta, "expired")
+		}
+	}
+	if ts, ok := expirationFromMap(meta); ok {
 		return ts, true
 	}
 	return time.Time{}, false
