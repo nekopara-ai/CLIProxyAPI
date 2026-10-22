@@ -155,6 +155,11 @@ func shouldSkipGinRequestLogging(c *gin.Context) bool {
 	if c == nil {
 		return false
 	}
+	if c.Request != nil && c.Request.URL != nil && c.Request.URL.Path == "/healthz" &&
+		(c.Request.Method == http.MethodGet || c.Request.Method == http.MethodHead) &&
+		c.Writer.Status() >= http.StatusOK && c.Writer.Status() < http.StatusMultipleChoices {
+		return true
+	}
 	val, exists := c.Get(skipGinLogKey)
 	if !exists {
 		return false
