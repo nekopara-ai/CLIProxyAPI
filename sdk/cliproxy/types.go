@@ -115,6 +115,7 @@ type WatcherWrapper struct {
 	setPluginAuthParser              func(parser PluginAuthParser)
 	reloadConfigIfChanged            func()
 	setOAuthModelAliasReloadCallback func(callback func(*config.Config))
+	rereadDiscardedFileSnapshot      func(auth *coreauth.Auth)
 }
 
 // Start proxies to the underlying watcher Start implementation.
@@ -228,6 +229,15 @@ func (w *WatcherWrapper) SnapshotAuthFile(path string) ([]*coreauth.Auth, error)
 		return nil, fmt.Errorf("file auth snapshot is unavailable")
 	}
 	return w.snapshotAuthFile(path)
+}
+
+// RereadDiscardedFileSnapshot asks the underlying watcher to invalidate and
+// re-read a file snapshot discarded by the manager's digest fence.
+func (w *WatcherWrapper) RereadDiscardedFileSnapshot(auth *coreauth.Auth) {
+	if w == nil || w.rereadDiscardedFileSnapshot == nil {
+		return
+	}
+	w.rereadDiscardedFileSnapshot(auth)
 }
 
 // SetAuthUpdateQueue registers the channel used to propagate auth updates.

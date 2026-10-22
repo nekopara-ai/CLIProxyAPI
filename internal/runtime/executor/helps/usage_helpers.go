@@ -374,8 +374,10 @@ func extractEffectiveServiceTier(payload []byte) string {
 		return ""
 	}
 	for _, path := range []string{"service_tier", "request.service_tier", "interaction.service_tier"} {
-		if tier := strings.TrimSpace(gjson.GetBytes(payload, path).String()); tier != "" {
-			return tier
+		if node := gjson.GetBytes(payload, path); node.Type == gjson.String {
+			if tier := strings.TrimSpace(node.String()); tier != "" {
+				return tier
+			}
 		}
 	}
 	return ""
