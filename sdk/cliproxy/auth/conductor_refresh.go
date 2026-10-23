@@ -413,6 +413,21 @@ func authAccessToken(auth *Auth) string {
 	return authOuterAccessToken(auth)
 }
 
+func authAccessTokenForRequest(ctx context.Context, auth *Auth, clientHeaders ...http.Header) string {
+	if IsCodexUseSIWCForRequest(ctx, auth, clientHeaders...) {
+		return authSIWCTokenField(auth, "access_token")
+	}
+	return authOuterAccessToken(auth)
+}
+
+func authMatchesTokenPartition(auth *Auth, token string) bool {
+	token = strings.TrimSpace(token)
+	if auth == nil || token == "" {
+		return false
+	}
+	return authAccessToken(auth) == token || authOuterAccessToken(auth) == token
+}
+
 func authRefreshToken(auth *Auth) string {
 	if token := authMetadataString(auth, "refresh_token"); token != "" {
 		return token
@@ -562,7 +577,7 @@ func recordRejectedTokenOnAuth(auth *Auth, failedToken string) bool {
 			changed = true
 		}
 	}
-	if authAccessToken(auth) == failedToken && auth.RejectedAccessToken != failedToken {
+	if (authAccessToken(auth) == failedToken || authOuterAccessToken(auth) == failedToken) && auth.RejectedAccessToken != failedToken {
 		auth.RejectedAccessToken = failedToken
 		changed = true
 	}
@@ -796,7 +811,7 @@ func clearUnauthorizedModelStates(auth *Auth, now time.Time) []string {
 
 // RefreshHomeSelectionAfterUnauthorized only reuses a newer snapshot already
 // installed by Home. It never refreshes or mutates Home-owned credentials.
-func (m *Manager) RefreshHomeSelectionAfterUnauthorized(_ context.Context, selection *HomeDispatchSelection, failedAuth *Auth) (*Auth, bool, error) {
+func (m *Manager) RefreshHomeSelectionAfterUnauthorized(ctx context.Context, selection *HomeDispatchSelection, failedAuth *Auth) (*Auth, bool, error) {
 	if m == nil || selection == nil {
 		return nil, false, nil
 	}
@@ -805,8 +820,8 @@ func (m *Manager) RefreshHomeSelectionAfterUnauthorized(_ context.Context, selec
 		failedAuth = current
 	}
 	if current != nil && failedAuth != nil && current.ID == failedAuth.ID {
-		currentToken := authAccessToken(current)
-		failedToken := authAccessToken(failedAuth)
+		currentToken := authAccessTokenForRequest(ctx, current)
+		failedToken := authAccessTokenForRequest(ctx, failedAuth)
 		if currentToken != "" && failedToken != "" && currentToken != failedToken {
 			return current, true, nil
 		}
@@ -816,7 +831,7 @@ func (m *Manager) RefreshHomeSelectionAfterUnauthorized(_ context.Context, selec
 
 // tryRefreshAfterUnauthorized refreshes local OAuth credentials once after a
 // 401 so the current auth can be retried before fallback/suspend.
-func (m *Manager) tryRefreshAfterUnauthorized(ctx context.Context, auth *Auth, execErr error, alreadyTried bool) (*Auth, bool) {
+func (m *Manager) tryRefreshAfterUnauthorized(ctx context.Context, auth *Auth, execErr error, alreadyTried bool, clientHeaders ...http.Header) (*Auth, bool) {
 	if m == nil || auth == nil || execErr == nil {
 		return auth, false
 	}
@@ -829,7 +844,7 @@ func (m *Manager) tryRefreshAfterUnauthorized(ctx context.Context, auth *Auth, e
 	if _, ruleMatched := matchRequestScopedErrorAction(auth, execErr, m.runtimeConfigSnapshot()); ruleMatched {
 		return auth, false
 	}
-	failedToken := authAccessToken(auth)
+	failedToken := authAccessTokenForRequest(ctx, auth, clientHeaders...)
 	if failedToken != "" {
 		m.markRejectedAccessToken(auth.ID, failedToken)
 	}
@@ -842,7 +857,7 @@ func (m *Manager) tryRefreshAfterUnauthorized(ctx context.Context, auth *Auth, e
 		log.Debugf("credential refresh before fallback failed for %s (%s): %v", auth.Provider, auth.ID, errRefresh)
 		return auth, false
 	}
-	if failedToken != "" && authAccessToken(refreshed) == failedToken && refreshed.RejectedAccessToken == failedToken {
+	if failedToken != "" && authAccessTokenForRequest(ctx, refreshed, clientHeaders...) == failedToken && (refreshed.RejectedAccessToken == failedToken || refreshed.RejectedSIWCAccessToken == failedToken) {
 		return auth, false
 	}
 	return refreshed, true
@@ -985,7 +1000,7 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 
 	// Another request may already have refreshed this credential.
 	if failedAccessToken != "" {
-		if currentToken := authAccessToken(auth); currentToken != "" && currentToken != failedAccessToken {
+		if !authMatchesTokenPartition(auth, failedAccessToken) && (authAccessToken(auth) != "" || authOuterAccessToken(auth) != "") {
 			return auth.Clone(), nil
 		}
 	}
@@ -1061,7 +1076,7 @@ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAc
 			hasValidAccessToken := current.HasValidAccessToken(now)
 			// failedAccessToken is set only when upstream rejected this exact access
 			// token. Its expiry time no longer proves it is usable.
-			accessTokenRejected := failedAccessToken != "" && authAccessToken(current) == failedAccessToken
+			accessTokenRejected := failedAccessToken != "" && authMatchesTokenPartition(current, failedAccessToken)
 			if isDisabled && invalidGrant {
 				current.Unavailable = true
 				current.Status = StatusDisabled
