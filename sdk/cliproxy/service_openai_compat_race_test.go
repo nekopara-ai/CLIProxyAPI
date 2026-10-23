@@ -37,7 +37,7 @@ func TestPutOpenAICompatConcurrentWithAuthFieldsPatch_Issue6559(t *testing.T) {
 	}
 
 	configPath := filepath.Join(authDir, "config.yaml")
-	initialYAML := fmt.Sprintf("port: 8317\nauth-dir: %q\nremote-management:\n  allow-remote: true\n  secret-key: %q\n", filepath.ToSlash(authDir), string(hashedSecret))
+	initialYAML := fmt.Sprintf("config-version: 8\nserver:\n  port: 8317\noauth:\n  auth-dir: %q\nmanagement:\n  allow-remote: true\n  secret-key: %q\n", filepath.ToSlash(authDir), string(hashedSecret))
 	if errWrite := os.WriteFile(configPath, []byte(initialYAML), 0o600); errWrite != nil {
 		t.Fatalf("write config file: %v", errWrite)
 	}

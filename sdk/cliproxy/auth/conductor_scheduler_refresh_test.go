@@ -492,7 +492,7 @@ func TestManager_RefreshAuthTransientFailure_ExpiredTokenMarkedUnavailableWithRe
 		Metadata: map[string]any{
 			"email":        "expired@example.com",
 			"access_token": "expired-access-token",
-			"expired":      pastExpiry,
+			"expires_at":   pastExpiry,
 		},
 	}
 	if _, errRegister := manager.Register(ctx, auth); errRegister != nil {
@@ -525,7 +525,7 @@ func TestManager_RefreshAuth_ExpiredAccessTokenBlockedFromSelection(t *testing.T
 		Metadata: map[string]any{
 			"email":        "user@example.com",
 			"access_token": "expired-token",
-			"expired":      pastExpiry.Format(time.RFC3339),
+			"expires_at":   pastExpiry.Format(time.RFC3339),
 		},
 	}
 
@@ -624,7 +624,7 @@ func TestScheduler_ReadyAuthDemotedWhenTokenExpires(t *testing.T) {
 		Metadata: map[string]any{
 			"email":        "short@example.com",
 			"access_token": "short-lived-access-token",
-			"expired":      futureExpiry,
+			"expires_at":   futureExpiry,
 		},
 	}
 	if _, errRegister := manager.Register(ctx, auth); errRegister != nil {
@@ -644,16 +644,16 @@ func TestScheduler_ReadyAuthDemotedWhenTokenExpires(t *testing.T) {
 	pastExpiry := time.Now().Add(-10 * time.Minute).Format(time.RFC3339)
 	manager.mu.Lock()
 	if current := manager.auths[auth.ID]; current != nil {
-		current.Metadata["expired"] = pastExpiry
+		current.Metadata["expires_at"] = pastExpiry
 	}
 	manager.scheduler.mu.Lock()
 	if p := manager.scheduler.providers["codex"]; p != nil {
 		if meta := p.auths[auth.ID]; meta != nil && meta.auth != nil {
-			meta.auth.Metadata["expired"] = pastExpiry
+			meta.auth.Metadata["expires_at"] = pastExpiry
 		}
 		for _, shard := range p.modelShards {
 			if entry := shard.entries[auth.ID]; entry != nil && entry.auth != nil {
-				entry.auth.Metadata["expired"] = pastExpiry
+				entry.auth.Metadata["expires_at"] = pastExpiry
 			}
 		}
 	}

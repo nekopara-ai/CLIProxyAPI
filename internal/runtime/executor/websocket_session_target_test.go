@@ -231,6 +231,7 @@ func TestWebsocketRetryBindFailureClearsActiveSessionState(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 			var connections atomic.Int32
+			accepted := make(chan struct{}, 3)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				conn, errUpgrade := upgrader.Upgrade(w, r, nil)
 				if errUpgrade != nil {
@@ -238,6 +239,7 @@ func TestWebsocketRetryBindFailureClearsActiveSessionState(t *testing.T) {
 					return
 				}
 				connections.Add(1)
+				accepted <- struct{}{}
 				defer func() { _ = conn.Close() }()
 				// Handler goroutines can be scheduled out of dial order, so the
 				// server must not infer the caller's intent from the counter
@@ -273,6 +275,14 @@ func TestWebsocketRetryBindFailureClearsActiveSessionState(t *testing.T) {
 			opts.ExecutionLifecycle = nil
 			if errRun := run(opts); errRun != nil {
 				t.Fatalf("second request error = %v", errRun)
+			}
+			// A successful client handshake may precede the handler counter update.
+			for i := 0; i < 3; i++ {
+				select {
+				case <-accepted:
+				case <-time.After(2 * time.Second):
+					t.Fatal("expected all three websocket handlers to accept")
+				}
 			}
 			if got := connections.Load(); got != 3 {
 				t.Fatalf("websocket connections = %d, want 3 after retry bind failure", got)

@@ -604,7 +604,7 @@ func TestListAuthFiles_ExpiredCooldown_ExpiredToken_InFlightRefresh(t *testing.T
 		Metadata: map[string]any{
 			"type":         "codex",
 			"access_token": "expired-access-token",
-			"expired":      now.Add(-5 * time.Minute).Format(time.RFC3339),
+			"expires_at":   now.Add(-5 * time.Minute).Format(time.RFC3339),
 		},
 		Attributes: map[string]string{"runtime_only": "true"},
 	})

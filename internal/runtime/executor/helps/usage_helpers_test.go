@@ -965,7 +965,7 @@ func TestUsageReporterCodexOmittedTierIsAutoOnlyForCheckedObjects(t *testing.T) 
 		{"auto", "codex", "codex", `{"service_tier":"auto"}`, "auto"},
 		{"null field", "codex", "codex", `{"service_tier":null}`, ""},
 		{"blank field", "codex", "codex", `{"service_tier":"  "}`, ""},
-		{"numeric field", "codex", "codex", `{"service_tier":42}`, "42"},
+		{"numeric field", "codex", "codex", `{"service_tier":42}`, ""},
 		{"empty payload", "codex", "codex", ``, ""},
 		{"invalid json", "codex", "codex", `{"model":`, ""},
 		{"null object", "codex", "codex", `null`, ""},
@@ -990,6 +990,62 @@ func TestUsageReporterCodexOmittedTierIsAutoOnlyForCheckedObjects(t *testing.T) 
 				t.Fatal("metadata capture modified outbound payload")
 			}
 		})
+	}
+}
+
+func TestUsageReporterExtractsEffectiveServiceTierFromOutboundShapesUpstream(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name    string
+		payload string
+		want    string
+	}{
+		{name: "top level", payload: `{"service_tier":"priority"}`, want: "priority"},
+		{name: "antigravity request envelope", payload: `{"request":{"service_tier":"priority"}}`, want: "priority"},
+		{name: "interaction envelope", payload: `{"interaction":{"service_tier":"standard"}}`, want: "standard"},
+		{name: "missing", payload: `{"model":"gpt-5.4"}`, want: ""},
+		{name: "invalid json", payload: `{"service_tier":`, want: ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			reporter := NewUsageReporter(context.Background(), "openai", "gpt-5.4", nil)
+			reporter.SetTranslatedRequestMetadata([]byte(tt.payload), "openai")
+			record := reporter.buildRecord(usage.Detail{TotalTokens: 1}, false)
+			if record.EffectiveServiceTier != tt.want {
+				t.Fatalf("effective service tier = %q, want %q", record.EffectiveServiceTier, tt.want)
+			}
+		})
+	}
+}
+
+func TestUsageReporterCapturesEffectiveServiceTierAfterPayloadOverrideUpstream(t *testing.T) {
+	cfg := &internalconfig.Config{
+		Payload: internalconfig.PayloadConfig{
+			Override: []internalconfig.PayloadRule{{
+				Models: []internalconfig.PayloadModelRule{{Name: "gpt-*", Protocol: "codex"}},
+				Params: map[string]any{"service_tier": "priority"},
+			}},
+		},
+	}
+	finalPayload := ApplyPayloadConfigWithRequest(
+		cfg,
+		"gpt-6-astra",
+		"codex",
+		"openai",
+		"",
+		[]byte(`{"model":"gpt-6-astra"}`),
+		nil,
+		"gpt-6-astra",
+		"/v1/chat/completions",
+		nil,
+	)
+
+	ctx := usage.WithServiceTier(context.Background(), "auto")
+	reporter := NewUsageReporter(ctx, "codex", "gpt-6-astra", nil)
+	reporter.SetTranslatedRequestMetadata(finalPayload, "codex")
+	record := reporter.buildRecord(usage.Detail{TotalTokens: 1, ResponseServiceTier: "default"}, false)
+	if record.ServiceTier != "auto" || record.EffectiveServiceTier != "priority" || record.ResponseServiceTier != "default" {
+		t.Fatalf("tiers = requested:%q effective:%q response:%q", record.ServiceTier, record.EffectiveServiceTier, record.ResponseServiceTier)
 	}
 }
 
