@@ -34,6 +34,7 @@ type rpcCapabilities struct {
 	RequestTranslator             bool                         `json:"request_translator"`
 	RequestNormalizer             bool                         `json:"request_normalizer"`
 	RequestInterceptor            bool                         `json:"request_interceptor"`
+	RequestInterceptorOmitBody    bool                         `json:"request_interceptor_omit_body,omitempty"`
 	RequestLifecyclePlugin        bool                         `json:"request_lifecycle_plugin"`
 	ResponseTranslator            bool                         `json:"response_translator"`
 	ResponseBeforeTranslator      bool                         `json:"response_before_translator"`
@@ -176,6 +177,7 @@ func rpcCapabilitiesFromPlugin(plugin pluginapi.Plugin) rpcCapabilities {
 		RequestTranslator:             caps.RequestTranslator != nil,
 		RequestNormalizer:             caps.RequestNormalizer != nil,
 		RequestInterceptor:            caps.RequestInterceptor != nil,
+		RequestInterceptorOmitBody:    caps.RequestInterceptor != nil && caps.RequestInterceptorOmitBody,
 		RequestLifecyclePlugin:        caps.RequestLifecyclePlugin != nil,
 		ResponseTranslator:            caps.ResponseTranslator != nil,
 		ResponseBeforeTranslator:      caps.ResponseBeforeTranslator != nil,

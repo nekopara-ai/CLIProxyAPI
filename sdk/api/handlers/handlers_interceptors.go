@@ -78,6 +78,10 @@ type requestInterceptorDetector interface {
 	HasRequestInterceptors() bool
 }
 
+type responseInterceptorDetector interface {
+	HasResponseInterceptors() bool
+}
+
 type requestLifecycleHost interface {
 	CompleteRequest(context.Context, pluginapi.RequestCompletion)
 }
@@ -376,6 +380,16 @@ func requestInterceptorsEnabled(host PluginInterceptorHost) bool {
 	return true
 }
 
+func responseInterceptorsEnabled(host PluginInterceptorHost) bool {
+	if host == nil {
+		return false
+	}
+	if detector, ok := host.(responseInterceptorDetector); ok {
+		return detector.HasResponseInterceptors()
+	}
+	return true
+}
+
 type requestAfterAuthCapture struct {
 	mu                      sync.Mutex
 	set                     bool
@@ -497,6 +511,9 @@ func (h *BaseAPIHandler) applyRequestInterceptorsBeforeAuth(ctx context.Context,
 	if !requestInterceptorsEnabled(host) {
 		return req, opts, nil
 	}
+	if ctx != nil && ctx.Err() != nil {
+		return req, opts, nil
+	}
 	resp := interceptRequestBeforeAuth(ctx, host, pluginapi.RequestInterceptRequest{
 		RequestID:      requestID,
 		TraceID:        logging.GetRequestID(ctx),
@@ -582,6 +599,9 @@ func (h *BaseAPIHandler) webSocketResponseObserver(requestID, skipPluginID strin
 }
 
 func (h *BaseAPIHandler) applyRequestInterceptorsAfterAuth(ctx context.Context, req coreexecutor.RequestAfterAuthInterceptRequest, requestID, skipPluginID string) coreexecutor.RequestAfterAuthInterceptResponse {
+	if ctx != nil && ctx.Err() != nil {
+		return coreexecutor.RequestAfterAuthInterceptResponse{}
+	}
 	host := h.interceptorHost()
 	if !requestInterceptorsEnabled(host) {
 		return coreexecutor.RequestAfterAuthInterceptResponse{}
@@ -612,7 +632,7 @@ func (h *BaseAPIHandler) applyRequestInterceptorsAfterAuth(ctx context.Context, 
 
 func (h *BaseAPIHandler) applyResponseInterceptors(ctx context.Context, requestID, handlerType, normalizedModel, requestedModel string, opts coreexecutor.Options, rawResponseHeaders, responseHeaders http.Header, originalRequest, requestBody, body []byte, statusCode int, skipPluginID string, passthrough bool) ([]byte, http.Header) {
 	host := h.interceptorHost()
-	if host == nil {
+	if !responseInterceptorsEnabled(host) {
 		return body, responseHeaders
 	}
 	resp := interceptResponse(ctx, host, pluginapi.ResponseInterceptRequest{
@@ -666,34 +686,38 @@ func (h *BaseAPIHandler) WriteModelListResponse(c *gin.Context, sourceFormat str
 	host := h.interceptorHost()
 	if host != nil {
 		ctx := context.Background()
-		var reqHeaders http.Header
 		if c.Request != nil {
-			reqHeaders = cloneHeader(c.Request.Header)
 			if reqCtx := c.Request.Context(); reqCtx != nil {
 				ctx = reqCtx
 			}
 		}
 		lifecycle = h.newRequestLifecycleTracker(ctx, sourceFormat, "", "", false, nil, "")
-		resp := interceptResponse(ctx, host, pluginapi.ResponseInterceptRequest{
-			RequestID:       lifecycle.requestID(),
-			SourceFormat:    sourceFormat,
-			Model:           "",
-			RequestedModel:  "",
-			Stream:          false,
-			RequestHeaders:  reqHeaders,
-			ResponseHeaders: cloneHeader(rawResponseHeaders),
-			OriginalRequest: nil,
-			RequestBody:     nil,
-			Body:            cloneBytes(body),
-			StatusCode:      http.StatusOK,
-			Metadata:        nil,
-		}, "")
-		if len(resp.Body) > 0 {
-			body = cloneBytes(resp.Body)
-		}
-		if resp.Headers != nil {
-			for key, values := range resp.Headers {
-				c.Writer.Header()[key] = append([]string(nil), values...)
+		if responseInterceptorsEnabled(host) {
+			var reqHeaders http.Header
+			if c.Request != nil {
+				reqHeaders = cloneHeader(c.Request.Header)
+			}
+			resp := interceptResponse(ctx, host, pluginapi.ResponseInterceptRequest{
+				RequestID:       lifecycle.requestID(),
+				SourceFormat:    sourceFormat,
+				Model:           "",
+				RequestedModel:  "",
+				Stream:          false,
+				RequestHeaders:  reqHeaders,
+				ResponseHeaders: cloneHeader(rawResponseHeaders),
+				OriginalRequest: nil,
+				RequestBody:     nil,
+				Body:            cloneBytes(body),
+				StatusCode:      http.StatusOK,
+				Metadata:        nil,
+			}, "")
+			if len(resp.Body) > 0 {
+				body = cloneBytes(resp.Body)
+			}
+			if resp.Headers != nil {
+				for key, values := range resp.Headers {
+					c.Writer.Header()[key] = append([]string(nil), values...)
+				}
 			}
 		}
 	}

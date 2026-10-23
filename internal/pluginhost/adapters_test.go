@@ -2015,6 +2015,82 @@ func TestHasRequestInterceptorsReflectsActiveRequestInterceptors(t *testing.T) {
 	}
 }
 
+func TestHasResponseInterceptorsReflectsActiveResponseInterceptors(t *testing.T) {
+	requestOnly := newHostWithRecords(capabilityRecord{
+		id: "key-model-access",
+		plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{
+			RequestInterceptor: requestInterceptorFunc(func(ctx context.Context, req pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error) {
+				return pluginapi.RequestInterceptResponse{}, nil
+			}),
+			RequestInterceptorOmitBody: true,
+		}},
+	})
+	if requestOnly.HasResponseInterceptors() {
+		t.Fatal("HasResponseInterceptors() = true, want false for request-only plugins")
+	}
+
+	responseHost := newHostWithRecords(capabilityRecord{
+		id: "response",
+		plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{
+			ResponseInterceptor: responseInterceptorFunc{
+				interceptResponse: func(ctx context.Context, req pluginapi.ResponseInterceptRequest) (pluginapi.ResponseInterceptResponse, error) {
+					return pluginapi.ResponseInterceptResponse{Body: req.Body}, nil
+				},
+			},
+		}},
+	})
+	if !responseHost.HasResponseInterceptors() {
+		t.Fatal("HasResponseInterceptors() = false, want true for response interceptors")
+	}
+}
+
+func TestInterceptRequest_OmitBodySkipsPayloadCloneAndExtractsModel(t *testing.T) {
+	var captured pluginapi.RequestInterceptRequest
+	host := newHostWithRecords(capabilityRecord{
+		id: "key-model-access",
+		plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{
+			RequestInterceptor: requestInterceptorFunc(func(ctx context.Context, req pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error) {
+				captured = req
+				return pluginapi.RequestInterceptResponse{}, nil
+			}),
+			RequestInterceptorOmitBody: true,
+		}},
+	})
+
+	payload := []byte(`{"model":"gpt-6-astra","input":"large payload"}`)
+	got := host.InterceptRequestBeforeAuth(context.Background(), pluginapi.RequestInterceptRequest{
+		Body:     payload,
+		Metadata: map[string]any{"caller_scope": "scope-1"},
+	})
+	if len(captured.Body) != 0 {
+		t.Fatalf("captured.Body len = %d, want 0 when RequestInterceptorOmitBody is true", len(captured.Body))
+	}
+	if captured.Model != "gpt-6-astra" || captured.RequestedModel != "gpt-6-astra" {
+		t.Fatalf("captured model/requested_model = %q/%q, want gpt-6-astra", captured.Model, captured.RequestedModel)
+	}
+	if len(got.Body) != 0 {
+		t.Fatalf("got.Body len = %d, want 0", len(got.Body))
+	}
+
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	calledOnCanceled := false
+	canceledHost := newHostWithRecords(capabilityRecord{
+		id: "key-model-access",
+		plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{
+			RequestInterceptor: requestInterceptorFunc(func(ctx context.Context, req pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error) {
+				calledOnCanceled = true
+				return pluginapi.RequestInterceptResponse{}, ctx.Err()
+			}),
+			RequestInterceptorOmitBody: true,
+		}},
+	})
+	_ = canceledHost.InterceptRequestBeforeAuth(canceledCtx, pluginapi.RequestInterceptRequest{Body: payload})
+	if calledOnCanceled {
+		t.Fatal("interceptor was invoked with an already-canceled context")
+	}
+}
+
 func TestInterceptorsDoNotMutateInputs(t *testing.T) {
 	t.Run("request", func(t *testing.T) {
 		headers := http.Header{"X-Request": []string{"input"}}
@@ -4174,6 +4250,16 @@ func BenchmarkHostRequestInterceptors_ReadOnly(b *testing.B) {
 			}),
 		}},
 	})
+	// 1 metadata-only plugin omitting request body (matching key-model-access)
+	hostOmitBody := newHostWithRecords(capabilityRecord{
+		id: "key-model-access",
+		plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{
+			RequestInterceptor: requestInterceptorFunc(func(ctx context.Context, req pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error) {
+				return pluginapi.RequestInterceptResponse{}, nil
+			}),
+			RequestInterceptorOmitBody: true,
+		}},
+	})
 	// 2 read-only plugins
 	hostMulti := newHostWithRecords(
 		capabilityRecord{
@@ -4213,6 +4299,16 @@ func BenchmarkHostRequestInterceptors_ReadOnly(b *testing.B) {
 				got := hostMulti.InterceptRequestBeforeAuth(context.Background(), pluginapi.RequestInterceptRequest{Body: payload})
 				if len(got.Body) != 0 {
 					b.Fatal("expected empty body for read-only interceptor")
+				}
+			}
+		})
+		b.Run("omit_body/"+size.name, func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				got := hostOmitBody.InterceptRequestBeforeAuth(context.Background(), pluginapi.RequestInterceptRequest{Model: "gpt-6-astra", Body: payload})
+				if len(got.Body) != 0 {
+					b.Fatal("expected empty body for omit-body interceptor")
 				}
 			}
 		})

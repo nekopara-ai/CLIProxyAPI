@@ -132,6 +132,8 @@ func registerRPCPlugin(ctx context.Context, host *Host, id string, client plugin
 	}
 	if resp.Capabilities.RequestInterceptor {
 		plugin.Capabilities.RequestInterceptor = adapter
+		plugin.Capabilities.RequestInterceptorOmitBody = resp.Capabilities.RequestInterceptorOmitBody ||
+			isMetadataOnlyRequestInterceptorPlugin(id, resp.Metadata)
 	}
 	if resp.Capabilities.RequestLifecyclePlugin {
 		plugin.Capabilities.RequestLifecyclePlugin = adapter
@@ -441,6 +443,15 @@ func callPluginIdentifier(ctx context.Context, client pluginClient, method strin
 		return ""
 	}
 	return strings.TrimSpace(resp.Identifier)
+}
+
+// isMetadataOnlyRequestInterceptorPlugin identifies request-interceptor plugins that evaluate
+// only model names and request metadata (such as caller_scope) without reading the raw JSON body.
+func isMetadataOnlyRequestInterceptorPlugin(id string, meta pluginapi.Metadata) bool {
+	if strings.EqualFold(strings.TrimSpace(id), "key-model-access") {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(meta.Name), "Key Model Access")
 }
 
 func (a rpcAuthProvider) Identifier() string {

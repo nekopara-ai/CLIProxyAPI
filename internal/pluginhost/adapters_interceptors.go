@@ -14,6 +14,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	log "github.com/sirupsen/logrus"
+	"github.com/tidwall/gjson"
 )
 
 func (h *Host) callRequestInterceptor(ctx context.Context, record capabilityRecord, method string, call func(context.Context, pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error), req pluginapi.RequestInterceptRequest) (out pluginapi.RequestInterceptResponse, ok bool) {
@@ -116,13 +117,24 @@ func (h *Host) interceptRequest(ctx context.Context, req pluginapi.RequestInterc
 	bodyModified := false
 
 	for _, record := range h.activeRecords() {
+		if ctx != nil && ctx.Err() != nil {
+			break
+		}
 		interceptor := record.plugin.Capabilities.RequestInterceptor
 		if h.isPluginFused(record.id) || interceptor == nil || record.id == skipPluginID {
 			continue
 		}
 		nextReq := req
 		nextReq.Headers = cloneHeader(current.Headers)
-		if len(currentBase) > 0 {
+		if record.plugin.Capabilities.RequestInterceptorOmitBody {
+			nextReq.Body = nil
+			if nextReq.Model == "" && nextReq.RequestedModel == "" && len(currentBase) > 0 {
+				if model := strings.TrimSpace(gjson.GetBytes(currentBase, "model").String()); model != "" {
+					nextReq.Model = model
+					nextReq.RequestedModel = model
+				}
+			}
+		} else if len(currentBase) > 0 {
 			nextReq.Body = bytes.Clone(currentBase)
 		} else {
 			nextReq.Body = nil
@@ -386,6 +398,21 @@ func (h *Host) HasRequestInterceptors() bool {
 			continue
 		}
 		if record.plugin.Capabilities.RequestInterceptor != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *Host) HasResponseInterceptors() bool {
+	if h == nil {
+		return false
+	}
+	for _, record := range h.activeRecords() {
+		if h.isPluginFused(record.id) {
+			continue
+		}
+		if record.plugin.Capabilities.ResponseInterceptor != nil {
 			return true
 		}
 	}
