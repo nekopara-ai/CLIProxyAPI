@@ -70,12 +70,12 @@ func TestServiceOAuthModelAliasReloadPreservesCodexExecutor(t *testing.T) {
 	}
 	oldConfig := &config.Config{
 		OAuthModelAlias: map[string][]config.OAuthModelAlias{
-			"codex": {{Name: "gpt-5.5", Alias: "gpt-5-legacy"}},
+			"codex": {{Name: "gpt-5.6-luna", Alias: "gpt-5-legacy"}},
 		},
 	}
 	newConfig := oldConfig.CloneForRuntime()
 	newConfig.OAuthModelAlias = map[string][]config.OAuthModelAlias{
-		"codex": {{Name: "gpt-5.5", Alias: "gpt-5-public"}},
+		"codex": {{Name: "gpt-5.6-luna", Alias: "gpt-5-public"}},
 	}
 	service := &Service{cfg: oldConfig, coreManager: manager}
 	executor := &aliasReloadTestExecutor{identifier: "codex"}
@@ -122,13 +122,13 @@ func TestServiceOAuthModelAliasReloadFallsBackToFullRebuildForOtherChanges(t *te
 	oldConfig := &config.Config{
 		Port: 8080,
 		OAuthModelAlias: map[string][]config.OAuthModelAlias{
-			"codex": {{Name: "gpt-5.5", Alias: "gpt-5-legacy"}},
+			"codex": {{Name: "gpt-5.6-luna", Alias: "gpt-5-legacy"}},
 		},
 	}
 	newConfig := oldConfig.CloneForRuntime()
 	newConfig.Port = 8081
 	newConfig.OAuthModelAlias = map[string][]config.OAuthModelAlias{
-		"codex": {{Name: "gpt-5.5", Alias: "gpt-5-public"}},
+		"codex": {{Name: "gpt-5.6-luna", Alias: "gpt-5-public"}},
 	}
 	service := &Service{cfg: oldConfig, coreManager: manager}
 	executor := &aliasReloadTestExecutor{identifier: "codex"}

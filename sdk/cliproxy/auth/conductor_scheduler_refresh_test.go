@@ -397,7 +397,7 @@ func TestManager_RefreshAuthUnauthorizedFailure_RetainsUnexpiredAccessToken(t *t
 		Metadata: map[string]any{
 			"email":        "active@example.com",
 			"access_token": "valid-future-access-token",
-			"expired":      futureExpiry,
+			"expires_at":   futureExpiry,
 		},
 	}
 	if _, errRegister := manager.Register(ctx, auth); errRegister != nil {
@@ -438,7 +438,7 @@ func TestManager_RefreshAuthFailure_PreservesPreexistingUnavailableState(t *test
 		Metadata: map[string]any{
 			"email":        "quota@example.com",
 			"access_token": "valid-future-access-token",
-			"expired":      futureExpiry,
+			"expires_at":   futureExpiry,
 		},
 	}
 	if _, errRegister := manager.Register(ctx, auth); errRegister != nil {

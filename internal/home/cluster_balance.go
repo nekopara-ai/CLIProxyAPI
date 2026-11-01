@@ -59,11 +59,15 @@ func (c *Client) rebalanceCommand(ctx context.Context, address string, args ...a
 	}
 	options.ReadTimeout = -1
 	options.WriteTimeout = -1
-	dialer := redis.NewDialer(options)
-	options.Dialer = func(dialCtx context.Context, network, address string) (net.Conn, error) {
-		conn, errDial := dialer(dialCtx, network, address)
+	baseDialer := redis.NewDialer(options)
+	options.Dialer = func(dialCtx context.Context, network, dialAddress string) (net.Conn, error) {
+		conn, errDial := baseDialer(dialCtx, network, dialAddress)
 		if errDial != nil {
 			return nil, errDial
+		}
+		if ctx.Err() != nil {
+			_ = closeUnderlyingTransport(conn)
+			return nil, context.Cause(ctx)
 		}
 		// Pool closure alone may leave an in-flight read blocked.
 		return newPluginSyncCancelableConn(ctx, conn), nil

@@ -253,6 +253,11 @@ func nextStreamChunk(ctx context.Context, pending *[]coreexecutor.StreamChunk, c
 		case <-ctx.Done():
 			return coreexecutor.StreamChunk{}, false, true
 		case chunk, ok = <-chunks:
+			// A channel closed together with the cancellation was cut by it: the select above picks at random when both are
+			// ready, and the plain close would be reported as a success.
+			if !ok && ctx.Err() != nil {
+				return coreexecutor.StreamChunk{}, false, true
+			}
 		}
 	} else {
 		chunk, ok = <-chunks
@@ -409,8 +414,8 @@ func (c *requestAfterAuthCapture) record(req coreexecutor.RequestAfterAuthInterc
 	var originalRequest []byte
 	originalRequestReplaced := false
 	if len(resp.Body) > 0 {
-		body = cloneBytes(resp.Body)
-		originalRequest = cloneBytes(resp.Body)
+		body = resp.Body
+		originalRequest = resp.Body
 		originalRequestReplaced = true
 	}
 	path := strings.TrimSpace(resp.Path)
@@ -435,8 +440,8 @@ func (c *requestAfterAuthCapture) apply(req coreexecutor.Request, opts coreexecu
 		return req, opts
 	}
 	if c.originalRequestReplaced {
-		req.Payload = cloneBytes(c.body)
-		opts.OriginalRequest = cloneBytes(c.originalRequest)
+		req.Payload = c.body
+		opts.OriginalRequest = c.originalRequest
 	}
 	opts.Headers = cloneHeader(c.headers)
 	if c.path != "" {
@@ -523,12 +528,13 @@ func (h *BaseAPIHandler) applyRequestInterceptorsBeforeAuth(ctx context.Context,
 		Stream:         opts.Stream,
 		Headers:        cloneHeader(opts.Headers),
 		Body:           req.Payload,
+		CallerScope:    callerScopeFromMetadata(opts.Metadata),
 		Metadata:       opts.Metadata,
 	}, skipPluginID)
 	opts.Headers = finalInterceptorHeaders(opts.Headers, resp.Headers)
 	if len(resp.Body) > 0 {
-		req.Payload = cloneBytes(resp.Body)
-		opts.OriginalRequest = cloneBytes(resp.Body)
+		req.Payload = resp.Body
+		opts.OriginalRequest = resp.Body
 	}
 	if strings.TrimSpace(resp.Path) != "" {
 		if opts.Metadata == nil {
@@ -542,6 +548,41 @@ func (h *BaseAPIHandler) applyRequestInterceptorsBeforeAuth(ctx context.Context,
 		return req, opts, requestTerminationError(resp)
 	}
 	return req, opts, nil
+}
+
+func (h *BaseAPIHandler) requestBeforeAuthInterceptor(requestID, skipPluginID string) coreexecutor.RequestBeforeAuthInterceptor {
+	if !requestInterceptorsEnabled(h.interceptorHost()) {
+		return nil
+	}
+	return func(ctx context.Context, req coreexecutor.RequestAfterAuthInterceptRequest) coreexecutor.RequestAfterAuthInterceptResponse {
+		host := h.interceptorHost()
+		if !requestInterceptorsEnabled(host) {
+			return coreexecutor.RequestAfterAuthInterceptResponse{}
+		}
+		resp := interceptRequestBeforeAuth(ctx, host, pluginapi.RequestInterceptRequest{
+			RequestID:      requestID,
+			TraceID:        logging.GetRequestID(ctx),
+			SourceFormat:   req.SourceFormat.String(),
+			ToFormat:       "",
+			Model:          req.Model,
+			RequestedModel: req.RequestedModel,
+			Stream:         req.Stream,
+			Headers:        cloneHeader(req.Headers),
+			Body:           req.Body,
+			CallerScope:    callerScopeFromMetadata(req.Metadata),
+			Metadata:       req.Metadata,
+		}, skipPluginID)
+		return coreexecutor.RequestAfterAuthInterceptResponse{
+			Path:            strings.TrimSpace(resp.Path),
+			Headers:         resp.Headers,
+			Body:            resp.Body,
+			ClearHeaders:    resp.ClearHeaders,
+			Terminate:       resp.Terminate,
+			StatusCode:      normalizedTerminationStatus(resp.StatusCode),
+			ResponseHeaders: resp.ResponseHeaders,
+			ResponseBody:    resp.ResponseBody,
+		}
+	}
 }
 
 func (h *BaseAPIHandler) requestAfterAuthInterceptor(capture *requestAfterAuthCapture, requestID, skipPluginID string) coreexecutor.RequestAfterAuthInterceptor {
@@ -616,6 +657,7 @@ func (h *BaseAPIHandler) applyRequestInterceptorsAfterAuth(ctx context.Context, 
 		Stream:         req.Stream,
 		Headers:        cloneHeader(req.Headers),
 		Body:           req.Body,
+		CallerScope:    callerScopeFromMetadata(req.Metadata),
 		Metadata:       req.Metadata,
 	}, skipPluginID)
 	return coreexecutor.RequestAfterAuthInterceptResponse{

@@ -977,12 +977,20 @@ func (h *Handler) mergeExistingAuthFileMetadata(record *coreauth.Auth) {
 	var existingMap map[string]any
 
 	if cfg := h.configSnapshot(); cfg != nil && strings.TrimSpace(cfg.AuthDir) != "" {
-		targetFile := record.FileName
-		if targetFile == "" {
-			targetFile = record.ID
+		fullPath := ""
+		if record.Attributes != nil {
+			fullPath = strings.TrimSpace(record.Attributes[coreauth.AttributePath])
 		}
-		if targetFile != "" {
-			fullPath := filepath.Join(cfg.AuthDir, targetFile)
+		if fullPath == "" {
+			targetFile := record.FileName
+			if targetFile == "" {
+				targetFile = record.ID
+			}
+			if targetFile != "" {
+				fullPath = filepath.Join(cfg.AuthDir, targetFile)
+			}
+		}
+		if fullPath != "" {
 			if raw, errRead := os.ReadFile(fullPath); errRead == nil && len(raw) > 0 {
 				_ = json.Unmarshal(raw, &existingMap)
 			}
@@ -1047,9 +1055,14 @@ func (h *Handler) saveTokenRecord(ctx context.Context, record *coreauth.Auth) (s
 	if h.postAuthPersistHook != nil {
 		persistedRecord := record
 		if data, errRead := os.ReadFile(savedPath); errRead == nil && len(data) > 0 {
+			cfg := h.configSnapshot()
+			authDir := filepath.Dir(savedPath)
+			if cfg != nil && strings.TrimSpace(cfg.AuthDir) != "" {
+				authDir = cfg.AuthDir
+			}
 			auths, errSynthesize := synthesizer.SynthesizeAuthFile(&synthesizer.SynthesisContext{
-				Config:           h.configSnapshot(),
-				AuthDir:          filepath.Dir(savedPath),
+				Config:           cfg,
+				AuthDir:          authDir,
 				Now:              time.Now(),
 				IDGenerator:      synthesizer.NewStableIDGenerator(),
 				PluginAuthParser: h.pluginHost,
@@ -1059,6 +1072,9 @@ func (h *Handler) saveTokenRecord(ctx context.Context, record *coreauth.Auth) (s
 			}
 			for _, auth := range auths {
 				if auth != nil && (auth.ID == record.ID || len(auths) == 1) {
+					if len(auths) == 1 && strings.TrimSpace(record.ID) != "" {
+						auth.ID = record.ID
+					}
 					persistedRecord = auth
 					break
 				}
@@ -1066,6 +1082,10 @@ func (h *Handler) saveTokenRecord(ctx context.Context, record *coreauth.Auth) (s
 		}
 		if errHook := h.postAuthPersistHook(ctx, persistedRecord); errHook != nil {
 			return savedPath, fmt.Errorf("post-auth persist hook failed: %w", errHook)
+		}
+	} else if h.authManager != nil && strings.TrimSpace(savedPath) != "" {
+		if errReg := h.registerAuthFromFileWithID(ctx, savedPath, nil, record.ID); errReg != nil {
+			return savedPath, fmt.Errorf("register persisted auth failed: %w", errReg)
 		}
 	}
 	return savedPath, nil

@@ -473,7 +473,7 @@ func sanitizeAntigravityGeminiRequestSignatures(modelName string, rawJSON []byte
 	if !antigravityUsesReasoningReplayCache(modelName) {
 		return rawJSON
 	}
-	rawJSON = internalsignature.SanitizeGeminiRequestThoughtSignatures(rawJSON, "request.contents")
+	rawJSON = internalsignature.SanitizeNonVertexGeminiRequestThoughtSignatures(rawJSON, "request.contents")
 	return normalizeAntigravityGeminiFunctionResponseRoles(rawJSON)
 }
 

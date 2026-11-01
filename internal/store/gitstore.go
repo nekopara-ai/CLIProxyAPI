@@ -1552,7 +1552,12 @@ func rollbackRecoveredGitDirectory(gitDir, backupGitDir string) error {
 }
 
 func isRepositoryCorruptionError(err error) bool {
-	if errors.Is(err, dotgit.ErrPackfileNotFound) || errors.Is(err, plumbing.ErrObjectNotFound) {
+	if errors.Is(err, dotgit.ErrPackfileNotFound) ||
+		errors.Is(err, dotgit.ErrIdxNotFound) ||
+		errors.Is(err, plumbing.ErrObjectNotFound) {
+		return true
+	}
+	if errors.Is(err, fs.ErrNotExist) && strings.Contains(err.Error(), "packhandle:") {
 		return true
 	}
 	// go-git v6 alpha.5 reports a missing pack through its filesystem error.
