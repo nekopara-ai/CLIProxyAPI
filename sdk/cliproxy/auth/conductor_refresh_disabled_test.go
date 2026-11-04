@@ -310,7 +310,7 @@ func TestRefreshAuthForRequest_RawFmtError_RecognizesInvalidGrant(t *testing.T) 
 	}
 }
 
-func TestDisabledCodexRejectedRefreshTokenDoesNotSpin(t *testing.T) {
+func TestCodexRejectedRefreshTokenDoesNotSpinThenDisableStopsScheduling(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Second)
 	lead := CodexOuterRefreshLead
@@ -326,12 +326,12 @@ func TestDisabledCodexRejectedRefreshTokenDoesNotSpin(t *testing.T) {
 		FileName: "codex-disabled.json",
 		Provider: "codex",
 		Status:   StatusActive,
-		Disabled: true,
+		Disabled: false,
 		Metadata: map[string]any{
 			"type":          "codex",
 			"access_token":  accessToken,
 			"refresh_token": "rt",
-			"disabled":      true,
+			"disabled":      false,
 		},
 	}
 	ex := &unauthorizedRefreshExecutor{
@@ -352,8 +352,8 @@ func TestDisabledCodexRejectedRefreshTokenDoesNotSpin(t *testing.T) {
 	if got == nil {
 		t.Fatal("auth not found after refreshAuth")
 	}
-	if !got.Disabled || got.Status != StatusDisabled || !got.Unavailable {
-		t.Fatalf("status = %s disabled=%v unavailable=%v, want disabled/unavailable", got.Status, got.Disabled, got.Unavailable)
+	if got.Disabled || got.Status == StatusDisabled {
+		t.Fatal("active credential was manually disabled by refresh failure")
 	}
 	if !got.RequiresSignIn || got.RejectedRefreshToken != "rt" {
 		t.Fatalf("RequiresSignIn=%v RejectedRefreshToken=%q, want true / \"rt\"", got.RequiresSignIn, got.RejectedRefreshToken)
@@ -417,6 +417,14 @@ func TestDisabledCodexRejectedRefreshTokenDoesNotSpin(t *testing.T) {
 	}
 
 	// 4. Once the access token expires on the disabled credential, it must be unscheduled and retain StatusDisabled.
+	m.mu.Lock()
+	m.auths[a.ID].Disabled = true
+	m.auths[a.ID].Status = StatusDisabled
+	m.mu.Unlock()
+	disabled, _ := m.GetByID(a.ID)
+	if _, ok := m.nextRefreshCheckAt(now, disabled, refreshCheckInterval); ok {
+		t.Fatal("manual disable must stop scheduling before token expiry")
+	}
 	afterExp := exp.Add(time.Second)
 	m.mu.RLock()
 	cur = m.auths[a.ID]
@@ -436,7 +444,7 @@ func TestDisabledCodexRejectedRefreshTokenDoesNotSpin(t *testing.T) {
 		ID:       "codex-disabled-expired.json",
 		FileName: "codex-disabled-expired.json",
 		Provider: "codex",
-		Status:   StatusActive,
+		Status:   StatusDisabled,
 		Disabled: true,
 		Metadata: map[string]any{
 			"type":          "codex",
@@ -450,7 +458,7 @@ func TestDisabledCodexRejectedRefreshTokenDoesNotSpin(t *testing.T) {
 	}
 	m.refreshAuth(ctx, expiredDisabled.ID)
 	gotExp, _ := m.GetByID(expiredDisabled.ID)
-	if gotExp.Status != StatusDisabled || !gotExp.NextRefreshAfter.IsZero() {
+	if ex.RefreshCalls() != 1 || gotExp.Status != StatusDisabled || !gotExp.NextRefreshAfter.IsZero() {
 		t.Fatalf("expired disabled terminal refresh: Status=%s NextRefreshAfter=%v, want StatusDisabled and zero time", gotExp.Status, gotExp.NextRefreshAfter)
 	}
 	if _, ok := m.nextRefreshCheckAt(now, gotExp, refreshCheckInterval); ok {

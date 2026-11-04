@@ -53,52 +53,22 @@ func TestDisabledRefreshOutcomeJobCycle(t *testing.T) {
 					t.Fatal(err)
 				}
 				now := time.Now()
-				if at, ok := nextRefreshCheckAt(now, registered, time.Minute); !ok || at.After(now) {
-					t.Fatalf("disabled auth must remain eligible for proactive refresh: %v, %v", at, ok)
+				// This fork treats manual disable as a stop for token refresh too.
+				if _, ok := nextRefreshCheckAt(now, registered, time.Minute); ok {
+					t.Fatal("disabled auth entered proactive refresh schedule")
 				}
-				job := m.markRefreshPending(nil, a.ID, registered.RegistrationEpoch, now)
-				if job == nil {
-					t.Fatal("refresh was not queued")
+				if job := m.markRefreshPending(nil, a.ID, registered.RegistrationEpoch, now); job != nil {
+					t.Fatal("disabled auth queued a refresh job")
 				}
-				if !m.beginRefreshJob(ctx, job) {
-					t.Fatal("refresh did not begin")
+				if _, err := m.refreshAuthForRequestAtEpoch(ctx, a.ID, "", registered.RegistrationEpoch); err == nil {
+					t.Fatal("disabled request refresh was accepted")
 				}
-				refreshed, err := m.refreshAuthForRequestAtEpoch(ctx, a.ID, "", job.registrationEpoch)
-				if err != nil {
-					t.Fatal(err)
+				current, _ := m.GetByID(a.ID)
+				if e.refreshCalls.Load() != 0 || !current.LastRefreshedAt.Equal(oldRefresh) || current.RefreshFailures != 3 {
+					t.Fatal("disabled credential was refreshed or its outcome changed")
 				}
-				m.finishRefreshJob(job, time.Time{}, false)
-				m.mu.RLock()
-				current := m.auths[a.ID].Clone()
-				pending := m.refreshJobs[a.ID]
-				m.mu.RUnlock()
-				if pending != nil {
-					t.Fatal("job was not removed")
-				}
-				if e.refreshCalls.Load() != 1 {
-					t.Fatal("expected one refresh")
-				}
-				if !current.LastRefreshedAt.After(oldRefresh) || current.RefreshFailures != 0 {
-					t.Fatalf("refresh outcome lost: timestamp=%v failures=%d", current.LastRefreshedAt, current.RefreshFailures)
-				}
-				if !current.Disabled || current.Status != StatusDisabled {
-					t.Fatal("disabled state changed")
-				}
-				if !current.NextRefreshAfter.Equal(refreshed.NextRefreshAfter) {
-					t.Fatal("job completion overwrote refresh outcome")
-				}
-				if !renew {
-					want := current.LastRefreshedAt.Add(refreshIneffectiveBackoff)
-					if !current.NextRefreshAfter.Equal(want) {
-						t.Fatalf("backoff=%v, want %v", current.NextRefreshAfter, want)
-					}
-					if m.markRefreshPending(nil, a.ID, current.RegistrationEpoch, current.LastRefreshedAt) != nil {
-						t.Fatal("no-op refresh immediately requeued")
-					}
-				}
-				at, ok := nextRefreshCheckAt(current.LastRefreshedAt, current, time.Minute)
-				if !ok || !at.After(current.LastRefreshedAt) {
-					t.Fatalf("expected future proactive refresh, got %v, %v", at, ok)
+				if current.Disabled != registered.Disabled || current.Status != registered.Status {
+					t.Fatal("manual disabled state changed")
 				}
 			})
 		}

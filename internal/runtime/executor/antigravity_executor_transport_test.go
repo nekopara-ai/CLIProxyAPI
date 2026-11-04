@@ -928,7 +928,8 @@ func TestCloseAntigravityAuthIdleTransportsEvictsIdlePool(t *testing.T) {
 	}
 
 	scope := antigravityTransportScope(auth)
-	key := antigravityTransportKey{credential: scope, base: antigravityBaseTransport}
+	settings := resolveAntigravityPoolSettings(cfg)
+	key := antigravityTransportKey{credential: scope, base: antigravityBaseTransport, shortMode: settings.shortMode, idleConnTimeout: settings.idleConnTimeout, maxIdleConnsPerHost: settings.maxIdleConnsPerHost}
 
 	// Verify it's cached
 	if !antigravityTransports.Contains(key) {
@@ -982,7 +983,8 @@ func TestAntigravityCountTokens429EvictsIdleTransports(t *testing.T) {
 	}
 
 	scope := antigravityTransportScope(auth)
-	key := antigravityTransportKey{credential: scope, base: antigravityBaseTransport}
+	settings := resolveAntigravityPoolSettings(cfg)
+	key := antigravityTransportKey{credential: scope, base: antigravityBaseTransport, shortMode: settings.shortMode, idleConnTimeout: settings.idleConnTimeout, maxIdleConnsPerHost: settings.maxIdleConnsPerHost}
 	if !antigravityTransports.Contains(key) {
 		t.Fatal("expected transport to be in cache before count_tokens")
 	}

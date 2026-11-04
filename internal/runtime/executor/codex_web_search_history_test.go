@@ -18,7 +18,7 @@ import (
 )
 
 // Record the actual HTTP/WS wire body: testing the helper alone cannot prove
-// that a transport uses it after payload overrides or on a compaction request.
+// that a transport preserves compatibility before final payload overrides.
 func TestCodexWebSearchHistoryAcrossTransports(t *testing.T) {
 	for _, transport := range []string{"http", "http-stream", "websocket", "websocket-stream"} {
 		for _, lite := range []string{"", "header", "metadata"} {
@@ -134,6 +134,13 @@ func TestCodexWebSearchHistoryAcrossTransports(t *testing.T) {
 							if apiKey {
 								if search.Exists() || ojson.GetBytes(body, "tool_choice").String() != "auto" {
 									t.Fatalf("API-key request changed: %s", body)
+								}
+							} else if override {
+								if ojson.GetBytes(body, "tools").Raw != "[]" || ojson.GetBytes(body, "tool_choice").String() != "auto" {
+									t.Fatalf("final user rules were overwritten: %s", body)
+								}
+								if lite != "" && (!search.Exists() || search.Get("external_web_access").Type != ojson.False) {
+									t.Fatalf("unfiltered Lite compatibility declaration lost: %s", body)
 								}
 							} else if !search.Exists() || search.Get("external_web_access").Type != ojson.False || ojson.GetBytes(body, "tool_choice").String() != "none" {
 								t.Fatalf("OAuth wire body lacks compatibility rewrite: %s", body)
