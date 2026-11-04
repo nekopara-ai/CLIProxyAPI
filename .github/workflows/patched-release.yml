@@ -198,7 +198,7 @@ jobs:
             'https://api.github.com/repos/nekopara-ai/CLIProxyAPI/releases/latest' \
             internal/api/handlers/management/config_basic.go
 
-      - name: Run patched-path tests
+      - name: Run repository tests
         if: steps.metadata.outputs.already_released != 'true'
         run: |
           # These three Claude fingerprint tests also fail on the unmodified
@@ -206,15 +206,9 @@ jobs:
           # Keep the exception exact so every other executor test still gates release.
           go test \
             -skip '^(TestApplyClaudeHeaders_DisableDeviceProfileStabilization|TestApplyClaudeHeaders_LegacyModePreservesConfiguredUserAgentOverrideForClaudeClients|TestClaudeExecutor_NonClaudeRequestUsesClaudeCode220CLIFingerprint)$' \
-            ./internal/api/handlers/management \
-            ./internal/pluginhost \
-            ./internal/redisqueue \
-            ./internal/runtime/executor/... \
-            ./sdk/api/handlers/openai \
-            ./sdk/cliproxy/... \
-            ./sdk/pluginapi
+            ./...
 
-      # Run the complete patched-path suite on the committed fixture snapshot,
+      # Run the repository suite on the committed fixture snapshot,
       # then validate and render the current catalogs that ship in the binary.
       - name: Refresh models catalog
         if: steps.metadata.outputs.already_released != 'true'
