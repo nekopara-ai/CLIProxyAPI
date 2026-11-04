@@ -1,11 +1,11 @@
 package openai
 
 import (
+	"github.com/MoeForge/moego/ojson"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
-	"github.com/tidwall/gjson"
 )
 
 func TestApplyDeepSeekV4ReasoningEffort(t *testing.T) {
@@ -33,10 +33,10 @@ func TestApplyDeepSeekV4ReasoningEffort(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Apply() error = %v", err)
 			}
-			if got := gjson.GetBytes(out, "thinking.type").String(); got != test.wantType {
+			if got := ojson.GetBytes(out, "thinking.type").String(); got != test.wantType {
 				t.Fatalf("thinking.type = %q, want %q; body=%s", got, test.wantType, out)
 			}
-			effort := gjson.GetBytes(out, "reasoning_effort")
+			effort := ojson.GetBytes(out, "reasoning_effort")
 			if test.wantEffort == "" {
 				if effort.Exists() {
 					t.Fatalf("reasoning_effort exists, want omitted; body=%s", out)
@@ -81,10 +81,10 @@ func TestApplyNonDeepSeekOpenAIModelUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Apply() error = %v", err)
 	}
-	if got := gjson.GetBytes(out, "reasoning_effort").String(); got != "medium" {
+	if got := ojson.GetBytes(out, "reasoning_effort").String(); got != "medium" {
 		t.Fatalf("reasoning_effort = %q, want medium; body=%s", got, out)
 	}
-	if gjson.GetBytes(out, "thinking").Exists() {
+	if ojson.GetBytes(out, "thinking").Exists() {
 		t.Fatalf("generic model gained DeepSeek thinking field: %s", out)
 	}
 }
@@ -104,7 +104,7 @@ func TestDeepSeekV41XHighUsesResolvedVersion(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := gjson.GetBytes(out, "reasoning_effort").String(); got != tc.want {
+			if got := ojson.GetBytes(out, "reasoning_effort").String(); got != tc.want {
 				t.Fatalf("effort=%q, want %q", got, tc.want)
 			}
 		})

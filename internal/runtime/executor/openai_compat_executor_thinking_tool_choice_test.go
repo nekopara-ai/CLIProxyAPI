@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,7 +14,6 @@ import (
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 const thinkingToolChoiceError = `{"error":{"param":null,"type":"invalid_request_error","code":"invalid_request_error","message":"Upstream request failed: [invalid_request_error] Thinking mode does not support this tool_choice"}}`
@@ -55,15 +55,15 @@ func TestOpenAICompatThinkingToolChoiceFallback(t *testing.T) {
 					}
 					if attempt == 1 {
 						firstBody = body
-						if gjson.GetBytes(body, "thinking.type").String() == "disabled" {
+						if ojson.GetBytes(body, "thinking.type").String() == "disabled" {
 							t.Error("thinking disabled before upstream rejection")
 						}
 					} else {
-						if gjson.GetBytes(body, "thinking.type").String() != "disabled" || gjson.GetBytes(body, "reasoning_effort").Exists() {
+						if ojson.GetBytes(body, "thinking.type").String() != "disabled" || ojson.GetBytes(body, "reasoning_effort").Exists() {
 							t.Errorf("thinking not disabled in fallback: %s", body)
 						}
 						for _, path := range []string{"model", "messages", "tools", "tool_choice", "stream", "stream_options", "max_tokens"} {
-							if gjson.GetBytes(body, path).Raw != gjson.GetBytes(firstBody, path).Raw {
+							if ojson.GetBytes(body, path).Raw != ojson.GetBytes(firstBody, path).Raw {
 								t.Errorf("fallback changed %s", path)
 							}
 						}
@@ -107,7 +107,7 @@ func TestOpenAICompatThinkingToolChoiceFallback(t *testing.T) {
 				} else {
 					var result cliproxyexecutor.Response
 					result, err = executor.Execute(context.Background(), auth, req, opts)
-					if err == nil && gjson.GetBytes(result.Payload, "choices.0.message.content").String() != "ok" {
+					if err == nil && ojson.GetBytes(result.Payload, "choices.0.message.content").String() != "ok" {
 						t.Errorf("unexpected response: %s", result.Payload)
 					}
 				}

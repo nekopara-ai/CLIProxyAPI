@@ -2,6 +2,7 @@ package executor
 
 import (
 	"bytes"
+	"github.com/MoeForge/moego/ojson"
 	"net/http"
 	"strconv"
 	"strings"
@@ -9,7 +10,6 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	"github.com/tidwall/gjson"
 )
 
 // The identifiers below are copied verbatim from a captured Codex CLI request
@@ -106,11 +106,11 @@ func TestCodexIdentityConfuseKeepsEverySurfaceConsistent(t *testing.T) {
 		}
 	}
 
-	sessionID := gjson.GetBytes(body, "prompt_cache_key").String()
+	sessionID := ojson.GetBytes(body, "prompt_cache_key").String()
 	if sessionID == "" {
 		t.Fatalf("body lost prompt_cache_key: %s", body)
 	}
-	bodyTurnMetadata := gjson.GetBytes(body, "client_metadata.x-codex-turn-metadata").String()
+	bodyTurnMetadata := ojson.GetBytes(body, "client_metadata.x-codex-turn-metadata").String()
 	if bodyTurnMetadata != headers.Get("X-Codex-Turn-Metadata") {
 		t.Fatalf("body and header turn metadata diverged: body=%s header=%s", bodyTurnMetadata, headers.Get("X-Codex-Turn-Metadata"))
 	}
@@ -124,50 +124,50 @@ func TestCodexIdentityConfuseKeepsEverySurfaceConsistent(t *testing.T) {
 		{"header Thread-Id", headers.Get("Thread-Id"), sessionID},
 		{"header X-Client-Request-Id", headers.Get("X-Client-Request-Id"), sessionID},
 		{"header X-Codex-Window-Id", headers.Get("X-Codex-Window-Id"), sessionID + ":0"},
-		{"client_metadata.session_id", gjson.GetBytes(body, "client_metadata.session_id").String(), sessionID},
-		{"client_metadata.thread_id", gjson.GetBytes(body, "client_metadata.thread_id").String(), sessionID},
-		{"client_metadata.x-codex-window-id", gjson.GetBytes(body, "client_metadata.x-codex-window-id").String(), sessionID + ":0"},
-		{"turn metadata session_id", gjson.Get(bodyTurnMetadata, "session_id").String(), sessionID},
-		{"turn metadata thread_id", gjson.Get(bodyTurnMetadata, "thread_id").String(), sessionID},
-		{"turn metadata window_id", gjson.Get(bodyTurnMetadata, "window_id").String(), sessionID + ":0"},
+		{"client_metadata.session_id", ojson.GetBytes(body, "client_metadata.session_id").String(), sessionID},
+		{"client_metadata.thread_id", ojson.GetBytes(body, "client_metadata.thread_id").String(), sessionID},
+		{"client_metadata.x-codex-window-id", ojson.GetBytes(body, "client_metadata.x-codex-window-id").String(), sessionID + ":0"},
+		{"turn metadata session_id", ojson.Get(bodyTurnMetadata, "session_id").String(), sessionID},
+		{"turn metadata thread_id", ojson.Get(bodyTurnMetadata, "thread_id").String(), sessionID},
+		{"turn metadata window_id", ojson.Get(bodyTurnMetadata, "window_id").String(), sessionID + ":0"},
 	} {
 		if check.got != check.want {
 			t.Fatalf("%s = %q, want %q", check.name, check.got, check.want)
 		}
 	}
 
-	installationID := gjson.GetBytes(body, "client_metadata.x-codex-installation-id").String()
+	installationID := ojson.GetBytes(body, "client_metadata.x-codex-installation-id").String()
 	if installationID == "" || installationID == codexTestRawInstallationID {
 		t.Fatalf("installation id was not confused: %q", installationID)
 	}
-	if got := gjson.Get(bodyTurnMetadata, "installation_id").String(); got != installationID {
+	if got := ojson.Get(bodyTurnMetadata, "installation_id").String(); got != installationID {
 		t.Fatalf("turn metadata installation_id = %q, want %q", got, installationID)
 	}
 
-	turnID := gjson.GetBytes(body, "client_metadata.turn_id").String()
+	turnID := ojson.GetBytes(body, "client_metadata.turn_id").String()
 	if turnID == "" || turnID == codexTestRawTurnID {
 		t.Fatalf("turn id was not confused: %q", turnID)
 	}
-	if got := gjson.GetBytes(body, "client_metadata.root_turn_id").String(); got != turnID {
+	if got := ojson.GetBytes(body, "client_metadata.root_turn_id").String(); got != turnID {
 		t.Fatalf("client_metadata.root_turn_id = %q, want %q", got, turnID)
 	}
-	if got := gjson.Get(bodyTurnMetadata, "turn_id").String(); got != turnID {
+	if got := ojson.Get(bodyTurnMetadata, "turn_id").String(); got != turnID {
 		t.Fatalf("turn metadata turn_id = %q, want %q", got, turnID)
 	}
-	if got := gjson.Get(bodyTurnMetadata, "root_turn_id").String(); got != turnID {
+	if got := ojson.Get(bodyTurnMetadata, "root_turn_id").String(); got != turnID {
 		t.Fatalf("turn metadata root_turn_id = %q, want %q", got, turnID)
 	}
 
-	contextWindowID := gjson.Get(bodyTurnMetadata, "context_window_id").String()
+	contextWindowID := ojson.Get(bodyTurnMetadata, "context_window_id").String()
 	if contextWindowID == "" || contextWindowID == codexTestRawContextWindow || contextWindowID == sessionID {
 		t.Fatalf("context_window_id = %q, want a distinct confused identifier", contextWindowID)
 	}
 
 	// The confusion layer must not invent or drop unrelated metadata.
-	if got := gjson.Get(bodyTurnMetadata, "agent_name").String(); got != "/home/user" {
+	if got := ojson.Get(bodyTurnMetadata, "agent_name").String(); got != "/home/user" {
 		t.Fatalf("agent_name = %q, want it preserved", got)
 	}
-	if got := gjson.Get(bodyTurnMetadata, "window_number").Int(); got != 0 {
+	if got := ojson.Get(bodyTurnMetadata, "window_number").Int(); got != 0 {
 		t.Fatalf("window_number = %d, want it preserved", got)
 	}
 }
@@ -217,7 +217,7 @@ func TestCodexIdentityConfuseSeparatesUpstreamAccounts(t *testing.T) {
 		"client_metadata.turn_id",
 		"client_metadata.x-codex-turn-metadata",
 	} {
-		if gjson.GetBytes(first, path).String() == gjson.GetBytes(second, path).String() {
+		if ojson.GetBytes(first, path).String() == ojson.GetBytes(second, path).String() {
 			t.Fatalf("%s is identical across upstream accounts", path)
 		}
 	}

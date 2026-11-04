@@ -1,9 +1,8 @@
 package helps
 
 import (
+	"github.com/MoeForge/moego/ojson"
 	"testing"
-
-	"github.com/tidwall/gjson"
 )
 
 func TestOpenAIThinkingToolChoiceFallbackDefaultAndGuards(t *testing.T) {
@@ -33,11 +32,11 @@ func TestOpenAIThinkingToolChoiceFallbackDefaultAndGuards(t *testing.T) {
 				}
 				return
 			}
-			if got := gjson.GetBytes(fallback, "thinking").Raw; got != `{"type":"disabled"}` {
+			if got := ojson.GetBytes(fallback, "thinking").Raw; got != `{"type":"disabled"}` {
 				t.Errorf("thinking = %s", got)
 			}
 			for _, path := range []string{"reasoning_effort", "reasoning"} {
-				if gjson.GetBytes(fallback, path).Exists() {
+				if ojson.GetBytes(fallback, path).Exists() {
 					t.Errorf("%s survived", path)
 				}
 			}

@@ -1,28 +1,17 @@
 // Package openai implements thinking configuration for OpenAI/Codex models.
-//
-// OpenAI models use the reasoning_effort format with discrete levels
-// (low/medium/high). Some models support xhigh and none levels.
-// See: _bmad-output/planning-artifacts/architecture.md#Epic-8
 package openai
 
 import (
-	"strings"
-
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
+	"strings"
 )
 
 // Applier implements thinking.ProviderApplier for OpenAI models.
-//
-// OpenAI-specific behavior:
-//   - Output format: reasoning_effort (string: low/medium/high/xhigh)
-//   - Level-only mode: no numeric budget support
-//   - Some models support ZeroAllowed (gpt-5.1, gpt-5.2)
 type Applier struct{}
 
-var _ thinking.ProviderApplier = (*Applier)(nil)
+var _ thinking.ProviderDocApplier = (*Applier)(nil)
 
 // NewApplier creates a new OpenAI thinking applier.
 func NewApplier() *Applier {
@@ -34,35 +23,72 @@ func init() {
 }
 
 // Apply applies thinking configuration to OpenAI request body.
-//
-// Expected output format:
-//
-//	{
-//	  "reasoning_effort": "high"
-//	}
 func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *registry.ModelInfo) ([]byte, error) {
-	if isDeepSeekV4Model(modelInfo) {
-		return applyDeepSeekV4(body, config, isDeepSeekV41Model(modelInfo))
+	if !isDeepSeekV4Model(modelInfo) {
+		if _, ok := resolveOpenAIEffort(config, modelInfo); !ok {
+			return body, nil
+		}
 	}
+	if len(body) == 0 || !ojson.ValidBytes(body) {
+		body = []byte("{}")
+	}
+	doc := ojson.NewDoc(body)
+	if err := a.ApplyDoc(doc, config, modelInfo); err != nil {
+		return nil, err
+	}
+	return doc.Bytes(), nil
+}
+
+// ApplyDoc applies thinking configuration onto doc in place.
+func (a *Applier) ApplyDoc(doc *ojson.Doc, config thinking.ThinkingConfig, modelInfo *registry.ModelInfo) error {
+	if doc == nil {
+		return nil
+	}
+	if isDeepSeekV4Model(modelInfo) {
+		return applyDeepSeekV4Doc(doc, config, isDeepSeekV41Model(modelInfo))
+	}
+	effort, ok := resolveOpenAIEffort(config, modelInfo)
+	if !ok {
+		return nil
+	}
+	_ = doc.Set("reasoning_effort", effort)
+	return nil
+}
+
+func resolveOpenAIEffort(config thinking.ThinkingConfig, modelInfo *registry.ModelInfo) (string, bool) {
 	if thinking.IsUserDefinedModel(modelInfo) {
-		return applyCompatibleOpenAI(body, config)
+		switch config.Mode {
+		case thinking.ModeLevel:
+			if config.Level == "" {
+				return "", false
+			}
+			return string(config.Level), true
+		case thinking.ModeNone:
+			effort := string(thinking.LevelNone)
+			if config.Level != "" {
+				effort = string(config.Level)
+			}
+			return effort, true
+		case thinking.ModeAuto:
+			return string(thinking.LevelAuto), true
+		case thinking.ModeBudget:
+			level, ok := thinking.ConvertBudgetToLevel(config.Budget)
+			if !ok {
+				return "", false
+			}
+			return level, true
+		default:
+			return "", false
+		}
 	}
 	if modelInfo.Thinking == nil {
-		return body, nil
+		return "", false
 	}
-
-	// Only handle ModeLevel and ModeNone; other modes pass through unchanged.
 	if config.Mode != thinking.ModeLevel && config.Mode != thinking.ModeNone {
-		return body, nil
+		return "", false
 	}
-
-	if len(body) == 0 || !gjson.ValidBytes(body) {
-		body = []byte(`{}`)
-	}
-
 	if config.Mode == thinking.ModeLevel {
-		result, _ := sjson.SetBytes(body, "reasoning_effort", string(config.Level))
-		return result, nil
+		return string(config.Level), true
 	}
 
 	effort := ""
@@ -79,11 +105,9 @@ func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *
 		effort = support.Levels[0]
 	}
 	if effort == "" {
-		return body, nil
+		return "", false
 	}
-
-	result, _ := sjson.SetBytes(body, "reasoning_effort", effort)
-	return result, nil
+	return effort, true
 }
 
 func isDeepSeekV4Model(modelInfo *registry.ModelInfo) bool {
@@ -111,15 +135,12 @@ func isDeepSeekV41Model(modelInfo *registry.ModelInfo) bool {
 		model == "deepseek_v4.1" || strings.HasPrefix(model, "deepseek_v4.1_")
 }
 
-func applyDeepSeekV4(body []byte, config thinking.ThinkingConfig, preserveXHigh bool) ([]byte, error) {
-	if len(body) == 0 || !gjson.ValidBytes(body) {
-		body = []byte(`{}`)
-	}
+func applyDeepSeekV4Doc(doc *ojson.Doc, config thinking.ThinkingConfig, preserveXHigh bool) error {
 
 	if config.Mode == thinking.ModeNone {
-		result, _ := sjson.DeleteBytes(body, "reasoning_effort")
-		result, _ = sjson.SetBytes(result, "thinking.type", "disabled")
-		return result, nil
+		_ = doc.Delete("reasoning_effort")
+		_ = doc.Set("thinking.type", "disabled")
+		return nil
 	}
 
 	effort := ""
@@ -143,49 +164,14 @@ func applyDeepSeekV4(body []byte, config thinking.ThinkingConfig, preserveXHigh 
 	case thinking.ModeBudget:
 		level, ok := thinking.ConvertBudgetToLevel(config.Budget)
 		if ok {
-			return applyDeepSeekV4(body, thinking.ThinkingConfig{Mode: thinking.ModeLevel, Level: thinking.ThinkingLevel(level)}, preserveXHigh)
+			return applyDeepSeekV4Doc(doc, thinking.ThinkingConfig{Mode: thinking.ModeLevel, Level: thinking.ThinkingLevel(level)}, preserveXHigh)
 		}
 	}
 	if effort == "" {
-		return body, nil
+		return nil
 	}
 
-	result, _ := sjson.SetBytes(body, "thinking.type", "enabled")
-	result, _ = sjson.SetBytes(result, "reasoning_effort", effort)
-	return result, nil
-}
-
-func applyCompatibleOpenAI(body []byte, config thinking.ThinkingConfig) ([]byte, error) {
-	if len(body) == 0 || !gjson.ValidBytes(body) {
-		body = []byte(`{}`)
-	}
-
-	var effort string
-	switch config.Mode {
-	case thinking.ModeLevel:
-		if config.Level == "" {
-			return body, nil
-		}
-		effort = string(config.Level)
-	case thinking.ModeNone:
-		effort = string(thinking.LevelNone)
-		if config.Level != "" {
-			effort = string(config.Level)
-		}
-	case thinking.ModeAuto:
-		// Auto mode for user-defined models: pass through as "auto"
-		effort = string(thinking.LevelAuto)
-	case thinking.ModeBudget:
-		// Budget mode: convert budget to level using threshold mapping
-		level, ok := thinking.ConvertBudgetToLevel(config.Budget)
-		if !ok {
-			return body, nil
-		}
-		effort = level
-	default:
-		return body, nil
-	}
-
-	result, _ := sjson.SetBytes(body, "reasoning_effort", effort)
-	return result, nil
+	_ = doc.Set("thinking.type", "enabled")
+	_ = doc.Set("reasoning_effort", effort)
+	return nil
 }

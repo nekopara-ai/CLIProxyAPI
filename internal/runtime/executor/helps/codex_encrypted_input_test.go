@@ -2,13 +2,13 @@ package helps
 
 import (
 	"bytes"
-	"encoding/base64"
 	"errors"
+	"github.com/MoeForge/moego/base64"
+	"github.com/MoeForge/moego/ojson"
 	"strings"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/signature"
-	"github.com/tidwall/gjson"
 )
 
 func TestValidateCodexEncryptedInput(t *testing.T) {
@@ -57,7 +57,7 @@ func TestValidateCodexEncryptedInput(t *testing.T) {
 			if !errors.As(err, &rejected) || rejected.StatusCode() != 400 || !rejected.IsRequestScoped() {
 				t.Fatalf("expected request-scoped local 400, got %v", err)
 			}
-			if gjson.Get(err.Error(), "error.param").String() != tc.param || gjson.Get(err.Error(), "error.code").String() != "invalid_encrypted_content" {
+			if ojson.Get(err.Error(), "error.param").String() != tc.param || ojson.Get(err.Error(), "error.code").String() != "invalid_encrypted_content" {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			if strings.Contains(err.Error(), "SECRET") || strings.Contains(err.Error(), valid) {

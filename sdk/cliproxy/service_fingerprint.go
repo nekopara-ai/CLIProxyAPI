@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/MoeForge/moego/ojson"
 	"strings"
 	"time"
 
@@ -16,7 +17,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func (s *Service) startFingerprintMonitor(ctx context.Context) {
@@ -94,7 +94,7 @@ func (s *Service) probeFingerprint(ctx context.Context, a *coreauth.Auth, model,
 			if !bytes.HasPrefix(line, []byte("data:")) {
 				continue
 			}
-			event := gjson.ParseBytes(bytes.TrimSpace(line[5:]))
+			event := ojson.ParseBytes(bytes.TrimSpace(line[5:]))
 			switch event.Get("type").String() {
 			case "response.completed":
 				return fingerprintResponseText(event.Get("response"))
@@ -114,8 +114,8 @@ func (s *Service) probeFingerprint(ctx context.Context, a *coreauth.Auth, model,
 	return "", errors.New("probe stream ended without completion")
 }
 
-func fingerprintResponseText(data gjson.Result) (string, error) {
-	if data.Get("status").String() != "completed" || data.Get("error").Exists() && data.Get("error").Type != gjson.Null {
+func fingerprintResponseText(data ojson.Result) (string, error) {
+	if data.Get("status").String() != "completed" || data.Get("error").Exists() && data.Get("error").Type != ojson.Null {
 		return "", errors.New("incomplete probe response")
 	}
 	var text strings.Builder

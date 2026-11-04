@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"errors"
+	"github.com/MoeForge/moego/ojson"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,7 +14,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func TestCodexEncryptedInputNeverReachesUpstream(t *testing.T) {
@@ -23,7 +23,7 @@ func TestCodexEncryptedInputNeverReachesUpstream(t *testing.T) {
 			`{"type":"function_call_output","call_id":"call_test","output":[{"type":"encrypted_content","encrypted_content":"invalid!"}]}`,
 			`{"type":"custom_tool_call_output","call_id":"call_test","encrypted_content":null,"output":"keep"}`,
 		} {
-			t.Run(transport+"/"+gjson.Get(item, "type").String(), func(t *testing.T) {
+			t.Run(transport+"/"+ojson.Get(item, "type").String(), func(t *testing.T) {
 				var calls atomic.Int32
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					calls.Add(1)
@@ -53,7 +53,7 @@ func TestCodexEncryptedInputNeverReachesUpstream(t *testing.T) {
 				if !errors.As(err, &status) || status.StatusCode() != 400 || !errors.As(err, &scoped) || !scoped.IsRequestScoped() {
 					t.Fatalf("expected local request-scoped 400, got %v", err)
 				}
-				if gjson.Get(err.Error(), "error.code").String() != "invalid_encrypted_content" {
+				if ojson.Get(err.Error(), "error.code").String() != "invalid_encrypted_content" {
 					t.Fatalf("unexpected error: %v", err)
 				}
 				if calls.Load() != 0 {
@@ -137,7 +137,7 @@ func TestCodexEncryptedInputPreservedAtUpstream(t *testing.T) {
 			}
 			select {
 			case body := <-captured:
-				if got := gjson.GetBytes(body, "input").Raw; got != input {
+				if got := ojson.GetBytes(body, "input").Raw; got != input {
 					t.Fatalf("input changed: %s", got)
 				}
 			default:

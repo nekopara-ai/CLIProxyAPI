@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"io"
 	"net/http"
 	"net/url"
@@ -17,7 +18,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/gjson"
 )
 
 func (h *Host) callRequestInterceptor(ctx context.Context, record capabilityRecord, method string, call func(context.Context, pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error), req pluginapi.RequestInterceptRequest) (out pluginapi.RequestInterceptResponse, ok bool) {
@@ -178,7 +178,7 @@ func (h *Host) interceptRequest(ctx context.Context, req pluginapi.RequestInterc
 		if requestInterceptorOmitsBody(record, beforeAuth) {
 			nextReq.Body = nil
 			if nextReq.Model == "" && nextReq.RequestedModel == "" && len(currentBase) > 0 {
-				if model := strings.TrimSpace(gjson.GetBytes(currentBase, "model").String()); model != "" {
+				if model := strings.TrimSpace(ojson.GetBytes(currentBase, "model").String()); model != "" {
 					nextReq.Model = model
 					nextReq.RequestedModel = model
 				}

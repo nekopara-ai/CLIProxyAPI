@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
@@ -16,7 +17,6 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/gjson"
 )
 
 func isCodexWebsocketSuccessfulTerminalEvent(eventType string) bool {
@@ -498,7 +498,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				break
 			}
 
-			eventType := gjson.GetBytes(payload, "type").String()
+			eventType := ojson.GetBytes(payload, "type").String()
 			terminalSuccess := isCodexWebsocketSuccessfulTerminalEvent(eventType)
 			isTerminalEvent := terminalSuccess || eventType == "response.failed" || eventType == "error"
 			if helps.HasMeaningfulCodexOutputDelta(payload) {
@@ -527,7 +527,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				if !preserveNativeOutput {
 					completedPayload = patchCodexCompletedOutput(completedPayload, outputItemsByIndex, outputItemsFallback)
 				}
-				if gjson.GetBytes(completedPayload, "type").String() == "response.completed" {
+				if ojson.GetBytes(completedPayload, "type").String() == "response.completed" {
 					cacheCodexReasoningReplayFromCompleted(replayScope, completedPayload)
 				}
 				if detail, ok := helps.ParseCodexUsageWithOutputItems(completedPayload, outputItemsByIndex, outputItemsFallback); ok {
@@ -767,7 +767,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				return
 			}
 
-			eventType := gjson.GetBytes(payload, "type").String()
+			eventType := ojson.GetBytes(payload, "type").String()
 			terminalSuccess := isCodexWebsocketSuccessfulTerminalEvent(eventType)
 			isTerminalEvent := terminalSuccess || eventType == "response.failed" || eventType == "error"
 			if helps.HasMeaningfulCodexOutputDelta(payload) {
@@ -795,7 +795,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				if !preserveNativeOutput {
 					completedPayload = patchCodexCompletedOutput(completedPayload, outputItemsByIndex, outputItemsFallback)
 				}
-				if gjson.GetBytes(completedPayload, "type").String() == "response.completed" {
+				if ojson.GetBytes(completedPayload, "type").String() == "response.completed" {
 					cacheCodexReasoningReplayFromCompleted(replayScope, completedPayload)
 				}
 				if detail, ok := helps.ParseCodexUsageWithOutputItems(completedPayload, outputItemsByIndex, outputItemsFallback); ok {
@@ -829,7 +829,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			if terminalSuccess {
 				payload = completedPayload
 			}
-			eventType = gjson.GetBytes(payload, "type").String()
+			eventType = ojson.GetBytesNoCopy(payload, "type").String()
 			isIncomplete := eventType == "response.incomplete"
 			clientPayload := applyCodexIdentityExposeResponsePayload(payload, identityState)
 			line := encodeCodexWebsocketAsSSE(clientPayload)
@@ -911,32 +911,32 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 		return nil, err
 	}
 	originalTranslated = helps.SetStringIfDifferent(originalTranslated, "model", baseModel)
-	body = helps.SetStringIfDifferent(body, "model", baseModel)
+	doc := ojson.NewDoc(body)
+	helps.SetStringIfDifferentDoc(doc, "model", baseModel)
 
-	body, err = helps.ApplyRequestThinking(body, req, opts, from.String(), to.String(), e.Identifier(), updatesChanged)
-	if err != nil {
+	if err = helps.ApplyRequestThinkingDoc(doc, req, opts, from.String(), to.String(), e.Identifier(), updatesChanged); err != nil {
 		return nil, err
 	}
 
-	hasExplicitInstructions := gjson.GetBytes(req.Payload, "instructions").Exists() && strings.TrimSpace(gjson.GetBytes(req.Payload, "instructions").String()) != ""
-	finalizePayload := helps.NewPayloadFinalizer(helps.ConfigForAuth(e.cfg, auth), "codex-websockets", baseModel, to.String(), "", originalTranslated, req, opts)
-	body = helps.SetStringIfDifferent(body, "model", baseModel)
+	instructionsResult := ojson.GetBytesNoCopy(req.Payload, "instructions")
+	hasExplicitInstructions := instructionsResult.Exists() && strings.TrimSpace(instructionsResult.String()) != ""
+	ctx = helps.WithPayloadFinalizer(ctx, helps.NewPayloadFinalizer(helps.ConfigForAuth(e.cfg, auth), "codex-websockets", baseModel, to.String(), "", originalTranslated, req, opts))
+	helps.SetStringIfDifferentDoc(doc, "model", baseModel)
 	if !useSIWC {
-		body = normalizeCodexInstructions(body, preserveNativeOutput)
+		normalizeCodexInstructionsDoc(doc, preserveNativeOutput)
 		if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
-			body = ensureImageGenerationTool(body, baseModel, auth, opts.Headers)
+			ensureImageGenerationToolDoc(doc, baseModel, auth, opts.Headers)
 		}
 	}
-	body = normalizeCodexWebsocketParallelToolCalls(body, opts.Headers)
-	body = helps.NormalizeCodexToolSchemas(body)
-	multiAgentV2Conflict := helps.HasCodexMultiAgentV2NamespaceConflict(body)
-	body, optimizeMultiAgentV2 := helps.OptimizeCodexMultiAgentV2RequestForAuth(ctx, opts.Headers, body, e.cfg, auth, isCompat)
-	body, replayScope, errReplay := applyCodexReasoningReplayCacheRequired(ctx, from, req, opts, body)
+	normalizeCodexWebsocketParallelToolCallsDoc(doc, opts.Headers)
+	helps.NormalizeCodexToolSchemasDoc(doc)
+	multiAgentV2Conflict := helps.HasCodexMultiAgentV2NamespaceConflictDoc(doc)
+	optimizeMultiAgentV2 := helps.OptimizeCodexMultiAgentV2RequestForAuthDoc(doc, ctx, opts.Headers, e.cfg, auth, isCompat)
+	replayScope, _, errReplay := applyCodexReasoningReplayCacheRequiredDoc(ctx, from, req, opts, doc)
 	if errReplay != nil {
 		return nil, errReplay
 	}
-	body = sanitizeOpenAIResponsesReasoningEncryptedContentWithCompatModelAndBaseURL(ctx, "codex websockets executor", body, isCompat, targetModel, baseURL)
-	body = helps.ApplyTimezoneOverride(helps.ConfigForAuth(e.cfg, auth), body)
+	sanitizeOpenAIResponsesReasoningEncryptedContentWithCompatModelAndBaseURLDoc(ctx, "codex websockets executor", doc, isCompat, targetModel, baseURL)
 
 	httpURL := strings.TrimSuffix(baseURL, "/") + "/responses"
 	wsURL, err := buildCodexResponsesWebsocketURL(httpURL)
@@ -944,21 +944,21 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 		return nil, err
 	}
 
-	body, wsHeaders, errPromptCache := applyCodexPromptCacheHeadersWithContext(ctx, from, req, body, opts.Headers)
+	wsHeaders, _, errPromptCache := applyCodexPromptCacheHeadersWithContextDoc(ctx, from, req, doc, opts.Headers)
 	if errPromptCache != nil {
 		return nil, errPromptCache
 	}
-	body = helps.SanitizeCodexInputItemIDs(body)
+	helps.SanitizeCodexInputItemIDsDoc(doc)
 	if useSIWC {
-		body = applyCodexSIWCWebsocketBodyRules(body, hasExplicitInstructions, cliproxyexecutor.Options{KeepTopLevelEffort: thinking.HasThinkingSuffix(req.Model)})
+		applyCodexSIWCWebsocketBodyRulesDoc(doc, hasExplicitInstructions, cliproxyexecutor.Options{KeepTopLevelEffort: thinking.HasThinkingSuffix(req.Model)})
 	}
-	clientBody := finalizePayload(body)
-	clientBody, err = normalizeCodexOAuthWebSearchHistory(clientBody, auth, opts.Headers)
-	if err != nil {
-		return nil, err
+	if errHistory := normalizeCodexOAuthWebSearchHistoryDoc(doc, auth, opts.Headers); errHistory != nil {
+		return nil, errHistory
 	}
-	var identityState codexIdentityConfuseState
-	upstreamBody, identityState := applyCodexIdentityConfuseBody(e.cfg, auth, originalPayloadSource, clientBody)
+	identityState := applyCodexIdentityConfuseBodyDoc(e.cfg, auth, originalPayloadSource, doc)
+	helps.FinalizePayloadDoc(ctx, doc)
+	clientBody := doc.Bytes()
+	upstreamBody := clientBody
 	if errValidate := helps.ValidateCodexEncryptedInput(upstreamBody); errValidate != nil {
 		return nil, errValidate
 	}

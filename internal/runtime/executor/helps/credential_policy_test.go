@@ -2,13 +2,13 @@ package helps
 
 import (
 	"encoding/json"
+	"github.com/MoeForge/moego/ojson"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-	"github.com/tidwall/gjson"
 )
 
 func TestCredentialTimezoneInheritanceAndIsolation(t *testing.T) {
@@ -50,7 +50,7 @@ func TestTimezoneToolOutputsUnchanged(t *testing.T) {
 	}
 	msg, _ := json.Marshal(map[string]any{"input": []any{map[string]any{"role": "user", "content": env}}})
 	out = ApplyTimezoneOverrideAt(&config.Config{TimezoneOverride: "Asia/Tokyo"}, msg, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	if gjson.GetBytes(out, "input.0.content").String() == env {
+	if ojson.GetBytes(out, "input.0.content").String() == env {
 		t.Fatal("actual environment not rewritten")
 	}
 }

@@ -3,11 +3,9 @@ package helps
 import (
 	"bytes"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"strconv"
 	"strings"
-
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 // EnsureCodexWebSearchHistoryTool preserves hosted search history while declaring
@@ -18,14 +16,25 @@ func EnsureCodexWebSearchHistoryTool(body []byte, lite bool) ([]byte, error) {
 	if !bytes.Contains(body, []byte("web_search_call")) {
 		return body, nil
 	}
-	input := gjson.GetBytes(body, "input")
+	doc := ojson.NewDoc(body)
+	if err := EnsureCodexWebSearchHistoryToolDoc(doc, lite); err != nil {
+		return nil, err
+	}
+	return doc.Bytes(), nil
+}
+
+func EnsureCodexWebSearchHistoryToolDoc(doc *ojson.Doc, lite bool) error {
+	if doc == nil || !strings.Contains(doc.Get("input").Raw, "web_search_call") {
+		return nil
+	}
+	input := doc.Get("input")
 	if !input.IsArray() {
-		return body, nil
+		return nil
 	}
 	items := input.Array()
-	topTools := gjson.GetBytes(body, "tools")
+	topTools := doc.Get("tools")
 	if hasCodexWebSearchTool(topTools) {
-		return body, nil
+		return nil
 	}
 	hasHistory, hasTools, additional := false, topTools.IsArray() && len(topTools.Array()) > 0, -1
 	for i, item := range items {
@@ -35,7 +44,7 @@ func EnsureCodexWebSearchHistoryTool(body []byte, lite bool) ([]byte, error) {
 		case "additional_tools":
 			tools := item.Get("tools")
 			if hasCodexWebSearchTool(tools) {
-				return body, nil
+				return nil
 			}
 			hasTools = hasTools || (tools.IsArray() && len(tools.Array()) > 0)
 			if additional < 0 {
@@ -44,23 +53,22 @@ func EnsureCodexWebSearchHistoryTool(body []byte, lite bool) ([]byte, error) {
 		}
 	}
 	if !hasHistory {
-		return body, nil
+		return nil
 	}
 	const tool = `{"type":"web_search","external_web_access":false}`
-	var next []byte
 	var errSet error
 	if !lite {
 		path, value := "tools", "["+tool+"]"
 		if topTools.IsArray() && len(topTools.Array()) > 0 {
 			path, value = "tools.-1", tool
 		}
-		next, errSet = sjson.SetRawBytes(body, path, []byte(value))
+		errSet = doc.SetRawBytes(path, []byte(value))
 	} else if additional >= 0 {
 		path, value := "input."+strconv.Itoa(additional)+".tools", "["+tool+"]"
 		if tools := items[additional].Get("tools"); tools.IsArray() && len(tools.Array()) > 0 {
 			path, value = path+".-1", tool
 		}
-		next, errSet = sjson.SetRawBytes(body, path, []byte(value))
+		errSet = doc.SetRawBytes(path, []byte(value))
 	} else {
 		// Lite rejects top-level hosted tools. Keep the trailing v2 trigger last.
 		at := len(items)
@@ -79,31 +87,31 @@ func EnsureCodexWebSearchHistoryTool(body []byte, lite bool) ([]byte, error) {
 		}
 		raw := append([]byte{'['}, bytes.Join(parts, []byte{','})...)
 		raw = append(raw, ']')
-		next, errSet = sjson.SetRawBytes(body, "input", raw)
+		errSet = doc.SetRawBytes("input", raw)
 	}
 	if errSet != nil {
-		return nil, fmt.Errorf("declare Codex search history tool: %w", errSet)
+		return fmt.Errorf("declare Codex search history tool: %w", errSet)
 	}
 	if !hasTools {
-		choice := gjson.GetBytes(body, "tool_choice")
-		pinNone := !choice.Exists() || choice.Type == gjson.Null
-		if choice.Type == gjson.String {
+		choice := doc.Get("tool_choice")
+		pinNone := !choice.Exists() || choice.Type == ojson.Null
+		if choice.Type == ojson.String {
 			switch strings.ToLower(strings.TrimSpace(choice.String())) {
 			case "", "auto", "none":
 				pinNone = true
 			}
 		}
 		if pinNone {
-			next, errSet = sjson.SetBytes(next, "tool_choice", "none")
+			errSet = doc.Set("tool_choice", "none")
 			if errSet != nil {
-				return nil, fmt.Errorf("preserve Codex no-tools choice: %w", errSet)
+				return fmt.Errorf("preserve Codex no-tools choice: %w", errSet)
 			}
 		}
 	}
-	return next, nil
+	return nil
 }
 
-func hasCodexWebSearchTool(tools gjson.Result) bool {
+func hasCodexWebSearchTool(tools ojson.Result) bool {
 	if !tools.IsArray() {
 		return false
 	}

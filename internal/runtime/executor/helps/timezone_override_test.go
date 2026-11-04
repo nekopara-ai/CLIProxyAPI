@@ -1,11 +1,11 @@
 package helps
 
 import (
+	"github.com/MoeForge/moego/ojson"
 	"testing"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/tidwall/gjson"
 )
 
 func TestApplyTimezoneOverrideRewritesCodexAndClaudeFields(t *testing.T) {
@@ -38,27 +38,27 @@ func TestApplyTimezoneOverrideRewritesCodexAndClaudeFields(t *testing.T) {
 	}`)
 
 	out := ApplyTimezoneOverrideAt(cfg, payload, now)
-	envText := gjson.GetBytes(out, "input.0.content.0.text").String()
+	envText := ojson.GetBytes(out, "input.0.content.0.text").String()
 	if got := extractXMLTag(envText, "timezone"); got != "America/New_York" {
 		t.Fatalf("environment timezone = %q, want America/New_York; env=%q", got, envText)
 	}
 	if got := extractXMLTag(envText, "current_date"); got != "2026-09-14" {
 		t.Fatalf("environment current_date = %q, want 2026-09-14; env=%q", got, envText)
 	}
-	userText := gjson.GetBytes(out, "input.0.content.1.text").String()
+	userText := ojson.GetBytes(out, "input.0.content.1.text").String()
 	if userText != "keep <timezone>Asia/Shanghai</timezone> in user code" {
 		t.Fatalf("user text rewritten: %q", userText)
 	}
-	if got := gjson.GetBytes(out, "tools.0.user_location.timezone").String(); got != "America/New_York" {
+	if got := ojson.GetBytes(out, "tools.0.user_location.timezone").String(); got != "America/New_York" {
 		t.Fatalf("tools user_location.timezone = %q", got)
 	}
-	if got := gjson.GetBytes(out, "input.1.tools.0.user_location.timezone").String(); got != "America/New_York" {
+	if got := ojson.GetBytes(out, "input.1.tools.0.user_location.timezone").String(); got != "America/New_York" {
 		t.Fatalf("additional_tools user_location.timezone = %q", got)
 	}
-	if gjson.GetBytes(out, "tools.1.parameters.properties.timezone.type").String() != "string" {
+	if ojson.GetBytes(out, "tools.1.parameters.properties.timezone.type").String() != "string" {
 		t.Fatalf("tool schema timezone property was rewritten: %s", out)
 	}
-	reminder := gjson.GetBytes(out, "messages.0.content.0.text").String()
+	reminder := ojson.GetBytes(out, "messages.0.content.0.text").String()
 	if !containsDate(reminder, "2026-09-14") || containsDate(reminder, "2026-07-27") {
 		t.Fatalf("claude currentDate reminder = %q", reminder)
 	}
@@ -82,7 +82,7 @@ func TestApplyTimezoneOverrideInsertsMissingEnvironmentTags(t *testing.T) {
 	cfg := &config.Config{TimezoneOverride: "Pacific/Honolulu"}
 	payload := []byte(`{"input":[{"content":[{"text":"<environment_context>\n  <cwd>/repo</cwd>\n</environment_context>"}]}]}`)
 	out := ApplyTimezoneOverrideAt(cfg, payload, now)
-	envText := gjson.GetBytes(out, "input.0.content.0.text").String()
+	envText := ojson.GetBytes(out, "input.0.content.0.text").String()
 	if got := extractXMLTag(envText, "timezone"); got != "Pacific/Honolulu" {
 		t.Fatalf("inserted timezone = %q; env=%q", got, envText)
 	}
@@ -122,7 +122,7 @@ func TestApplyTimezoneOverrideRewritesConfiguredUserLocationTriple(t *testing.T)
 		{"input.0.tools.0.user_location.country", "US"},
 		{"input.0.tools.0.user_location.city", "New York"},
 	} {
-		if got := gjson.GetBytes(out, tc.path).String(); got != tc.want {
+		if got := ojson.GetBytes(out, tc.path).String(); got != tc.want {
 			t.Fatalf("%s = %q, want %q; body=%s", tc.path, got, tc.want, out)
 		}
 	}
@@ -132,11 +132,11 @@ func TestApplyTimezoneOverrideRewritesConfiguredUserLocationTriple(t *testing.T)
 		"tools.1.user_location.city",
 		"input.0.tools.0.user_location.region",
 	} {
-		if gjson.GetBytes(out, path).Exists() {
+		if ojson.GetBytes(out, path).Exists() {
 			t.Fatalf("%s was invented by the rewrite; body=%s", path, out)
 		}
 	}
-	if got := gjson.GetBytes(out, "tools.2.parameters.properties.city.type").String(); got != "string" {
+	if got := ojson.GetBytes(out, "tools.2.parameters.properties.city.type").String(); got != "string" {
 		t.Fatalf("tool schema city property was rewritten: %s", out)
 	}
 	if again := ApplyTimezoneOverrideAt(cfg, out, now); string(again) != string(out) {

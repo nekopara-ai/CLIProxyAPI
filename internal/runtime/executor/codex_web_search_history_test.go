@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,7 +15,6 @@ import (
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 // Record the actual HTTP/WS wire body: testing the helper alone cannot prove
@@ -119,10 +119,10 @@ func TestCodexWebSearchHistoryAcrossTransports(t *testing.T) {
 						}
 						select {
 						case body := <-captured:
-							if gjson.GetBytes(body, `input.#(type=="web_search_call").action.sources.0.url`).String() != "https://docs.python.org/3/library/asyncio.html" {
+							if ojson.GetBytes(body, `input.#(type=="web_search_call").action.sources.0.url`).String() != "https://docs.python.org/3/library/asyncio.html" {
 								t.Fatalf("lost search action/sources: %s", body)
 							}
-							items := gjson.GetBytes(body, "input").Array()
+							items := ojson.GetBytes(body, "input").Array()
 							if items[len(items)-1].Get("type").String() != "compaction_trigger" {
 								t.Fatal("trigger no longer last")
 							}
@@ -130,12 +130,12 @@ func TestCodexWebSearchHistoryAcrossTransports(t *testing.T) {
 							if lite != "" {
 								searchPath = `input.#(type=="additional_tools").tools.#(type=="web_search")`
 							}
-							search := gjson.GetBytes(body, searchPath)
+							search := ojson.GetBytes(body, searchPath)
 							if apiKey {
-								if search.Exists() || gjson.GetBytes(body, "tool_choice").String() != "auto" {
+								if search.Exists() || ojson.GetBytes(body, "tool_choice").String() != "auto" {
 									t.Fatalf("API-key request changed: %s", body)
 								}
-							} else if !search.Exists() || search.Get("external_web_access").Type != gjson.False || gjson.GetBytes(body, "tool_choice").String() != "none" {
+							} else if !search.Exists() || search.Get("external_web_access").Type != ojson.False || ojson.GetBytes(body, "tool_choice").String() != "none" {
 								t.Fatalf("OAuth wire body lacks compatibility rewrite: %s", body)
 							}
 						default:
@@ -157,7 +157,7 @@ func TestCodexWebSearchHistoryCompactBuilderUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gjson.GetBytes(got, "tools").Raw != "[]" || gjson.GetBytes(got, "tool_choice").Exists() {
+	if ojson.GetBytes(got, "tools").Raw != "[]" || ojson.GetBytes(got, "tool_choice").Exists() {
 		t.Fatalf("dedicated compact shape was rewritten: %s", got)
 	}
 }

@@ -2,13 +2,12 @@ package helps
 
 import (
 	"bytes"
+	"github.com/MoeForge/moego/ojson"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 const (
@@ -43,24 +42,28 @@ func ApplyTimezoneOverride(cfg *config.Config, payload []byte) []byte {
 
 // ApplyTimezoneOverrideAt is the testable form of ApplyTimezoneOverride.
 func ApplyTimezoneOverrideAt(cfg *config.Config, payload []byte, now time.Time) []byte {
-	if len(payload) == 0 {
+	if len(payload) == 0 || !payloadHasTimezoneSurface(payload) {
 		return payload
 	}
+	doc := ojson.NewDoc(payload)
+	if !ApplyTimezoneOverrideAtDoc(cfg, doc, now) {
+		return payload
+	}
+	return doc.Bytes()
+}
+
+// ApplyTimezoneOverrideDoc rewrites built-in environment metadata before user rules.
+func ApplyTimezoneOverrideDoc(cfg *config.Config, doc *ojson.Doc) bool {
+	return ApplyTimezoneOverrideAtDoc(cfg, doc, time.Now())
+}
+
+func ApplyTimezoneOverrideAtDoc(cfg *config.Config, doc *ojson.Doc, now time.Time) bool {
 	location := TimezoneOverrideLocation(cfg)
-	if location == nil {
-		return payload
+	if doc == nil || location == nil {
+		return false
 	}
-	if !payloadHasTimezoneSurface(payload) {
-		return payload
-	}
-	target := timezoneOverrideTarget{
-		timezone: strings.TrimSpace(cfg.TimezoneOverride),
-		date:     now.In(location).Format("2006-01-02"),
-		country:  strings.TrimSpace(cfg.TimezoneOverrideCountry),
-		region:   strings.TrimSpace(cfg.TimezoneOverrideRegion),
-		city:     strings.TrimSpace(cfg.TimezoneOverrideCity),
-	}
-	return rewriteTimezoneJSON(payload, target)
+	target := timezoneOverrideTarget{timezone: strings.TrimSpace(cfg.TimezoneOverride), date: now.In(location).Format("2006-01-02"), country: strings.TrimSpace(cfg.TimezoneOverrideCountry), region: strings.TrimSpace(cfg.TimezoneOverrideRegion), city: strings.TrimSpace(cfg.TimezoneOverrideCity)}
+	return rewriteTimezoneValueDoc(doc, "", doc.Get("@this"), target)
 }
 
 // timezoneOverrideTarget carries the replacement timezone and local date plus
@@ -85,75 +88,48 @@ func payloadHasTimezoneSurface(payload []byte) bool {
 		bytes.Contains(payload, []byte(claudeCurrentDateMarker))
 }
 
-func rewriteTimezoneJSON(payload []byte, target timezoneOverrideTarget) []byte {
-	return rewriteTimezoneValue(payload, "", gjson.ParseBytes(payload), target)
-}
-
-func rewriteTimezoneValue(out []byte, path string, value gjson.Result, target timezoneOverrideTarget) []byte {
+func rewriteTimezoneValueDoc(doc *ojson.Doc, path string, value ojson.Result, target timezoneOverrideTarget) bool {
+	changed := false
 	switch {
 	case value.IsArray():
-		items := value.Array()
-		for i := range items {
-			out = rewriteTimezoneValue(out, joinJSONPath(path, strconv.Itoa(i)), items[i], target)
+		for i, item := range value.Array() {
+			changed = rewriteTimezoneValueDoc(doc, joinJSONPath(path, strconv.Itoa(i)), item, target) || changed
 		}
 	case value.IsObject():
-		// Tool results are untrusted payloads, not environment instructions. Never
-		// rewrite source code, historical examples, or nested JSON inside them.
 		kind := value.Get("type").String()
 		if kind == "function_call_output" || kind == "tool_result" || value.Get("role").String() == "tool" {
-			return out
+			return false
 		}
-		value.ForEach(func(key, child gjson.Result) bool {
+		value.ForEach(func(key, child ojson.Result) bool {
 			childPath := joinJSONPath(path, key.String())
 			if key.String() == "user_location" && child.IsObject() {
-				out = rewriteUserLocation(out, childPath, child, target)
+				changed = rewriteUserLocationDoc(doc, childPath, child, target) || changed
 			}
-			out = rewriteTimezoneValue(out, childPath, child, target)
+			changed = rewriteTimezoneValueDoc(doc, childPath, child, target) || changed
 			return true
 		})
-	case value.Type == gjson.String:
-		rewritten, changed := rewriteTimezoneText(value.String(), target.timezone, target.date)
-		if changed {
-			updated, errSet := sjson.SetBytes(out, path, rewritten)
-			if errSet == nil {
-				out = updated
-			}
+	case value.Type == ojson.String:
+		if rewritten, different := rewriteTimezoneText(value.String(), target.timezone, target.date); different {
+			changed = doc.Set(path, rewritten) == nil
 		}
 	}
-	return out
+	return changed
 }
 
-// rewriteUserLocation rewrites user_location.timezone and, when configured,
-// country/region/city. Location fields are only replaced when the client already
-// sent that field: a client that never claimed a location must not gain one,
-// otherwise the rewrite itself becomes the anomaly.
-func rewriteUserLocation(out []byte, childPath string, child gjson.Result, target timezoneOverrideTarget) []byte {
+func rewriteUserLocationDoc(doc *ojson.Doc, childPath string, child ojson.Result, target timezoneOverrideTarget) bool {
+	changed := false
 	current := child.Get("timezone")
-	if !current.Exists() || current.Type != gjson.String || current.String() != target.timezone {
-		updated, errSet := sjson.SetBytes(out, joinJSONPath(childPath, "timezone"), target.timezone)
-		if errSet == nil {
-			out = updated
-		}
+	if !current.Exists() || current.Type != ojson.String || current.String() != target.timezone {
+		changed = doc.Set(joinJSONPath(childPath, "timezone"), target.timezone) == nil
 	}
-	replacements := [...]struct{ field, value string }{
-		{"country", target.country},
-		{"region", target.region},
-		{"city", target.city},
-	}
-	for _, replacement := range replacements {
-		if replacement.value == "" {
-			continue
-		}
+	for _, replacement := range []struct{ field, value string }{{"country", target.country}, {"region", target.region}, {"city", target.city}} {
 		existing := child.Get(replacement.field)
-		if !existing.Exists() || existing.Type != gjson.String || existing.String() == replacement.value {
+		if replacement.value == "" || !existing.Exists() || existing.Type != ojson.String || existing.String() == replacement.value {
 			continue
 		}
-		updated, errSet := sjson.SetBytes(out, joinJSONPath(childPath, replacement.field), replacement.value)
-		if errSet == nil {
-			out = updated
-		}
+		changed = (doc.Set(joinJSONPath(childPath, replacement.field), replacement.value) == nil) || changed
 	}
-	return out
+	return changed
 }
 
 func joinJSONPath(base, key string) string {

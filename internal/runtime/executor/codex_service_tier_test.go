@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,7 +16,6 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 type codexTierUsageCapture struct {
@@ -110,7 +110,7 @@ func TestCodexExecutorsReportAutoAfterServiceTierFilter(t *testing.T) {
 				}
 				select {
 				case body := <-outbound:
-					if gjson.GetBytes(body, "service_tier").Exists() {
+					if ojson.GetBytes(body, "service_tier").Exists() {
 						t.Fatal("service_tier reached upstream after filter")
 					}
 				case <-time.After(2 * time.Second):

@@ -3,10 +3,9 @@ package helps
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/MoeForge/moego/ojson"
 	"reflect"
 	"testing"
-
-	"github.com/tidwall/gjson"
 )
 
 func TestCodexWebSearchHistoryCompatibility(t *testing.T) {
@@ -25,20 +24,20 @@ func TestCodexWebSearchHistoryCompatibility(t *testing.T) {
 						if err != nil {
 							t.Fatal(err)
 						}
-						var declaration gjson.Result
+						var declaration ojson.Result
 						if lite {
-							declaration = gjson.GetBytes(got, `input.#(type=="additional_tools").tools.0`)
-							if gjson.GetBytes(got, "tools").Raw != gjson.GetBytes(body, "tools").Raw {
+							declaration = ojson.GetBytes(got, `input.#(type=="additional_tools").tools.0`)
+							if ojson.GetBytes(got, "tools").Raw != ojson.GetBytes(body, "tools").Raw {
 								t.Fatal("Lite modified top-level tools")
 							}
 						} else {
-							declaration = gjson.GetBytes(got, `tools.#(type=="web_search")`)
+							declaration = ojson.GetBytes(got, `tools.#(type=="web_search")`)
 						}
-						if declaration.Get("type").String() != "web_search" || declaration.Get("external_web_access").Type != gjson.False {
+						if declaration.Get("type").String() != "web_search" || declaration.Get("external_web_access").Type != ojson.False {
 							t.Fatalf("missing cached-only declaration: %s", got)
 						}
 						var retained []json.RawMessage
-						for _, item := range gjson.GetBytes(got, "input").Array() {
+						for _, item := range ojson.GetBytes(got, "input").Array() {
 							if item.Get("type").String() != "additional_tools" {
 								retained = append(retained, json.RawMessage(item.Raw))
 							}
@@ -51,19 +50,19 @@ func TestCodexWebSearchHistoryCompatibility(t *testing.T) {
 							t.Fatal("historical input changed")
 						}
 						if trigger {
-							items := gjson.GetBytes(got, "input").Array()
+							items := ojson.GetBytes(got, "input").Array()
 							if items[len(items)-1].Get("type").String() != "compaction_trigger" {
 								t.Fatal("trigger no longer last")
 							}
 						}
-						wantChoice := gjson.GetBytes(body, "tool_choice").Raw
-						if len(gjson.GetBytes(body, "tools").Array()) == 0 && (choice == "" || choice == `,"tool_choice":null` || choice == `,"tool_choice":"auto"` || choice == `,"tool_choice":"none"`) {
+						wantChoice := ojson.GetBytes(body, "tool_choice").Raw
+						if len(ojson.GetBytes(body, "tools").Array()) == 0 && (choice == "" || choice == `,"tool_choice":null` || choice == `,"tool_choice":"auto"` || choice == `,"tool_choice":"none"`) {
 							wantChoice = `"none"`
 						}
-						if gjson.GetBytes(got, "tool_choice").Raw != wantChoice {
+						if ojson.GetBytes(got, "tool_choice").Raw != wantChoice {
 							t.Fatalf("choice changed unexpectedly: %s", got)
 						}
-						if gjson.GetBytes(got, "future").Raw != gjson.GetBytes(body, "future").Raw {
+						if ojson.GetBytes(got, "future").Raw != ojson.GetBytes(body, "future").Raw {
 							t.Fatal("unknown field changed")
 						}
 						again, err := EnsureCodexWebSearchHistoryTool(got, lite)
@@ -105,13 +104,13 @@ func TestCodexWebSearchHistoryExtendsAdditionalTools(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if gjson.GetBytes(got, "input.#").Int() != 3 || gjson.GetBytes(got, "input.0.future").Int() != 42 || gjson.GetBytes(got, "input.2.type").String() != "compaction_trigger" {
+		if ojson.GetBytes(got, "input.#").Int() != 3 || ojson.GetBytes(got, "input.0.future").Int() != 42 || ojson.GetBytes(got, "input.2.type").String() != "compaction_trigger" {
 			t.Fatalf("changed Lite input structure: %s", got)
 		}
-		if gjson.GetBytes(got, "input.0.tools.#").Int() != int64(len(gjson.Parse(tools).Array())+1) {
+		if ojson.GetBytes(got, "input.0.tools.#").Int() != int64(len(ojson.Parse(tools).Array())+1) {
 			t.Fatalf("did not extend existing tool array: %s", got)
 		}
-		if tools != `[]` && tools != `null` && gjson.GetBytes(got, "tool_choice").String() != "auto" {
+		if tools != `[]` && tools != `null` && ojson.GetBytes(got, "tool_choice").String() != "auto" {
 			t.Fatal("disabled caller's function tools")
 		}
 	}
@@ -129,7 +128,7 @@ func TestCodexWebSearchHistoryNonArrayToolsDoNotCountAsDeclarations(t *testing.T
 			if lite {
 				path = "input.1.tools"
 			}
-			if !gjson.GetBytes(got, path).IsArray() || gjson.GetBytes(got, path+".0.type").String() != "web_search" || gjson.GetBytes(got, "tool_choice").String() != "none" {
+			if !ojson.GetBytes(got, path).IsArray() || ojson.GetBytes(got, path+".0.type").String() != "web_search" || ojson.GetBytes(got, "tool_choice").String() != "none" {
 				t.Fatalf("invalid tools counted as caller declarations: %s", got)
 			}
 		}

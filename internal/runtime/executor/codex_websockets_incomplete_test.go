@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"github.com/MoeForge/moego/ojson"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,7 +15,6 @@ import (
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 const (
@@ -85,16 +85,16 @@ func TestCodexWebsocketsExecuteIncompleteIsSuccessfulTerminal(t *testing.T) {
 	if errExecute != nil {
 		t.Fatalf("Execute() returned an EOF/terminal error after response.incomplete: %v", errExecute)
 	}
-	if got := gjson.GetBytes(resp.Payload, "content.0.text").String(); got != "partial answer" {
+	if got := ojson.GetBytes(resp.Payload, "content.0.text").String(); got != "partial answer" {
 		t.Fatalf("content.0.text = %q, want partial answer; payload=%s", got, resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "stop_reason").String(); got != "max_tokens" {
+	if got := ojson.GetBytes(resp.Payload, "stop_reason").String(); got != "max_tokens" {
 		t.Fatalf("stop_reason = %q, want max_tokens; payload=%s", got, resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.input_tokens").Int(); got != 10 {
+	if got := ojson.GetBytes(resp.Payload, "usage.input_tokens").Int(); got != 10 {
 		t.Fatalf("usage.input_tokens = %d, want 10; payload=%s", got, resp.Payload)
 	}
-	if got := gjson.GetBytes(resp.Payload, "usage.output_tokens").Int(); got != 5 {
+	if got := ojson.GetBytes(resp.Payload, "usage.output_tokens").Int(); got != 5 {
 		t.Fatalf("usage.output_tokens = %d, want 5; payload=%s", got, resp.Payload)
 	}
 }

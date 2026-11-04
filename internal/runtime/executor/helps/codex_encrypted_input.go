@@ -1,21 +1,21 @@
 package helps
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/MoeForge/moego/base64"
+	"github.com/MoeForge/moego/ojson"
 	"net/http"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/signature"
-	"github.com/tidwall/gjson"
 )
 
 // ValidateCodexEncryptedInput checks explicit encrypted context carriers, not
 // ordinary tool text. It cannot authenticate ciphertext or establish its owner.
 // Malformed tool/compaction state must not be silently dropped from a session.
 func ValidateCodexEncryptedInput(body []byte) error {
-	for index, item := range gjson.GetBytes(body, "input").Array() {
+	for index, item := range ojson.GetBytes(body, "input").Array() {
 		path := fmt.Sprintf("input[%d]", index)
 		switch item.Get("type").String() {
 		case "compaction":
@@ -41,10 +41,10 @@ func ValidateCodexEncryptedInput(body []byte) error {
 	return nil
 }
 
-func validateCodexEncryptedValue(value gjson.Result, path string) error {
+func validateCodexEncryptedValue(value ojson.Result, path string) error {
 	reason := ""
 	switch {
-	case value.Type != gjson.String:
+	case value.Type != ojson.String:
 		reason = "expected a non-empty encrypted string"
 	case value.Str == "":
 		reason = "encrypted content is empty"

@@ -1,11 +1,11 @@
 package helps
 
 import (
+	"github.com/MoeForge/moego/ojson"
 	"testing"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/tidwall/gjson"
 )
 
 const payloadFunnelTimezoneBody = `{
@@ -32,14 +32,14 @@ func TestApplyPayloadConfigWithRequestAppliesTimezoneOverrideWithoutPayloadRules
 	cfg := &config.Config{TimezoneOverride: "America/New_York"}
 	out := ApplyPayloadConfigWithRequest(cfg, "deepseek-v4.1-flash", "openai", "responses", "", []byte(payloadFunnelTimezoneBody), nil, "deepseek-v4.1-flash", "/v1/responses", nil)
 
-	envText := gjson.GetBytes(out, "input.0.content.0.text").String()
+	envText := ojson.GetBytes(out, "input.0.content.0.text").String()
 	if got := extractXMLTag(envText, "timezone"); got != "America/New_York" {
 		t.Fatalf("environment timezone = %q, want America/New_York; body=%s", got, out)
 	}
 	if got := extractXMLTag(envText, "current_date"); got != timezoneDateForTest(t) {
 		t.Fatalf("environment current_date = %q, want %q; body=%s", got, timezoneDateForTest(t), out)
 	}
-	if got := gjson.GetBytes(out, "tools.0.user_location.timezone").String(); got != "America/New_York" {
+	if got := ojson.GetBytes(out, "tools.0.user_location.timezone").String(); got != "America/New_York" {
 		t.Fatalf("tools user_location.timezone = %q, want America/New_York; body=%s", got, out)
 	}
 }
@@ -61,13 +61,13 @@ func TestApplyPayloadConfigWithTrackedPathsKeepsRulesAndAppliesTimezoneOverride(
 	}
 	out, touched := ApplyPayloadConfigWithTrackedPaths(cfg, "deepseek-v4.1-flash", "openai", "responses", "", []byte(payloadFunnelTimezoneBody), nil, "deepseek-v4.1-flash", "/v1/responses", nil, "reasoning_effort")
 
-	if got := gjson.GetBytes(out, "reasoning_effort").String(); got != "high" {
+	if got := ojson.GetBytes(out, "reasoning_effort").String(); got != "high" {
 		t.Fatalf("payload rule reasoning_effort = %q, want high; body=%s", got, out)
 	}
 	if !touched["reasoning_effort"] {
 		t.Fatalf("tracked path not reported: %#v", touched)
 	}
-	if got := gjson.GetBytes(out, "tools.0.user_location.timezone").String(); got != "America/New_York" {
+	if got := ojson.GetBytes(out, "tools.0.user_location.timezone").String(); got != "America/New_York" {
 		t.Fatalf("tools user_location.timezone = %q, want America/New_York; body=%s", got, out)
 	}
 }
@@ -90,7 +90,7 @@ func TestApplyPayloadConfigWithTrackedPathsRewritesClaudeCurrentDateReminder(t *
 	cfg := &config.Config{TimezoneOverride: "America/New_York"}
 	payload := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"<system-reminder>\n# currentDate\nToday's date is 2026-09-15.\n</system-reminder>"}]}]}`)
 	out := ApplyPayloadConfigWithRequest(cfg, "claude-sonnet-4-5", "claude", "claude", "", payload, nil, "claude-sonnet-4-5", "/v1/messages", nil)
-	reminder := gjson.GetBytes(out, "messages.0.content.0.text").String()
+	reminder := ojson.GetBytes(out, "messages.0.content.0.text").String()
 	if !containsDate(reminder, timezoneDateForTest(t)) {
 		t.Fatalf("claude currentDate reminder = %q, want date %s", reminder, timezoneDateForTest(t))
 	}

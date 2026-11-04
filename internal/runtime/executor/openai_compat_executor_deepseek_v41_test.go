@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,7 +15,6 @@ import (
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 // Exercise the actual executor used by both Chat and Responses, including
@@ -94,10 +94,10 @@ func TestOpenAICompatExecutorDeepSeekV41EffortAliases(t *testing.T) {
 									wantEffort = "high"
 								}
 							}
-							if got := gjson.GetBytes(outbound, "thinking.type").String(); got != wantType {
+							if got := ojson.GetBytes(outbound, "thinking.type").String(); got != wantType {
 								t.Fatalf("thinking.type=%q, want %q", got, wantType)
 							}
-							got := gjson.GetBytes(outbound, "reasoning_effort")
+							got := ojson.GetBytes(outbound, "reasoning_effort")
 							if got.String() != wantEffort || (wantEffort == "" && got.Exists()) {
 								t.Fatalf("reasoning_effort=%s, want %q", got.Raw, wantEffort)
 							}

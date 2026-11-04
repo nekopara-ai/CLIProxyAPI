@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,7 +16,6 @@ import (
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 const timezoneExecutorEnvText = "<environment_context>\n  <cwd>/repo</cwd>\n  <current_date>2026-09-15</current_date>\n  <timezone>Asia/Shanghai</timezone>\n</environment_context>"
@@ -110,13 +110,13 @@ func TestOpenAICompatExecutorAppliesTimezoneOverride(t *testing.T) {
 			default:
 				t.Fatal("upstream request was not made")
 			}
-			if got := gjson.GetBytes(outbound, "messages.0.content").String(); timezoneExecutorXMLTag(got, "timezone") != "America/New_York" {
+			if got := ojson.GetBytes(outbound, "messages.0.content").String(); timezoneExecutorXMLTag(got, "timezone") != "America/New_York" {
 				t.Fatalf("environment timezone not rewritten; content=%q body=%s", got, outbound)
 			}
-			if content := gjson.GetBytes(outbound, "messages.0.content").String(); !timezoneExecutorDateMatches(t, timezoneExecutorXMLTag(content, "current_date")) {
+			if content := ojson.GetBytes(outbound, "messages.0.content").String(); !timezoneExecutorDateMatches(t, timezoneExecutorXMLTag(content, "current_date")) {
 				t.Fatalf("environment current_date not rewritten; content=%q body=%s", content, outbound)
 			}
-			if got := gjson.GetBytes(outbound, "tools.0.user_location.timezone").String(); got != "America/New_York" {
+			if got := ojson.GetBytes(outbound, "tools.0.user_location.timezone").String(); got != "America/New_York" {
 				t.Fatalf("user_location.timezone = %q, want America/New_York; body=%s", got, outbound)
 			}
 		})
@@ -157,7 +157,7 @@ func TestXAIExecutorAppliesTimezoneOverride(t *testing.T) {
 	default:
 		t.Fatal("upstream request was not made")
 	}
-	text := gjson.GetBytes(outbound, "input.0.content.0.text").String()
+	text := ojson.GetBytes(outbound, "input.0.content.0.text").String()
 	if timezoneExecutorXMLTag(text, "timezone") != "America/New_York" {
 		t.Fatalf("xai environment timezone not rewritten; text=%q body=%s", text, outbound)
 	}

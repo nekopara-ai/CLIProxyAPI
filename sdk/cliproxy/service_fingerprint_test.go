@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/MoeForge/moego/ojson"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -20,7 +21,6 @@ import (
 	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
-	"github.com/tidwall/gjson"
 )
 
 type fingerprintUsageCapture struct {
@@ -68,10 +68,10 @@ func TestFingerprintProbeUsesOwnProxyAndCredentialWithoutTools(t *testing.T) {
 			t.Error("ticket material injected")
 		}
 		body, _ := io.ReadAll(r.Body)
-		if len(gjson.GetBytes(body, "tools").Array()) != 0 || gjson.GetBytes(body, "tool_choice").String() != "none" {
+		if len(ojson.GetBytes(body, "tools").Array()) != 0 || ojson.GetBytes(body, "tool_choice").String() != "none" {
 			t.Error("tools were enabled")
 		}
-		if i >= len(fingerprint.Prompts) || gjson.GetBytes(body, "input.0.content.0.text").String() != fingerprint.Prompts[i] {
+		if i >= len(fingerprint.Prompts) || ojson.GetBytes(body, "input.0.content.0.text").String() != fingerprint.Prompts[i] {
 			t.Error("prompt changed")
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -216,12 +216,12 @@ func TestFingerprintResponseTextRejectsInvalidCompletion(t *testing.T) {
 		`{"status":"completed","error":{"message":"synthetic"}}`,
 		`{"status":"completed","output":[{"type":"function_call"}]}`,
 	} {
-		if _, err := fingerprintResponseText(gjson.Parse(raw)); err == nil {
+		if _, err := fingerprintResponseText(ojson.Parse(raw)); err == nil {
 			t.Fatalf("invalid completion accepted: %s", raw)
 		}
 	}
 	payload, _ := json.Marshal(map[string]any{"status": "completed", "output": []any{map[string]any{"type": "message", "content": []any{map[string]any{"type": "output_text", "text": string(make([]byte, (1<<20)+1))}}}}})
-	if _, err := fingerprintResponseText(gjson.ParseBytes(payload)); err == nil {
+	if _, err := fingerprintResponseText(ojson.ParseBytes(payload)); err == nil {
 		t.Fatal("oversized answer accepted")
 	}
 }

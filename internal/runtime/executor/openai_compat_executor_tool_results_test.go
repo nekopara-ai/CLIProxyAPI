@@ -8,11 +8,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func TestOpenAICompatExecutorToolResultContentByInputModalities(t *testing.T) {
@@ -86,8 +86,8 @@ func TestOpenAICompatExecutorToolResultContentByInputModalities(t *testing.T) {
 				t.Fatalf("Execute error: %v", errExecute)
 			}
 
-			toolContent := gjson.GetBytes(gotBody, "messages.1.content")
-			if toolContent.Type != gjson.String {
+			toolContent := ojson.GetBytes(gotBody, "messages.1.content")
+			if toolContent.Type != ojson.String {
 				t.Fatalf("tool content type = %s, want string; body=%s", toolContent.Type, string(gotBody))
 			}
 			if tt.omitImage {
@@ -95,20 +95,20 @@ func TestOpenAICompatExecutorToolResultContentByInputModalities(t *testing.T) {
 				if toolContent.String() != want {
 					t.Fatalf("tool content = %q, want %q", toolContent.String(), want)
 				}
-				if got := gjson.GetBytes(gotBody, "messages.#").Int(); got != 2 {
+				if got := ojson.GetBytes(gotBody, "messages.#").Int(); got != 2 {
 					t.Fatalf("message count = %d, want no relayed image message; body=%s", got, gotBody)
 				}
 			} else {
 				if toolContent.String() != "image inspected" {
 					t.Fatalf("tool content = %q, want image inspected", toolContent.String())
 				}
-				if got := gjson.GetBytes(gotBody, "messages.#").Int(); got != 3 {
+				if got := ojson.GetBytes(gotBody, "messages.#").Int(); got != 3 {
 					t.Fatalf("message count = %d, want 3; body=%s", got, gotBody)
 				}
-				if got := gjson.GetBytes(gotBody, "messages.2.role").String(); got != "user" {
+				if got := ojson.GetBytes(gotBody, "messages.2.role").String(); got != "user" {
 					t.Fatalf("image relay role = %q, want user", got)
 				}
-				if got := gjson.GetBytes(gotBody, "messages.2.content.1.image_url.url").String(); got != "data:image/png;base64,AA==" {
+				if got := ojson.GetBytes(gotBody, "messages.2.content.1.image_url.url").String(); got != "data:image/png;base64,AA==" {
 					t.Fatalf("relayed image = %q, want original data URL", got)
 				}
 			}

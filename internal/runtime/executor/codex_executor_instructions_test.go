@@ -8,11 +8,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func TestCodexExecutorExecuteNormalizesNullInstructions(t *testing.T) {
@@ -46,11 +46,11 @@ func TestCodexExecutorExecuteNormalizesNullInstructions(t *testing.T) {
 	if gotPath != "/responses" {
 		t.Fatalf("path = %q, want %q", gotPath, "/responses")
 	}
-	if gjson.GetBytes(gotBody, "instructions").Type != gjson.String {
-		t.Fatalf("instructions type = %v, want string", gjson.GetBytes(gotBody, "instructions").Type)
+	if ojson.GetBytes(gotBody, "instructions").Type != ojson.String {
+		t.Fatalf("instructions type = %v, want string", ojson.GetBytes(gotBody, "instructions").Type)
 	}
-	if gjson.GetBytes(gotBody, "instructions").String() != "" {
-		t.Fatalf("instructions = %q, want empty string", gjson.GetBytes(gotBody, "instructions").String())
+	if ojson.GetBytes(gotBody, "instructions").String() != "" {
+		t.Fatalf("instructions = %q, want empty string", ojson.GetBytes(gotBody, "instructions").String())
 	}
 }
 
@@ -87,11 +87,11 @@ func TestCodexExecutorExecuteStreamNormalizesNullInstructions(t *testing.T) {
 	if gotPath != "/responses" {
 		t.Fatalf("path = %q, want %q", gotPath, "/responses")
 	}
-	if gjson.GetBytes(gotBody, "instructions").Type != gjson.String {
-		t.Fatalf("instructions type = %v, want string", gjson.GetBytes(gotBody, "instructions").Type)
+	if ojson.GetBytes(gotBody, "instructions").Type != ojson.String {
+		t.Fatalf("instructions type = %v, want string", ojson.GetBytes(gotBody, "instructions").Type)
 	}
-	if gjson.GetBytes(gotBody, "instructions").String() != "" {
-		t.Fatalf("instructions = %q, want empty string", gjson.GetBytes(gotBody, "instructions").String())
+	if ojson.GetBytes(gotBody, "instructions").String() != "" {
+		t.Fatalf("instructions = %q, want empty string", ojson.GetBytes(gotBody, "instructions").String())
 	}
 }
 
@@ -149,11 +149,11 @@ func TestCodexExecutorExecuteAppliesTimezoneOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute error: %v", err)
 	}
-	env := gjson.GetBytes(gotBody, "input.0.content.0.text").String()
-	if !gjson.GetBytes(gotBody, "input.0.content.0.text").Exists() {
+	env := ojson.GetBytes(gotBody, "input.0.content.0.text").String()
+	if !ojson.GetBytes(gotBody, "input.0.content.0.text").Exists() {
 		t.Fatalf("missing environment text in upstream body: %s", gotBody)
 	}
-	if got := gjson.GetBytes(gotBody, "tools.0.user_location.timezone").String(); got != "America/New_York" {
+	if got := ojson.GetBytes(gotBody, "tools.0.user_location.timezone").String(); got != "America/New_York" {
 		t.Fatalf("tools timezone = %q, want America/New_York; body=%s", got, gotBody)
 	}
 	if !strings.Contains(env, "<timezone>America/New_York</timezone>") {

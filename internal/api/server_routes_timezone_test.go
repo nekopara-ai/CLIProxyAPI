@@ -1,11 +1,11 @@
 package api
 
 import (
+	"github.com/MoeForge/moego/ojson"
 	"testing"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/tidwall/gjson"
 )
 
 // /v1/alpha/search forwards its body without passing through an executor, so the
@@ -22,10 +22,10 @@ func TestPrepareCodexAlphaSearchUpstreamBodyAppliesTimezoneOverride(t *testing.T
 	}`)
 	out := prepareCodexAlphaSearchUpstreamBody(cfg, body)
 
-	if gjson.GetBytes(out, "prompt_cache_key").Exists() {
+	if ojson.GetBytes(out, "prompt_cache_key").Exists() {
 		t.Fatalf("prompt_cache_key was not sanitized: %s", out)
 	}
-	envText := gjson.GetBytes(out, "input.0.content.0.text").String()
+	envText := ojson.GetBytes(out, "input.0.content.0.text").String()
 	if got := alphaSearchXMLTag(envText, "timezone"); got != "America/New_York" {
 		t.Fatalf("alpha search timezone = %q, want America/New_York; body=%s", got, out)
 	}
