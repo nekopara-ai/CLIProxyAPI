@@ -3,7 +3,7 @@ package util
 import (
 	"unsafe"
 
-	gjson "github.com/MoeForge/moego/ojson"
+	"github.com/MoeForge/moego/ojson"
 )
 
 // GetGJSONBytesNoCopy returns a GJSON result that may reference data directly.
