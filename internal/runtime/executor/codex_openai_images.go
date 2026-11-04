@@ -365,7 +365,7 @@ func (e *CodexExecutor) executeDirectOpenAIImage(ctx context.Context, auth *clip
 	}
 	payloadOpts := opts
 	payloadOpts.SourceFormat = sdktranslator.FromString(codexOpenAIImageSourceFormat)
-	body, contentType, errPrepare = helps.ApplyMediaPayloadConfig(e.cfg, e.Identifier(), model, "openai", body, contentType, req, payloadOpts)
+	body, contentType, errPrepare = helps.ApplyMediaPayloadConfig(helps.ConfigForAuth(e.cfg, auth), e.Identifier(), model, "openai", body, contentType, req, payloadOpts)
 	if errPrepare != nil {
 		return resp, errPrepare
 	}
@@ -440,7 +440,7 @@ func (e *CodexExecutor) executeDirectOpenAIImageStream(ctx context.Context, auth
 	}
 	payloadOpts := opts
 	payloadOpts.SourceFormat = sdktranslator.FromString(codexOpenAIImageSourceFormat)
-	body, contentType, errPrepare = helps.ApplyMediaPayloadConfig(e.cfg, e.Identifier(), model, "openai", body, contentType, req, payloadOpts)
+	body, contentType, errPrepare = helps.ApplyMediaPayloadConfig(helps.ConfigForAuth(e.cfg, auth), e.Identifier(), model, "openai", body, contentType, req, payloadOpts)
 	if errPrepare != nil {
 		return nil, errPrepare
 	}
