@@ -106,3 +106,28 @@ func timezoneDateForTest(t *testing.T) string {
 	}
 	return time.Now().In(location).Format("2006-01-02")
 }
+
+// Explicit user rules remain authoritative after built-in metadata normalization.
+func TestTimezoneNormalizationPreservesFinalUserRules(t *testing.T) {
+	for _, useDoc := range []bool{false, true} {
+		cfg := &config.Config{TimezoneOverride: "America/New_York", Payload: config.PayloadConfig{
+			Override: []config.PayloadRule{{Models: []config.PayloadModelRule{{Name: "deepseek-*"}}, Params: map[string]any{"tools.0.user_location.timezone": "Europe/London"}}},
+			Filter:   []config.PayloadFilterRule{{Models: []config.PayloadModelRule{{Name: "deepseek-*"}}, Params: []string{"tools.0.user_location.city"}}},
+		}}
+		body := []byte(payloadFunnelTimezoneBody)
+		var out []byte
+		if useDoc {
+			doc := ojson.NewDoc(body)
+			ApplyPayloadConfigWithRequestDoc(cfg, "deepseek-v4.1-flash", "openai", "responses", "", doc, nil, "deepseek-v4.1-flash", "/v1/responses", nil)
+			out = doc.Bytes()
+		} else {
+			out = ApplyPayloadConfigWithRequest(cfg, "deepseek-v4.1-flash", "openai", "responses", "", body, nil, "deepseek-v4.1-flash", "/v1/responses", nil)
+		}
+		if got := ojson.GetBytes(out, "tools.0.user_location.timezone").String(); got != "Europe/London" {
+			t.Fatalf("doc=%v: timezone=%q, want user override", useDoc, got)
+		}
+		if ojson.GetBytes(out, "tools.0.user_location.city").Exists() {
+			t.Fatalf("doc=%v: filtered city was restored", useDoc)
+		}
+	}
+}
