@@ -47,6 +47,9 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	if err != nil {
 		return nil, err
 	}
+	if prepared.upstreamModel != "" && prepared.upstreamModel != baseModel {
+		reporter.SetUpstreamModel(prepared.upstreamModel)
+	}
 	from := prepared.from
 	responseFormat := prepared.responseFormat
 	to := prepared.to
@@ -868,6 +871,7 @@ type codexWebsocketPrepared struct {
 	originalPayload      []byte
 	clientBody           []byte
 	upstreamBody         []byte
+	upstreamModel        string
 	wsURL                string
 	wsHeaders            http.Header
 	identityState        codexIdentityConfuseState
@@ -922,10 +926,20 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 	hasExplicitInstructions := instructionsResult.Exists() && strings.TrimSpace(instructionsResult.String()) != ""
 	ctx = helps.WithPayloadFinalizer(ctx, helps.NewPayloadFinalizer(helps.ConfigForAuth(e.cfg, auth), "codex-websockets", baseModel, to.String(), "", originalTranslated, req, opts))
 	helps.SetStringIfDifferentDoc(doc, "model", baseModel)
+	ensureWebSearchToolForHistoryDoc(doc, opts.Headers)
+	upstreamModel := baseModel
 	if !useSIWC {
 		normalizeCodexInstructionsDoc(doc, preserveNativeOutput)
 		if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
 			ensureImageGenerationToolDoc(doc, baseModel, auth, opts.Headers)
+			if !codexAuthUsesAPIKey(auth) {
+				normalizeCodexImageGenerationToolsDoc(doc)
+				var errHostedModel error
+				upstreamModel, errHostedModel = applyCodexHostedImageGenerationModelDoc(e.cfg, doc, baseModel, req.Model)
+				if errHostedModel != nil {
+					return nil, errHostedModel
+				}
+			}
 		}
 	}
 	normalizeCodexWebsocketParallelToolCallsDoc(doc, opts.Headers)
@@ -963,8 +977,8 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 		return nil, errValidate
 	}
 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg, preserveNativeOutput, opts.Headers)
-	applyCodexRoutingHint(ctx, wsHeaders, auth, baseModel, upstreamBody, opts.Headers)
-	applyModelHeaderOverrides(wsHeaders, baseModel, codexOverrideIdentity{cfg: e.cfg, auth: auth})
+	applyCodexRoutingHint(ctx, wsHeaders, auth, upstreamModel, upstreamBody, opts.Headers)
+	applyModelHeaderOverrides(wsHeaders, upstreamModel, codexOverrideIdentity{cfg: e.cfg, auth: auth})
 
 	applyCodexIdentityConfuseHeaders(wsHeaders, &identityState)
 
@@ -976,6 +990,7 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 		originalPayload:      originalPayload,
 		clientBody:           clientBody,
 		upstreamBody:         upstreamBody,
+		upstreamModel:        upstreamModel,
 		wsURL:                wsURL,
 		wsHeaders:            wsHeaders,
 		identityState:        identityState,

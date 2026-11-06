@@ -1115,7 +1115,10 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 						st.ReasoningPendingDeltas = append(st.ReasoningPendingDeltas, strings.Clone(t.String()))
 					}
 				}
-				if !st.ReasoningOpened && st.ReasoningEnc != "" {
+				// Thought signatures may arrive only after the last thought chunk.
+				// Stream the visible summary now; finalizeReasoning attaches the
+				// eventual signature to the same completed item for safe replay.
+				if !st.ReasoningOpened && (st.ReasoningBuf.Len() > 0 || st.ReasoningEnc != "") {
 					openReasoning()
 				}
 				return true
