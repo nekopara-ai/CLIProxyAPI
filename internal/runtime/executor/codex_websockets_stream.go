@@ -926,7 +926,6 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 	hasExplicitInstructions := instructionsResult.Exists() && strings.TrimSpace(instructionsResult.String()) != ""
 	ctx = helps.WithPayloadFinalizer(ctx, helps.NewPayloadFinalizer(helps.ConfigForAuth(e.cfg, auth), "codex-websockets", baseModel, to.String(), "", originalTranslated, req, opts))
 	helps.SetStringIfDifferentDoc(doc, "model", baseModel)
-	ensureWebSearchToolForHistoryDoc(doc, opts.Headers)
 	upstreamModel := baseModel
 	if !useSIWC {
 		normalizeCodexInstructionsDoc(doc, preserveNativeOutput)

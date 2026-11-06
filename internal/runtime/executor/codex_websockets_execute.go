@@ -76,7 +76,6 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	helps.SetBoolIfDifferentDoc(doc, "stream", true)
 	_ = doc.Delete("prompt_cache_retention")
 	_ = doc.Delete("safety_identifier")
-	ensureWebSearchToolForHistoryDoc(doc, opts.Headers)
 	upstreamModel := baseModel
 	if !useSIWC {
 		normalizeCodexInstructionsDoc(doc, nativeRequest)

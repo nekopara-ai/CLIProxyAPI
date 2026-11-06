@@ -1169,7 +1169,8 @@ func TestResponsesWebsocketPinned429ExposesErrorWhenOnlyAlternativeHasExpiredTok
 		},
 		Metadata: map[string]any{
 			"access_token": "expired-token",
-			"expired":      time.Now().Add(-time.Hour).Format(time.RFC3339),
+			// Use explicit expiry, not the legacy hint ignored for opaque tokens.
+			"expires_at": time.Now().Add(-time.Hour).Format(time.RFC3339),
 		},
 	}
 	for _, a := range []*coreauth.Auth{authA, authB} {

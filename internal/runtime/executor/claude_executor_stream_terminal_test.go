@@ -17,10 +17,11 @@ import (
 
 type captureClaudeUsagePlugin struct {
 	records chan usage.Record
+	authID  string
 }
 
 func (p *captureClaudeUsagePlugin) HandleUsage(_ context.Context, record usage.Record) {
-	if p == nil || record.Provider != "claude" {
+	if p == nil || record.Provider != "claude" || record.AuthID != p.authID {
 		return
 	}
 	select {
@@ -69,6 +70,7 @@ func TestClaudeExecutor_ExecuteStream_Translated_ClientDisconnectAfterTerminalEv
 	pluginName := "test-claude-translated-disconnect"
 	plugin := &captureClaudeUsagePlugin{
 		records: make(chan usage.Record, 4),
+		authID:  t.Name(),
 	}
 	usage.RegisterNamedPlugin(pluginName, plugin)
 	t.Cleanup(func() {
@@ -77,6 +79,7 @@ func TestClaudeExecutor_ExecuteStream_Translated_ClientDisconnectAfterTerminalEv
 
 	exec := NewClaudeExecutor(&config.Config{})
 	auth := &cliproxyauth.Auth{
+		ID: t.Name(),
 		Attributes: map[string]string{
 			"api_key":  "key-123",
 			"base_url": server.URL,
@@ -165,6 +168,7 @@ func TestClaudeExecutor_ExecuteStream_Passthrough_ClientDisconnectAfterTerminalE
 	pluginName := "test-claude-passthrough-disconnect"
 	plugin := &captureClaudeUsagePlugin{
 		records: make(chan usage.Record, 4),
+		authID:  t.Name(),
 	}
 	usage.RegisterNamedPlugin(pluginName, plugin)
 	t.Cleanup(func() {
@@ -173,6 +177,7 @@ func TestClaudeExecutor_ExecuteStream_Passthrough_ClientDisconnectAfterTerminalE
 
 	exec := NewClaudeExecutor(&config.Config{})
 	auth := &cliproxyauth.Auth{
+		ID: t.Name(),
 		Attributes: map[string]string{
 			"api_key":  "key-123",
 			"base_url": server.URL,

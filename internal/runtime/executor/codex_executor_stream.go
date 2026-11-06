@@ -87,7 +87,6 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	useSIWC := codexUseSIWCForRequest(ctx, auth, opts.Headers)
 	instructionsResult := ojson.GetBytesNoCopy(req.Payload, "instructions")
 	hasExplicitInstructions := instructionsResult.Exists() && strings.TrimSpace(instructionsResult.String()) != ""
-	ensureWebSearchToolForHistoryDoc(doc, opts.Headers)
 	upstreamModel := baseModel
 	if !useSIWC {
 		normalizeCodexInstructionsDoc(doc, preserveNativeOutput)

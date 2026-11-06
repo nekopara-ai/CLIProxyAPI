@@ -155,8 +155,9 @@ func TestManagerExecuteOpenAIImageBlocksWhenOuterExpiredEvenIfSIWCValid(t *testi
 		Metadata: map[string]any{
 			"type":         "codex",
 			"access_token": "outer-expired-token",
-			"expired":      past,
-			"use_siwc":     true,
+			// Explicit expiry remains authoritative for opaque tokens.
+			"expires_at": past,
+			"use_siwc":   true,
 			"siwc": map[string]any{
 				"access_token": "siwc-valid-token",
 				"expired":      future,
