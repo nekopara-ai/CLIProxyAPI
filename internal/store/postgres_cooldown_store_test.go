@@ -174,14 +174,14 @@ func TestPostgresCooldownStateStore_SaveLoad(t *testing.T) {
 			LastFailureScope: "model", UpdatedAt: nextRetry.Add(-time.Minute),
 		},
 		{
-			Provider:            "codex",
-			AuthID:              "account-1",
-			Model:               "gpt-test",
-			Status:              string(cliproxyauth.StatusError),
-			NextRetryAfter:      nextRetry,
-			ForcedCooldownUntil: nextRetry.Add(-30 * time.Second),
-			Reason:              "rate limited",
-			UpdatedAt:           nextRetry.Add(-time.Minute),
+			Provider:           "codex",
+			AuthID:             "account-1",
+			Model:              "gpt-test",
+			Status:             string(cliproxyauth.StatusError),
+			NextRetryAfter:     nextRetry,
+			ForceCooldownUntil: nextRetry.Add(-30 * time.Second),
+			Reason:             "rate limited",
+			UpdatedAt:          nextRetry.Add(-time.Minute),
 		},
 	}
 	if errSave := cooldownStore.Save(context.Background(), records); errSave != nil {

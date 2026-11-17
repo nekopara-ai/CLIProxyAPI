@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	management "github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/synthesizer"
@@ -18,6 +19,9 @@ import (
 )
 
 func TestCodexExcludedModelsCredentialPriorityAfterPatchAndReload(t *testing.T) {
+	if buildinfo.ExcludedModelsPrecedence != "override" {
+		t.Fatalf("buildinfo.ExcludedModelsPrecedence = %q, want override", buildinfo.ExcludedModelsPrecedence)
+	}
 	const globalModel = "gpt-6-luna"
 	const credentialModel = "gpt-6.1-sol"
 	cfg := &config.Config{AuthDir: t.TempDir(), OAuthExcludedModels: map[string][]string{"codex": {globalModel}}}

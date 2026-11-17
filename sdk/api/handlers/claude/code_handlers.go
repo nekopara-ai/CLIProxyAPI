@@ -10,14 +10,15 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	claudemodels "github.com/router-for-me/CLIProxyAPI/v8/internal/client/claude/models"
@@ -272,6 +273,8 @@ func (h *ClaudeCodeAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON [
 		return
 	}
 	upstreamHeaders = resolvedHeaders
+	waitKeepAliveC, canWriteWaitKeepAlive, stopWaitKeepAlive := h.StartContinuityWaitKeepAliveForPeek(c, keepAliveC)
+	defer stopWaitKeepAlive()
 
 	// Peek at the first chunk to determine success or failure before setting headers
 	for {
@@ -287,6 +290,7 @@ func (h *ClaudeCodeAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON [
 			}
 			if committed {
 				stopKeepAlive()
+				stopWaitKeepAlive()
 				pendingErrors := make(chan *interfaces.ErrorMessage, 1)
 				pendingErrors <- errMsg
 				close(pendingErrors)
@@ -304,6 +308,7 @@ func (h *ClaudeCodeAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON [
 		case chunk, ok := <-dataChan:
 			if !ok {
 				stopKeepAlive()
+				stopWaitKeepAlive()
 				if errMsg, hasPendingError := handlers.PendingStreamError(errChan); hasPendingError {
 					if committed {
 						pendingErrors := make(chan *interfaces.ErrorMessage, 1)
@@ -328,6 +333,7 @@ func (h *ClaudeCodeAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON [
 
 			// Success! Set headers now.
 			stopKeepAlive()
+			stopWaitKeepAlive()
 			commitSSE()
 
 			// Write the first chunk
@@ -346,8 +352,14 @@ func (h *ClaudeCodeAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON [
 			// Continue streaming the rest
 			h.forwardClaudeStreamWithState(c, flusher, func(err error) { cliCancel(err) }, dataChan, errChan, &streamState)
 			return
+		case <-waitKeepAliveC:
+			if canWriteWaitKeepAlive() && !writeKeepAlive() {
+				return
+			}
 		case <-keepAliveC:
-			writeKeepAlive()
+			if !writeKeepAlive() {
+				return
+			}
 		}
 	}
 }
@@ -555,6 +567,14 @@ type claudeErrorResponse struct {
 }
 
 func (h *ClaudeCodeAPIHandler) toClaudeError(msg *interfaces.ErrorMessage) claudeErrorResponse {
+	var retryAfter string
+	if msg != nil && msg.Error != nil {
+		retryAfter = coreauth.SafeResponseHeaders(msg.Error).Get("Retry-After")
+	}
+	return h.toClaudeErrorWithRetryAfter(msg, retryAfter)
+}
+
+func (h *ClaudeCodeAPIHandler) toClaudeErrorWithRetryAfter(msg *interfaces.ErrorMessage, retryAfter string) claudeErrorResponse {
 	status := http.StatusInternalServerError
 	errText := http.StatusText(status)
 	if msg != nil {
@@ -569,6 +589,18 @@ func (h *ClaudeCodeAPIHandler) toClaudeError(msg *interfaces.ErrorMessage) claud
 		}
 	}
 	errType, message := claudeErrorDetailFromText(status, errText)
+	if status == http.StatusTooManyRequests && msg != nil && msg.Error != nil {
+		var cooldown interface{ IsModelCooldown() bool }
+		if errors.As(msg.Error, &cooldown) && cooldown != nil && cooldown.IsModelCooldown() {
+			if seconds, errParse := strconv.ParseInt(retryAfter, 10, 64); errParse == nil && seconds > 0 {
+				delay := retryAfter + "s"
+				if seconds <= (1<<63-1)/int64(time.Second) {
+					delay = (time.Duration(seconds) * time.Second).String()
+				}
+				message += " (reset after " + delay + ")"
+			}
+		}
+	}
 	response := claudeErrorResponse{
 		Type: "error",
 		Error: claudeErrorDetail{
@@ -614,8 +646,11 @@ func (h *ClaudeCodeAPIHandler) WriteErrorResponse(c *gin.Context, msg *interface
 		_, _ = c.Writer.Write(body)
 		return
 	}
+	var retryAfter string
 	if msg != nil && msg.Error != nil {
-		for _, value := range coreauth.SafeResponseHeaders(msg.Error).Values("Retry-After") {
+		safeHeaders := coreauth.SafeResponseHeaders(msg.Error)
+		retryAfter = safeHeaders.Get("Retry-After")
+		for _, value := range safeHeaders.Values("Retry-After") {
 			c.Writer.Header().Add("Retry-After", value)
 		}
 	}
@@ -636,7 +671,7 @@ func (h *ClaudeCodeAPIHandler) WriteErrorResponse(c *gin.Context, msg *interface
 		}
 	}
 
-	body, err := json.Marshal(h.toClaudeError(msg))
+	body, err := json.Marshal(h.toClaudeErrorWithRetryAfter(msg, retryAfter))
 	if err != nil {
 		body = []byte(`{"type":"error","error":{"type":"api_error","message":"Internal Server Error"}}`)
 	}

@@ -18,7 +18,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -29,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/MoeForge/moego/ojson"
 	codexauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -199,7 +199,12 @@ func ensureAccessToken(ctx context.Context, store *sdkauth.FileTokenStore, auth 
 		return "", false, fmt.Errorf("missing access_token and refresh_token")
 	}
 
+	journal, errJournal := store.RefreshJournalFor(auth)
+	if errJournal != nil {
+		return "", false, errJournal
+	}
 	svc := codexauth.NewCodexAuthWithProxyURL(nil, auth.ProxyURL)
+	svc.SetRefreshJournal(journal)
 	tokenData, errRefresh := svc.RefreshTokensWithRetry(ctx, refreshToken, 3)
 	if errRefresh != nil {
 		return "", false, errRefresh

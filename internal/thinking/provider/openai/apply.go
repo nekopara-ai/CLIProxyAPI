@@ -46,7 +46,7 @@ func (a *Applier) ApplyDoc(doc *ojson.Doc, config thinking.ThinkingConfig, model
 		return nil
 	}
 	if isDeepSeekV4Model(modelInfo) {
-		return applyDeepSeekV4Doc(doc, config, isDeepSeekV41Model(modelInfo))
+		return applyDeepSeekV4Doc(doc, config, isDeepSeekV41Model(modelInfo), modelInfo)
 	}
 	effort, ok := resolveOpenAIEffort(config, modelInfo)
 	if !ok {
@@ -136,9 +136,18 @@ func isDeepSeekV41Model(modelInfo *registry.ModelInfo) bool {
 		model == "deepseek_v4.1" || strings.HasPrefix(model, "deepseek_v4.1_")
 }
 
-func applyDeepSeekV4Doc(doc *ojson.Doc, config thinking.ThinkingConfig, preserveXHigh bool) error {
+func applyDeepSeekV4Doc(doc *ojson.Doc, config thinking.ThinkingConfig, preserveXHigh bool, modelInfo *registry.ModelInfo) error {
 
 	if config.Mode == thinking.ModeNone {
+		if modelInfo != nil && modelInfo.Thinking != nil && !modelInfo.Thinking.ZeroAllowed && !thinking.HasLevel(modelInfo.Thinking.Levels, string(thinking.LevelNone)) {
+			clamped := string(thinking.LevelLow)
+			if len(modelInfo.Thinking.Levels) > 0 {
+				clamped = modelInfo.Thinking.Levels[0]
+			}
+			_ = doc.Set("thinking.type", "enabled")
+			_ = doc.Set("reasoning_effort", clamped)
+			return nil
+		}
 		_ = doc.Delete("reasoning_effort")
 		_ = doc.Set("thinking.type", "disabled")
 		return nil
@@ -165,7 +174,7 @@ func applyDeepSeekV4Doc(doc *ojson.Doc, config thinking.ThinkingConfig, preserve
 	case thinking.ModeBudget:
 		level, ok := thinking.ConvertBudgetToLevel(config.Budget)
 		if ok {
-			return applyDeepSeekV4Doc(doc, thinking.ThinkingConfig{Mode: thinking.ModeLevel, Level: thinking.ThinkingLevel(level)}, preserveXHigh)
+			return applyDeepSeekV4Doc(doc, thinking.ThinkingConfig{Mode: thinking.ModeLevel, Level: thinking.ThinkingLevel(level)}, preserveXHigh, modelInfo)
 		}
 	}
 	if effort == "" {

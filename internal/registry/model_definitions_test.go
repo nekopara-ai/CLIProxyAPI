@@ -1,11 +1,11 @@
 package registry
 
 import (
-	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/constant"
 )
 

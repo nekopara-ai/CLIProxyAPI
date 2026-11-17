@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"net/http"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -33,21 +33,89 @@ func (m *Manager) SetRetryConfig(retry int, maxRetryInterval time.Duration, maxR
 	m.maxRetryInterval.Store(maxRetryInterval.Nanoseconds())
 }
 
+// unwrapProviderExecutor follows ExecutorUnwrapper chains to the innermost
+// executor. A nil result or a cycle returns the last non-nil executor.
+// A visited bound prevents unbounded traversal on malformed chains.
+func unwrapProviderExecutor(executor ProviderExecutor) ProviderExecutor {
+	visited := make(map[ProviderExecutor]struct{})
+	for executor != nil {
+		// Only comparable values can be hashed; non-comparable innermost
+		// executors are returned directly to avoid a panic.
+		if !reflect.ValueOf(executor).Comparable() {
+			return executor
+		}
+		if _, seen := visited[executor]; seen {
+			return executor
+		}
+		visited[executor] = struct{}{}
+		unwrapper, ok := executor.(ExecutorUnwrapper)
+		if !ok || unwrapper == nil {
+			return executor
+		}
+		inner := unwrapper.Unwrap()
+		if inner == nil || sameExecutor(inner, executor) {
+			return executor
+		}
+		executor = inner
+	}
+	return nil
+}
+
+// sameExecutor reports whether two executors are the same published or owned
+// instance without panicking on non-comparable values.
+func sameExecutor(a, b ProviderExecutor) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	if !reflect.ValueOf(a).Comparable() || !reflect.ValueOf(b).Comparable() {
+		return false
+	}
+	return a == b
+}
+
+// ExecutorRevision returns the monotonic revision for a provider's executor
+// registration. Each RegisterExecutor and UnregisterExecutor advances it.
+func (m *Manager) ExecutorRevision(provider string) uint64 {
+	if m == nil {
+		return 0
+	}
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "" {
+		return 0
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.executorRevisions[provider]
+}
+
 // RegisterExecutor registers a provider executor with the manager.
 func (m *Manager) RegisterExecutor(executor ProviderExecutor) {
+	m.RegisterExecutorWithRevision(executor)
+}
+
+// RegisterExecutorWithRevision registers a provider executor and returns the
+// provider's executor revision captured under the same lock as publication,
+// so callers can correlate the revision with this exact registration.
+func (m *Manager) RegisterExecutorWithRevision(executor ProviderExecutor) uint64 {
 	if executor == nil {
-		return
+		return 0
 	}
 	provider := strings.TrimSpace(executor.Identifier())
 	if provider == "" {
-		return
+		return 0
 	}
 
 	var replaced ProviderExecutor
 	var toReschedule []string
+	var revision uint64
 	m.mu.Lock()
 	replaced = m.executors[provider]
 	m.executors[provider] = executor
+	if m.executorRevisions == nil {
+		m.executorRevisions = make(map[string]uint64)
+	}
+	m.executorRevisions[provider]++
+	revision = m.executorRevisions[provider]
 	for id, auth := range m.auths {
 		if auth != nil && strings.EqualFold(executorKeyFromAuth(auth), provider) {
 			toReschedule = append(toReschedule, id)
@@ -59,15 +127,33 @@ func (m *Manager) RegisterExecutor(executor ProviderExecutor) {
 		m.queueRefreshReschedule(id)
 	}
 
-	if replaced == nil || replaced == executor {
-		return
+	if replaced == nil || sameExecutor(replaced, executor) {
+		return revision
+	}
+	replacedOwned := unwrapProviderExecutor(replaced)
+	executorOwned := unwrapProviderExecutor(executor)
+	// Rewrapping the identical owned executor must not close its sessions.
+	if replacedOwned != nil && sameExecutor(replacedOwned, executorOwned) {
+		return revision
+	}
+	if replacedOwned != nil && executorOwned != nil && !sameExecutor(replacedOwned, executorOwned) {
+		if sharer, ok := replacedOwned.(ExecutionSessionSharer); ok && sharer != nil && sharer.SharesExecutionSessionsWith(executorOwned) {
+			return revision
+		}
 	}
 	if sharer, ok := replaced.(ExecutionSessionSharer); ok && sharer != nil && sharer.SharesExecutionSessionsWith(executor) {
-		return
+		return revision
 	}
 	if closer, ok := replaced.(ExecutionSessionCloser); ok && closer != nil {
 		closer.CloseExecutionSession(CloseAllExecutionSessionsID)
+		return revision
 	}
+	if replacedOwned != nil && !sameExecutor(replacedOwned, replaced) {
+		if closer, ok := replacedOwned.(ExecutionSessionCloser); ok && closer != nil {
+			closer.CloseExecutionSession(CloseAllExecutionSessionsID)
+		}
+	}
+	return revision
 }
 
 // UnregisterExecutor removes the executor associated with the provider key.
@@ -78,6 +164,10 @@ func (m *Manager) UnregisterExecutor(provider string) {
 	}
 	m.mu.Lock()
 	delete(m.executors, provider)
+	if m.executorRevisions == nil {
+		m.executorRevisions = make(map[string]uint64)
+	}
+	m.executorRevisions[provider]++
 	m.mu.Unlock()
 }
 
@@ -113,8 +203,11 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 	}
 	auth.UpdatedAt = now
 	cooldownStateChanged := normalizeModelStates(auth)
-	if m.cooldownDisabledForAuth(auth) || auth.Disabled || auth.Status == StatusDisabled {
+	seedInitialForceCooldownDeadlines(auth)
+	if auth.Disabled || auth.Status == StatusDisabled {
 		cooldownStateChanged = clearCooldownStateForAuth(auth, now) || cooldownStateChanged
+	} else if m.cooldownDisabledForAuth(auth) {
+		cooldownStateChanged = clearDisabledCooldownStateForAuth(auth, now) || cooldownStateChanged
 	}
 	auth.EnsureIndex()
 	m.mu.Lock()
@@ -135,6 +228,7 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 		auth.CredentialVersion = 1
 	}
 	auth.Generation = 1
+	aliasTableBeforeSave := m.oauthModelAlias.Load()
 	// Serialize this credential, but release the manager lock during store I/O.
 	// Persist failures stay non-fatal, but must not be silent: a restart would
 	// lose the credential that only exists in memory.
@@ -144,6 +238,12 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 	if m.authEpochs[auth.ID] != auth.RegistrationEpoch {
 		m.mu.Unlock()
 		return nil, fmt.Errorf("auth %s changed registration during persistence", auth.ID)
+	}
+	if m.oauthModelAlias.Load() != aliasTableBeforeSave {
+		cooldownStateChanged = m.migrateAuthAliasModelStatesLocked(auth, nil, now, false) || cooldownStateChanged
+		if len(auth.ModelStates) > 0 {
+			updateAggregatedAvailability(auth, now)
+		}
 	}
 	auth.ClearFileSnapshot()
 	authClone := auth.Clone()
@@ -434,7 +534,7 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 				auth.NextRefreshAfter = existing.NextRefreshAfter
 				auth.RefreshFailures = existing.RefreshFailures
 			}
-		} else if mode != updateModeRefresh && len(auth.ModelStates) == 0 && len(existing.ModelStates) > 0 {
+		} else if len(auth.ModelStates) == 0 && len(existing.ModelStates) > 0 {
 			auth.ModelStates = existing.ModelStates
 		}
 		if isFileSnapshot || (credChanged && mode == updateModeReplace && existing.Quota.Exceeded && existing.Quota.NextRecoverAt.After(now) && !auth.Quota.NextRecoverAt.After(now)) {
@@ -454,6 +554,12 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 			auth.Quota.ObservedAt = observation.ObservedAt
 			auth.Quota.Signals = observation.Signals
 			auth.cooldownRecordedSeq = existing.cooldownRecordedSeq
+			auth.forceCooldownUntil = existing.forceCooldownUntil
+			auth.quotaForceCooldownUntil = existing.quotaForceCooldownUntil
+			auth.credQuotaForceUntil = existing.credQuotaForceUntil
+			auth.credentialRetryAfter = existing.credentialRetryAfter
+			auth.nonQuotaCooldownUntil = existing.nonQuotaCooldownUntil
+			auth.forceCooldownSeeded = existing.forceCooldownSeeded
 		}
 		if credChanged || mode == updateModeRefresh {
 			applyPreservedRejectedTokens(existing, auth, mode == updateModeRefresh)
@@ -481,7 +587,12 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 					auth.Unavailable = false
 					auth.NextRetryAfter = time.Time{}
 					auth.cooldownRecordedSeq = 0
+					auth.forceCooldownUntil = time.Time{}
+					auth.quotaForceCooldownUntil = time.Time{}
+					auth.credentialRetryAfter = time.Time{}
+					auth.nonQuotaCooldownUntil = time.Time{}
 					auth.LastError = nil
+					auth.lastFailureScope = ""
 					auth.StatusMessage = ""
 					auth.Status = StatusActive
 					cooldownStateChanged = true
@@ -513,7 +624,10 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 						if existing.LastError != nil {
 							auth.LastError = cloneError(existing.LastError)
 						} else if auth.RefreshError != nil {
-							auth.LastError = &Error{Code: "unauthorized", Message: auth.RefreshError.Message, HTTPStatus: http.StatusUnauthorized}
+							auth.LastError = refreshAccessError(auth, auth.RefreshError.Message, false, hasUnauthorizedAuthFailure(existing))
+							if auth.LastError.Code == "refresh_outcome_unknown" {
+								auth.StatusMessage = auth.LastError.Message
+							}
 						}
 					}
 				}
@@ -537,12 +651,34 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 			auth.Quota.ObservedAt = observation.ObservedAt
 			auth.Quota.Signals = observation.Signals
 			auth.cooldownRecordedSeq = existing.cooldownRecordedSeq
+			auth.forceCooldownUntil = existing.forceCooldownUntil
+			auth.quotaForceCooldownUntil = existing.quotaForceCooldownUntil
+			auth.credQuotaForceUntil = existing.credQuotaForceUntil
+			auth.credentialRetryAfter = existing.credentialRetryAfter
+			auth.nonQuotaCooldownUntil = existing.nonQuotaCooldownUntil
+			auth.forceCooldownSeeded = existing.forceCooldownSeeded
 			if auth.Status == StatusActive {
 				auth.Status = existing.Status
 			}
-		}
-		if !devinQuotaRestored {
-			cooldownStateChanged = preserveIndependentCredentialCooldown(auth, existing, time.Now()) || cooldownStateChanged
+		} else if !credChanged && mode == updateModeReplace && existing.forceCooldownUntil.After(now) && !auth.NextRetryAfter.After(now) {
+			auth.Unavailable = existing.Unavailable
+			auth.NextRetryAfter = existing.NextRetryAfter
+			auth.cooldownRecordedSeq = existing.cooldownRecordedSeq
+			auth.forceCooldownUntil = existing.forceCooldownUntil
+			auth.quotaForceCooldownUntil = existing.quotaForceCooldownUntil
+			auth.credQuotaForceUntil = existing.credQuotaForceUntil
+			auth.credentialRetryAfter = existing.credentialRetryAfter
+			auth.nonQuotaCooldownUntil = existing.nonQuotaCooldownUntil
+			auth.forceCooldownSeeded = existing.forceCooldownSeeded
+			if auth.LastError == nil && existing.LastError != nil {
+				auth.LastError = cloneError(existing.LastError)
+			}
+			if auth.StatusMessage == "" {
+				auth.StatusMessage = existing.StatusMessage
+			}
+			if auth.Status == StatusActive {
+				auth.Status = existing.Status
+			}
 		}
 	} else {
 		applyPreservedRejectedTokens(existing, auth, mode == updateModeRefresh)
@@ -563,15 +699,12 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 		}
 	}
 	auth.UpdatedAt = now
-	cooldownStateChanged = normalizeModelStates(auth) || cooldownStateChanged
-	if mode == updateModeReplace && !existing.Disabled && existing.Status != StatusDisabled && !auth.Disabled && auth.Status != StatusDisabled {
-		cooldownStateChanged = preserveForcedCooldownsOnReplacement(auth, existing, now) || cooldownStateChanged
-	}
-	if resetCooldown || m.cooldownDisabledForAuth(auth) || auth.Disabled || auth.Status == StatusDisabled {
+	cooldownStateChanged = m.migrateAuthAliasModelStatesLocked(auth, nil, now, false) || cooldownStateChanged
+	seedInitialForceCooldownDeadlines(auth)
+	if resetCooldown || auth.Disabled || auth.Status == StatusDisabled {
 		cooldownStateChanged = clearCooldownStateForAuth(auth, now) || cooldownStateChanged
-	}
-	if mode == updateModeRefresh && m.cooldownStore != nil {
-		cooldownStateChanged = !cooldownStateRecordsEqual(m.cooldownStateRecordsForAuthLocked(existing, now), m.cooldownStateRecordsForAuthLocked(auth, now)) || cooldownStateChanged
+	} else if m.cooldownDisabledForAuth(auth) {
+		cooldownStateChanged = clearDisabledCooldownStateForAuth(auth, now) || cooldownStateChanged
 	}
 	if existing.Metadata != nil {
 		if persistedHints, hasHints := existing.Metadata["antigravity_capability_hints"]; hasHints {
@@ -601,6 +734,10 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 		return nil, false, false, false, fmt.Errorf("auth %s changed registration during persistence", auth.ID)
 	}
 	mergeAuthSaveDelta(auth, existingBeforeSave, existing, false)
+	if m.migrateAuthAliasModelStatesLocked(auth, nil, now, false) {
+		cooldownStateChanged = true
+		updateAggregatedAvailability(auth, now)
+	}
 	if (auth.RejectedAccessToken == "" && existing.RejectedAccessToken != "") || (auth.RejectedSIWCAccessToken == "" && existing.RejectedSIWCAccessToken != "") {
 		probe := auth.Clone()
 		probe.CodexRefreshPatch = refreshPatchBeforeSave
@@ -658,258 +795,18 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 	if m.scheduler != nil {
 		schedulerSnapshot = authClone.Clone()
 	}
+	shouldForgetWeighted := authClone.Disabled ||
+		authClone.Status == StatusDisabled ||
+		(authWeight(existingBeforeSave) > 0 && authWeight(authClone) <= 0) ||
+		executorKeyFromAuth(existingBeforeSave) != executorKeyFromAuth(authClone)
+	forgetEpoch := authClone.RegistrationEpoch
+	forgetGen := authClone.Generation
 	m.mu.Unlock()
 	_ = schedulerSnapshot
+	if shouldForgetWeighted {
+		m.forgetWeightedAuthUpTo(authClone.ID, forgetEpoch, forgetGen)
+	}
 	return auth.Clone(), true, cooldownStateChanged, resetCooldown, nil
-}
-
-// Configuration replacements can contain no runtime state, or an older snapshot.
-// The manager owns active cooldown state: preserve independent credential and
-// still-relevant model deadlines from current, but never revive a stale forced
-// action or an ordinary model removed by the replacement.
-func preserveForcedCooldownsOnReplacement(auth, current *Auth, now time.Time) bool {
-	if auth == nil || current == nil || auth.Disabled || auth.Status == StatusDisabled ||
-		current.Disabled || current.Status == StatusDisabled {
-		return false
-	}
-	credentialsReplaced := CredentialsChanged(current, auth)
-	beforeForced := auth.ForcedCooldownUntil
-	beforeNextRetry := auth.NextRetryAfter
-	beforeQuota := cooldownFieldsOf(auth.Quota)
-	beforeLastError := cloneError(auth.LastError)
-	beforeUnavailable := auth.Unavailable
-	beforeStatus := auth.Status
-	beforeStatusMessage := auth.StatusMessage
-	beforeScope := auth.lastFailureScope
-
-	var states map[string]*ModelState
-	modelsChanged := false
-	ensureStates := func() {
-		if !modelsChanged {
-			states = make(map[string]*ModelState, len(auth.ModelStates))
-			for key, state := range auth.ModelStates {
-				states[key] = state
-			}
-		}
-		modelsChanged = true
-	}
-	incomingForcedProvenance := !auth.ForcedCooldownUntil.IsZero() ||
-		(auth.LastError != nil && auth.LastError.Code == ErrorCodeForceCooldown)
-	currentOwnsForced := current.ForcedCooldownUntil.After(now)
-	for _, state := range current.ModelStates {
-		if state != nil && state.ForcedCooldownUntil.After(now) {
-			currentOwnsForced = true
-			break
-		}
-	}
-	// Runtime state supplied by a configuration replacement is not authoritative.
-	// Drop a forced marker only when the manager does not still own the same live
-	// forced action; ordinary concurrent errors without that marker stay intact.
-	for model, state := range auth.ModelStates {
-		if state == nil || state.ForcedCooldownUntil.IsZero() {
-			continue
-		}
-		incomingForcedProvenance = true
-		currentState := current.ModelStates[model]
-		if currentState != nil && currentState.ForcedCooldownUntil.After(now) {
-			continue
-		}
-		ensureStates()
-		resetModelState(state, now)
-	}
-	copyCurrentModel := func(model string) {
-		ensureStates()
-		incoming := states[model]
-		var currentState *ModelState
-		if current.ModelStates != nil {
-			currentState = current.ModelStates[model]
-		}
-		state := currentState.Clone()
-		if state == nil {
-			state = &ModelState{}
-		}
-		if incoming != nil {
-			state.Quota = mergeQuotaObservation(state.Quota, incoming.Quota)
-			if incoming.Status == StatusDisabled {
-				state.Status = StatusDisabled
-			}
-		}
-		// A credential quota is only a presentation layer. Preserve the newest
-		// independent model failure beneath it so quota restoration can release
-		// exactly the propagated layer without losing a newer Cloudflare or
-		// ordinary model block.
-		if current.Quota.Exceeded && current.Quota.Reason == "credential_quota" && current.Quota.NextRecoverAt.After(now) {
-			independentLayer := func(source *ModelState) *ModelState {
-				if source == nil {
-					return nil
-				}
-				if source.credentialQuotaShadow != nil {
-					return source.credentialQuotaShadow.cloneShallow()
-				}
-				if source.credentialQuotaPropagated || source.Quota.Reason == "credential_quota" ||
-					!isModelStateActiveCooldown(source, now) {
-					return nil
-				}
-				return source.cloneShallow()
-			}
-			newerObservation := func(candidate, existing *ModelState) bool {
-				if candidate == nil {
-					return false
-				}
-				if existing == nil {
-					return true
-				}
-				switch {
-				case !candidate.UpdatedAt.IsZero() && !existing.UpdatedAt.IsZero():
-					return candidate.UpdatedAt.After(existing.UpdatedAt)
-				case !candidate.UpdatedAt.IsZero():
-					return true
-				case !existing.UpdatedAt.IsZero():
-					return false
-				default:
-					return candidate.Quota.ObservedAt.After(existing.Quota.ObservedAt)
-				}
-			}
-			shadow := independentLayer(currentState)
-			if candidate := independentLayer(incoming); newerObservation(candidate, shadow) {
-				shadow = candidate
-			}
-			state.credentialQuotaShadow = shadow
-			state.credentialQuotaPropagated = true
-			applyCooldownFields(&state.Quota, QuotaState{
-				Exceeded:      true,
-				Reason:        "credential_quota",
-				NextRecoverAt: current.Quota.NextRecoverAt,
-				BackoffLevel:  current.Quota.BackoffLevel,
-			})
-			if state.NextRetryAfter.Before(current.Quota.NextRecoverAt) {
-				state.NextRetryAfter = current.Quota.NextRecoverAt
-			}
-			state.Unavailable = true
-			if state.Status != StatusDisabled {
-				state.Status = StatusError
-			}
-		}
-		states[model] = state
-	}
-	for model, state := range current.ModelStates {
-		if state == nil {
-			continue
-		}
-		incoming, hasIncoming := auth.ModelStates[model]
-		// Credential replacement invalidates ordinary failures tied to the old
-		// token. Explicit forced actions remain manager-owned across replacement.
-		if state.ForcedCooldownUntil.After(now) ||
-			(!credentialsReplaced && hasIncoming && incoming != nil && isModelStateActiveCooldown(state, now)) {
-			copyCurrentModel(model)
-		}
-	}
-	if modelsChanged {
-		auth.ModelStates = states
-		updateAggregatedAvailability(auth, now)
-	}
-	if hasActiveIndependentCredentialCooldown(current, now) {
-		copyCredentialCooldownPresentation(auth, current)
-	} else if !currentOwnsForced && incomingForcedProvenance {
-		// A stale replacement must not resurrect a manager-reset forced action.
-		auth.ForcedCooldownUntil = time.Time{}
-		auth.NextRetryAfter = time.Time{}
-		applyCooldownFields(&auth.Quota, QuotaState{})
-		auth.LastError = nil
-		auth.Unavailable = false
-		auth.StatusMessage = ""
-		auth.lastFailureScope = ""
-		if auth.Status == StatusError {
-			auth.Status = StatusActive
-		}
-	}
-	authChanged := !auth.ForcedCooldownUntil.Equal(beforeForced) ||
-		!auth.NextRetryAfter.Equal(beforeNextRetry) ||
-		!cooldownQuotaEqual(cooldownFieldsOf(auth.Quota), beforeQuota) ||
-		!cooldownErrorEqual(auth.LastError, beforeLastError) ||
-		auth.Unavailable != beforeUnavailable ||
-		auth.Status != beforeStatus ||
-		auth.StatusMessage != beforeStatusMessage ||
-		auth.lastFailureScope != beforeScope
-	return authChanged || modelsChanged
-}
-
-func hasActiveIndependentCredentialCooldown(current *Auth, now time.Time) bool {
-	if current == nil {
-		return false
-	}
-	if current.ForcedCooldownUntil.After(now) {
-		return true
-	}
-	if current.Quota.Exceeded && current.Quota.Reason == "credential_quota" && current.Quota.NextRecoverAt.After(now) {
-		return true
-	}
-	if current.Quota.Exceeded && current.Quota.NextRecoverAt.After(now) && !modelStatesOwnAvailability(current, now) {
-		return true
-	}
-	return current.lastFailureScope == cooldownFailureScopeCredential &&
-		(current.Unavailable || current.NextRetryAfter.After(now) ||
-			current.Quota.Exceeded && current.Quota.NextRecoverAt.After(now))
-}
-
-// copyCredentialCooldownPresentation preserves the complete manager-owned auth
-// cooldown. A shorter forced deadline must not hide a longer ordinary deadline
-// or its owning error. Passive quota observations still prefer the newer
-// snapshot on the destination.
-func copyCredentialCooldownPresentation(auth, current *Auth) {
-	if auth == nil || current == nil {
-		return
-	}
-	auth.ForcedCooldownUntil = current.ForcedCooldownUntil
-	auth.NextRetryAfter = current.NextRetryAfter
-	if auth.NextRetryAfter.Before(current.Quota.NextRecoverAt) {
-		auth.NextRetryAfter = current.Quota.NextRecoverAt
-	}
-	applyCooldownFields(&auth.Quota, current.Quota)
-	auth.Quota = mergeQuotaObservation(auth.Quota, current.Quota)
-	auth.LastError = cloneError(current.LastError)
-	auth.Unavailable = current.Unavailable
-	auth.Status = current.Status
-	auth.StatusMessage = current.StatusMessage
-	auth.lastFailureScope = current.lastFailureScope
-	if current.cooldownRecordedSeq > auth.cooldownRecordedSeq {
-		auth.cooldownRecordedSeq = current.cooldownRecordedSeq
-	}
-	if auth.Unavailable || auth.ForcedCooldownUntil.After(time.Now()) || auth.Quota.Exceeded {
-		auth.Status = StatusError
-	}
-}
-
-// preserveIndependentCredentialCooldown keeps a manager-owned credential
-// failure across a refresh or model-level recovery. Model-derived aggregates
-// remain eligible for success recovery.
-func preserveIndependentCredentialCooldown(auth, current *Auth, now time.Time) bool {
-	if auth == nil || current == nil || auth.Disabled || current.Disabled || auth.Status == StatusDisabled || current.Status == StatusDisabled {
-		return false
-	}
-	if !hasActiveIndependentCredentialCooldown(current, now) {
-		return false
-	}
-
-	beforeQuota := cooldownFieldsOf(auth.Quota)
-	beforeLastError := cloneError(auth.LastError)
-	beforeUnavailable := auth.Unavailable
-	beforeStatus := auth.Status
-	beforeStatusMessage := auth.StatusMessage
-	beforeNextRetry := auth.NextRetryAfter
-	beforeForced := auth.ForcedCooldownUntil
-	beforeScope := auth.lastFailureScope
-
-	copyCredentialCooldownPresentation(auth, current)
-
-	return auth.Unavailable != beforeUnavailable ||
-		auth.Status != beforeStatus ||
-		auth.StatusMessage != beforeStatusMessage ||
-		!auth.NextRetryAfter.Equal(beforeNextRetry) ||
-		!auth.ForcedCooldownUntil.Equal(beforeForced) ||
-		!cooldownQuotaEqual(cooldownFieldsOf(auth.Quota), beforeQuota) ||
-		!cooldownErrorEqual(auth.LastError, beforeLastError) ||
-		auth.lastFailureScope != beforeScope
 }
 
 func equalErrorPtr(a, b *Error) bool {
@@ -960,7 +857,6 @@ func (m *Manager) RemoveIf(ctx context.Context, id string, predicate func(*Auth)
 		return false
 	}
 	provider := strings.TrimSpace(existing.Provider)
-	m.stopCredentialOperationsLocked(existing)
 	delete(m.auths, id)
 	m.notifyAuthChangeLocked(id)
 	if m.modelPoolOffsets != nil {
@@ -984,6 +880,7 @@ func (m *Manager) RemoveIf(ctx context.Context, id string, predicate func(*Auth)
 	m.authEpochs[id]++
 	tombstoneEpoch := m.authEpochs[id]
 	m.mu.Unlock()
+	m.forgetWeightedAuthUpTo(id, tombstoneEpoch, ^uint64(0))
 	releaseMutation()
 
 	if !shouldDeferAPIKeyModelAliasRebuild(ctx) {
@@ -1019,6 +916,22 @@ func (m *Manager) invalidateSessionAffinity(authID string) {
 	}
 }
 
+func (m *Manager) forgetWeightedAuthUpTo(authID string, maxEpoch, maxGen uint64) {
+	if m == nil || authID == "" {
+		return
+	}
+	sel := m.Selector()
+	if epochForgetter, ok := sel.(interface {
+		ForgetAuthUpTo(string, uint64, uint64)
+	}); ok && epochForgetter != nil {
+		epochForgetter.ForgetAuthUpTo(authID, maxEpoch, maxGen)
+		return
+	}
+	if forgetter, ok := sel.(interface{ ForgetAuth(string) }); ok && forgetter != nil {
+		forgetter.ForgetAuth(authID)
+	}
+}
+
 // Load resets manager state from the backing store.
 func (m *Manager) Load(ctx context.Context) error {
 	// Exclude complete Save/publication transactions, including new registrations
@@ -1042,6 +955,7 @@ func (m *Manager) Load(ctx context.Context) error {
 		return err
 	}
 	m.mu.Lock()
+	now := time.Now()
 	previousAuths := m.auths
 	m.auths = make(map[string]*Auth, len(items))
 	if m.authEpochs == nil {
@@ -1056,6 +970,11 @@ func (m *Manager) Load(ctx context.Context) error {
 			continue
 		}
 		auth.EnsureIndex()
+		_ = m.migrateAuthAliasModelStatesLocked(auth, nil, now, false)
+		seedInitialForceCooldownDeadlines(auth)
+		if len(auth.ModelStates) > 0 {
+			updateAggregatedAvailability(auth, now)
+		}
 		m.authEpochs[auth.ID] = max(m.authEpochs[auth.ID], auth.RegistrationEpoch) + 1
 		auth.RegistrationEpoch = m.authEpochs[auth.ID]
 		auth.Generation = 1
@@ -1100,6 +1019,9 @@ func (m *Manager) Load(ctx context.Context) error {
 		for _, rt := range removedTombstones {
 			m.scheduler.RecordRemovalTombstone(rt.id, rt.epoch)
 		}
+	}
+	for _, rt := range removedTombstones {
+		m.forgetWeightedAuthUpTo(rt.id, rt.epoch, ^uint64(0))
 	}
 	m.structuralEpoch.Add(1)
 	m.syncScheduler()

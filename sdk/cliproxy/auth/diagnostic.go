@@ -38,10 +38,12 @@ func DiagnosticAvailability(a *Auth, model string, now time.Time) *DiagnosticUna
 		} else if a.Quota.Exceeded && a.Quota.Reason == "credential_quota" && a.Quota.NextRecoverAt.After(now) {
 			wait.Reason, wait.Scope = "quota", "credential"
 		} else {
-			if a.ForcedCooldownUntil.After(now) || len(a.ModelStates) == 0 {
+			if effectiveAuthForceUntil(a).After(now) || effectiveCredQuotaForceUntil(a).After(now) || len(a.ModelStates) == 0 {
 				wait.Scope = "credential"
 			}
-			if reason == blockReasonCooldown {
+			if effectiveAuthForceUntil(a).After(now) && !(a.Quota.Exceeded && a.Quota.NextRecoverAt.After(now)) {
+				wait.Reason = "cooldown"
+			} else if reason == blockReasonCooldown {
 				wait.Reason = "quota"
 			} else if reason == blockReasonDisabled {
 				wait.Reason = "disabled"
