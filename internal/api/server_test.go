@@ -3,7 +3,6 @@ package api
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -20,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/MoeForge/moego/ojson"
 	gin "github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -534,8 +534,8 @@ func TestHomeCodexAlphaSearchRequestLogPreservesBodyReturnedWithReadError(t *tes
 	}
 	rawAPIResponse, okResponse := c.Get("API_RESPONSE")
 	apiResponse, _ := rawAPIResponse.([]byte)
-	if !okResponse || !strings.Contains(string(apiResponse), upstreamError) || !strings.Contains(string(apiResponse), io.ErrUnexpectedEOF.Error()) {
-		t.Fatalf("API_RESPONSE = %q, want upstream body and read error", apiResponse)
+	if !okResponse || !strings.Contains(string(apiResponse), upstreamError) || strings.Contains(string(apiResponse), io.ErrUnexpectedEOF.Error()) {
+		t.Fatalf("API_RESPONSE = %q, want upstream body without local read error", apiResponse)
 	}
 }
 
@@ -1528,6 +1528,12 @@ func TestManagementResponseExposesPluginSupportHeaderForCORS(t *testing.T) {
 	if got := rr.Header().Get("X-CPA-SUPPORT-PLUGIN"); got != pluginhost.SupportPluginHeaderValue() {
 		t.Fatalf("X-CPA-SUPPORT-PLUGIN = %q, want %q", got, pluginhost.SupportPluginHeaderValue())
 	}
+	if got := rr.Header().Get("X-CPA-EXCLUDED-MODELS-PRECEDENCE"); got != "override" {
+		t.Fatalf("X-CPA-EXCLUDED-MODELS-PRECEDENCE = %q, want %q", got, "override")
+	}
+	if got := rr.Header().Get("X-CPA-FORK"); got != "nekopara" {
+		t.Fatalf("X-CPA-FORK = %q, want %q", got, "nekopara")
+	}
 
 	exposedHeaders := make(map[string]struct{})
 	for _, headerName := range strings.Split(rr.Header().Get("Access-Control-Expose-Headers"), ",") {
@@ -2072,6 +2078,18 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 	clientID := "test-client-version-catalog"
 	modelRegistry.RegisterClient(clientID, "codex", []*registry.ModelInfo{
 		{
+			ID:                  "gpt-6.1-sol",
+			Object:              "model",
+			Created:             1776902400,
+			OwnedBy:             "openai",
+			Type:                "openai",
+			DisplayName:         "GPT 6.1 Sol",
+			Description:         "Latest workhorse model.",
+			ContextLength:       272000,
+			MaxCompletionTokens: 64000,
+			Thinking:            &registry.ThinkingSupport{Levels: []string{"low", "medium", "high", "xhigh"}},
+		},
+		{
 			ID:                  "gpt-5.5",
 			Object:              "model",
 			Created:             1776902400,
@@ -2143,14 +2161,24 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 	}
 
 	var gpt55 map[string]any
+	var gpt61Sol map[string]any
 	var custom map[string]any
 	for _, model := range resp.Models {
 		switch slug, _ := model["slug"].(string); slug {
+		case "gpt-6.1-sol":
+			gpt61Sol = model
 		case "gpt-5.5":
 			gpt55 = model
 		case "custom-codex-model-test":
 			custom = model
 		}
+	}
+	if gpt61Sol == nil {
+		t.Fatal("expected gpt-6.1-sol codex catalog entry")
+	}
+	solServiceTiers, ok := gpt61Sol["service_tiers"].([]any)
+	if !ok || len(solServiceTiers) != 1 {
+		t.Fatalf("expected gpt-6.1-sol priority service tier, got %#v", gpt61Sol["service_tiers"])
 	}
 	if gpt55 == nil {
 		t.Fatal("expected gpt-5.5 codex catalog entry")
@@ -2165,8 +2193,8 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 		t.Fatalf("gpt-5.5 max_tokens = %v, want 64000", gpt55["max_tokens"])
 	}
 	serviceTiers, ok := gpt55["service_tiers"].([]any)
-	if !ok || len(serviceTiers) != 1 {
-		t.Fatalf("expected gpt-5.5 priority service tier, got %#v", gpt55["service_tiers"])
+	if !ok || len(serviceTiers) != 0 {
+		t.Fatalf("expected gpt-5.5 service_tiers = [], got %#v", gpt55["service_tiers"])
 	}
 	if custom == nil {
 		t.Fatal("expected custom model codex catalog entry")
@@ -3845,7 +3873,18 @@ func (e *serverResponsesWebsocketCaptureExecutor) HttpRequest(context.Context, *
 }
 
 func TestServerResponsesWebsocketReauthorizesEachTurn(t *testing.T) {
-	server := newTestServer(t)
+	for _, requestLog := range []bool{false, true} {
+		t.Run(fmt.Sprintf("request_log=%t", requestLog), func(t *testing.T) {
+			testServerResponsesWebsocketReauthorizesEachTurn(t, requestLog)
+		})
+	}
+}
+
+func testServerResponsesWebsocketReauthorizesEachTurn(t *testing.T, requestLog bool) {
+	t.Helper()
+	server := newTestServerWithConfig(t, &proxyconfig.Config{
+		SDKConfig: sdkconfig.SDKConfig{RequestLog: requestLog},
+	})
 	provider := &revocableServerAccessProvider{}
 	server.accessManager.SetProviders([]sdkaccess.Provider{provider})
 
@@ -3866,8 +3905,17 @@ func TestServerResponsesWebsocketReauthorizesEachTurn(t *testing.T) {
 		registry.GetGlobalRegistry().UnregisterClient(authEntry.ID)
 	})
 
-	httpServer := httptest.NewServer(server.engine)
-	defer httpServer.Close()
+	var requests sync.WaitGroup
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		defer requests.Done()
+		server.engine.ServeHTTP(w, r)
+	}))
+	defer func() {
+		httpServer.Close()
+		// Close does not wait for hijacked WebSocket handlers or their logging middleware.
+		requests.Wait()
+	}()
 
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/v1/responses"
 	headers := http.Header{"Authorization": []string{"Bearer key-1"}}
@@ -3875,7 +3923,11 @@ func TestServerResponsesWebsocketReauthorizesEachTurn(t *testing.T) {
 	if errDial != nil {
 		t.Fatalf("dial websocket: %v", errDial)
 	}
-	defer func() { _ = conn.Close() }()
+	defer func() {
+		if errClose := conn.Close(); errClose != nil {
+			t.Errorf("close websocket: %v", errClose)
+		}
+	}()
 
 	turn1 := []byte(`{"type":"response.create","model":"ws-reauth-model","input":[{"type":"message","role":"user","content":"turn 1"}]}`)
 	if errWrite := conn.WriteMessage(websocket.TextMessage, turn1); errWrite != nil {
@@ -3926,4 +3978,23 @@ func TestServerResponsesWebsocketReauthorizesEachTurn(t *testing.T) {
 	if gotCalls := wsExec.calls.Load(); gotCalls != 1 {
 		t.Fatalf("executor calls after revoked turn = %d, want 1", gotCalls)
 	}
+	t.Cleanup(func() {
+		// Deferred connection shutdown and request draining must finish before inspecting logs.
+		entries, errReadDir := os.ReadDir(filepath.Join(server.cfg.AuthDir, "logs"))
+		if errReadDir != nil {
+			t.Fatalf("read request logs: %v", errReadDir)
+		}
+		var logCount int
+		for _, entry := range entries {
+			if strings.HasSuffix(entry.Name(), ".tmp") || strings.HasPrefix(entry.Name(), "request-log-parts-") {
+				t.Errorf("request log temporary entry remains after handler completion: %s", entry.Name())
+			}
+			if strings.HasSuffix(entry.Name(), ".log") {
+				logCount++
+			}
+		}
+		if logCount == 0 {
+			t.Error("expected a completed request log for the revoked credential")
+		}
+	})
 }

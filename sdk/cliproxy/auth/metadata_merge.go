@@ -79,7 +79,6 @@ func MergeRefreshedAuth(base, current, updated *Auth) *Auth {
 	if base != nil && current.RegistrationEpoch != base.RegistrationEpoch {
 		return merged
 	}
-	now := time.Now()
 
 	merged.CodexRefreshPatch = updated.CodexRefreshPatch
 
@@ -138,6 +137,11 @@ func MergeRefreshedAuth(base, current, updated *Auth) *Auth {
 			merged.Unavailable = current.Unavailable
 			merged.Status = current.Status
 			merged.StatusMessage = current.StatusMessage
+		} else if current.Unavailable && current.NextRetryAfter.After(time.Now()) {
+			// Preserve active cooldown
+			merged.Unavailable = current.Unavailable
+			merged.Status = current.Status
+			merged.StatusMessage = current.StatusMessage
 		} else if (updated.Status == StatusActive || updated.Status == "") && (!merged.RequiresSignIn || merged.HasValidAccessToken(time.Now())) && (merged.RejectedAccessToken == "" || authAccessToken(merged) != merged.RejectedAccessToken) {
 			// Successful refresh clears previous auth error and restores active
 			merged.Status = StatusActive
@@ -156,7 +160,6 @@ func MergeRefreshedAuth(base, current, updated *Auth) *Auth {
 	merged.Quota = mergeQuotaObservation(merged.Quota, updated.Quota)
 
 	// 3. ModelStates: three-way merge to preserve concurrent cooldown/quota
-	modelsChanged := false
 	// Independent layers follow the same current-wins rule: executor refresh
 	// results are derived from the base snapshot and never move them.
 	for model, mergedState := range merged.ModelStates {
@@ -184,35 +187,9 @@ func MergeRefreshedAuth(base, current, updated *Auth) *Auth {
 
 			changedByExecutor := !reflect.DeepEqual(baseState, updState)
 			changedByUser := !reflect.DeepEqual(baseState, currentState)
-			// A refresh snapshot must not erase an independent model cooldown that
-			// is sitting beneath a still-live credential quota window.
-			if changedByExecutor && !changedByUser && current.Quota.Exceeded &&
-				current.Quota.Reason == "credential_quota" && current.Quota.NextRecoverAt.After(now) &&
-				currentState != nil && currentState.credentialQuotaShadow != nil &&
-				isModelStateActiveCooldown(currentState.credentialQuotaShadow, now) {
-				continue
-			}
 
 			if changedByExecutor && !changedByUser {
-				next := updState.Clone()
-				// Token refresh can heal ordinary errors, but executor cleanup
-				// is not an explicit reset of a manager-owned forced action.
-				if currentState != nil && currentState.ForcedCooldownUntil.After(now) {
-					if next == nil {
-						next = currentState.Clone()
-						recoverModelStateOnSuccess(next, now)
-					}
-					next.ForcedCooldownUntil = currentState.ForcedCooldownUntil
-					if next.NextRetryAfter.Before(next.ForcedCooldownUntil) {
-						next.NextRetryAfter = next.ForcedCooldownUntil
-					}
-					next.Unavailable = true
-					if next.Status != StatusDisabled {
-						next.Status = StatusError
-					}
-				}
-				merged.ModelStates[model] = next
-				modelsChanged = true
+				merged.ModelStates[model] = updState
 			}
 		}
 		if baseModels != nil {
@@ -220,30 +197,14 @@ func MergeRefreshedAuth(base, current, updated *Auth) *Auth {
 				if _, inUpdated := updated.ModelStates[model]; !inUpdated {
 					if currentState, ok := current.ModelStates[model]; ok {
 						if reflect.DeepEqual(baseState, currentState) {
-							if currentState != nil && currentState.ForcedCooldownUntil.After(now) {
-								next := currentState.Clone()
-								recoverModelStateOnSuccess(next, now)
-								merged.ModelStates[model] = next
-							} else {
-								delete(merged.ModelStates, model)
-							}
-							modelsChanged = true
+							delete(merged.ModelStates, model)
 						}
 					}
 				}
 			}
 		}
 	}
-	// Recompute from the final three-way model merge, not the executor's stale
-	// aggregate. Independent credential cooldowns remain owned by current.
-	if modelsChanged && !finalDisabled && modelStatesOwnAvailability(current, now) {
-		recoverAggregatedAvailability(merged, now)
-		if !hasModelError(merged, now) {
-			merged.LastError = nil
-			merged.StatusMessage = ""
-			merged.Status = StatusActive
-		}
-	}
+
 	return merged
 }
 

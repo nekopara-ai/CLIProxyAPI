@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"net/http"
 	"testing"
 	"time"
 )
@@ -18,7 +19,7 @@ func TestDiagnosticAdmissionMatchesBusinessGate(t *testing.T) {
 		{"expired", &Auth{Metadata: map[string]any{"access_token": "synthetic", "expired": now.Add(-time.Second).Format(time.RFC3339)}}, "token_expired"},
 		{"credential-quota", &Auth{Quota: QuotaState{Exceeded: true, Reason: "credential_quota", NextRecoverAt: now.Add(5 * time.Hour)}}, "quota"},
 		{"expired-quota", &Auth{Unavailable: true, Quota: QuotaState{Exceeded: true, Reason: "credential_quota", NextRecoverAt: now}}, ""},
-		{"forced", &Auth{ForcedCooldownUntil: now.Add(time.Hour)}, "cooldown"},
+		{"forced", &Auth{Unavailable: true, NextRetryAfter: now.Add(time.Hour), LastError: &Error{Code: ErrorCodeForceCooldown, HTTPStatus: http.StatusTooManyRequests}}, "cooldown"},
 		{"model-quota", &Auth{ModelStates: map[string]*ModelState{"gpt-6-sol(high)": {Unavailable: true, Quota: QuotaState{Exceeded: true, NextRecoverAt: now.Add(time.Hour)}}}}, "quota"},
 		{"sibling-quota", &Auth{Unavailable: true, Quota: QuotaState{Exceeded: true}, ModelStates: map[string]*ModelState{"gpt-6-astra": {Unavailable: true, Quota: QuotaState{Exceeded: true, NextRecoverAt: now.Add(time.Hour)}}}}, ""},
 		{"healthy", &Auth{}, ""},

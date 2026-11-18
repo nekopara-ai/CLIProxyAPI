@@ -2,35 +2,33 @@ package auth
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/MoeForge/moego/json"
+	"github.com/MoeForge/moego/regexp"
 )
 
 // CooldownStateRecord is a persisted runtime cooldown snapshot for one auth/model pair.
 type CooldownStateRecord struct {
-	Provider       string    `json:"provider,omitempty"`
-	AuthID         string    `json:"auth_id"`
-	AuthFile       string    `json:"-"`
-	Model          string    `json:"model,omitempty"`
-	Status         string    `json:"status,omitempty"`
-	NextRetryAfter time.Time `json:"next_retry_after"`
-	// Always persist the authoritative value, including zero (no forced action).
-	// Readers must not infer a missing legacy deadline from LastError.
-	ForcedCooldownUntil time.Time  `json:"forced_cooldown_until"`
-	Reason              string     `json:"reason,omitempty"`
-	Quota               QuotaState `json:"quota,omitempty"`
-	LastError           *Error     `json:"last_error,omitempty"`
-	LastFailureScope    string     `json:"last_failure_scope,omitempty"`
-	UpdatedAt           time.Time  `json:"updated_at"`
+	Provider         string     `json:"provider,omitempty"`
+	AuthID           string     `json:"auth_id"`
+	AuthFile         string     `json:"-"`
+	Model            string     `json:"model,omitempty"`
+	Status           string     `json:"status,omitempty"`
+	NextRetryAfter   time.Time  `json:"next_retry_after"`
+	Reason           string     `json:"reason,omitempty"`
+	Quota            QuotaState `json:"quota,omitempty"`
+	LastError        *Error     `json:"last_error,omitempty"`
+	LastFailureScope string     `json:"last_failure_scope,omitempty"`
+	UpdatedAt        time.Time  `json:"updated_at"`
 	// IndependentState preserves a model's own cooldown beneath an
 	// auth-level credential-quota layer so a restart cannot lose the
 	// distinction and quota restoration keeps reinstate-exactly semantics.
@@ -38,6 +36,40 @@ type CooldownStateRecord struct {
 	// CredentialQuotaPropagated preserves wrap provenance for models that
 	// carry no independent layer (e.g. the reporting model itself).
 	CredentialQuotaPropagated bool `json:"credential_quota_propagated,omitempty"`
+	// CooldownSignals persists bounded rejected quota headers captured when
+	// this cooldown was recorded without touching passive Quota.Signals watermarks.
+	CooldownSignals map[string]string `json:"cooldown_signals,omitempty"`
+	// IndependentCooldownSignals persists CooldownSignals for IndependentState.
+	IndependentCooldownSignals map[string]string `json:"independent_cooldown_signals,omitempty"`
+	// ForceCooldownUntil persists the exact outer ErrorCodeForceCooldown deadline
+	// (credQuotaForceUntil for wrapped model records, model/auth forceCooldownUntil otherwise),
+	// preventing longer ordinary extensions or sibling shadows from inflating it on restore.
+	ForceCooldownUntil time.Time `json:"force_cooldown_until,omitempty"`
+	// CredQuotaForceCooldownUntil persists auth-level credential_quota force provenance
+	// independently from model-less auth ForceCooldownUntil when both coexist on an auth.
+	CredQuotaForceCooldownUntil time.Time `json:"cred_quota_force_cooldown_until,omitempty"`
+	// IndependentForceCooldownUntil persists the exact ErrorCodeForceCooldown deadline
+	// for IndependentState beneath a credential_quota wrap.
+	IndependentForceCooldownUntil time.Time `json:"independent_force_cooldown_until,omitempty"`
+	// ForceCooldownEvaluated marks records produced by provenance-aware versions so
+	// a zero ForceCooldownUntil means "explicitly ordinary" rather than legacy unknown.
+	ForceCooldownEvaluated bool `json:"force_cooldown_evaluated,omitempty"`
+	// CredentialRetryAfter persists a non-429 credential-wide retry deadline so
+	// restart recovery blocks all models even when ModelStates also exist.
+	CredentialRetryAfter time.Time `json:"credential_retry_after,omitempty"`
+	// QuotaForceCooldownUntil persists the deadline of any active quota (429)
+	// ErrorCodeForceCooldown layer so a subsequent expired non-quota LastError
+	// does not misclassify the remaining quota force window across restarts.
+	QuotaForceCooldownUntil time.Time `json:"quota_force_cooldown_until,omitempty"`
+	// IndependentQuotaForceCooldownUntil persists QuotaForceCooldownUntil for
+	// IndependentState beneath a credential_quota wrap.
+	IndependentQuotaForceCooldownUntil time.Time `json:"independent_quota_force_cooldown_until,omitempty"`
+	// NonQuotaCooldownUntil persists the deadline of any active non-quota
+	// cooldown layer even after a subsequent 429 overwrites LastError.
+	NonQuotaCooldownUntil time.Time `json:"non_quota_cooldown_until,omitempty"`
+	// IndependentNonQuotaCooldownUntil persists NonQuotaCooldownUntil for
+	// IndependentState beneath a credential_quota wrap.
+	IndependentNonQuotaCooldownUntil time.Time `json:"independent_non_quota_cooldown_until,omitempty"`
 }
 
 // CooldownStateStore persists runtime cooldown state independently from auth tokens.

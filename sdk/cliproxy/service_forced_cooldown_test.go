@@ -30,13 +30,13 @@ func TestService_ForcedCooldownSurvivesWatcherReplacement(t *testing.T) {
 	service.coreManager.MarkResult(ctx, coreauth.Result{AuthID: authID, Provider: "claude", RetryAfter: &retry, Error: &coreauth.Error{Code: coreauth.ErrorCodeForceCooldown, HTTPStatus: http.StatusTooManyRequests}})
 	before, _ := service.coreManager.GetByID(authID)
 	prepared := service.prepareCoreAuthForModelRegistration(ctx, fresh())
-	if prepared == nil || !prepared.ForcedCooldownUntil.Equal(before.ForcedCooldownUntil) {
+	if prepared == nil || !prepared.Unavailable || !prepared.NextRetryAfter.Equal(before.NextRetryAfter) {
 		t.Error("watcher preparation lost the credential forced deadline")
 	}
 	service.completeModelRegistrationForAuth(ctx, prepared)
 	service.coreManager.MarkResult(ctx, coreauth.Result{AuthID: authID, Provider: "claude", Model: model, Success: true})
 	after, _ := service.coreManager.GetByID(authID)
-	if !after.ForcedCooldownUntil.Equal(before.ForcedCooldownUntil) || !after.Unavailable {
+	if !after.Unavailable || !after.NextRetryAfter.Equal(before.NextRetryAfter) || after.LastError == nil || after.LastError.Code != coreauth.ErrorCodeForceCooldown {
 		t.Error("watcher replacement and model registration cleared the forced cooldown")
 	}
 	selector := &coreauth.FillFirstSelector{}

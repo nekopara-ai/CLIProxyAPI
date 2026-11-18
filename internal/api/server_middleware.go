@@ -29,6 +29,8 @@ var corsExposedResponseHeaders = []string{
 	"X-CPA-COMMIT",
 	"X-CPA-BUILD-DATE",
 	"X-CPA-SUPPORT-PLUGIN",
+	"X-CPA-EXCLUDED-MODELS-PRECEDENCE",
+	"X-CPA-FORK",
 	"X-CPA-HOME-VERSION",
 	"X-CPA-HOME-BUILD-DATE",
 	"X-SERVER-VERSION",
@@ -417,6 +419,8 @@ func isExampleAPIKeySafeModeProxyPath(path string) bool {
 	case path == "/openai/v1" || strings.HasPrefix(path, "/openai/v1/"):
 		return true
 	case path == "/backend-api/codex" || strings.HasPrefix(path, "/backend-api/codex/"):
+		return true
+	case path == "/muse-code" || strings.HasPrefix(path, "/muse-code/"):
 		return true
 	default:
 		return false

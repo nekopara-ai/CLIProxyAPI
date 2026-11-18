@@ -125,6 +125,8 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.SanitizeClaudeHeaderDefaults()
 	cfg.SanitizeTimezoneOverride()
 	cfg.SanitizeClaudeKeys()
+	cfg.SanitizeAntigravity()
+	cfg.SanitizeDevin()
 	cfg.SanitizeOpenAICompatibility()
 	cfg.OAuthExcludedModels = NormalizeOAuthExcludedModels(cfg.OAuthExcludedModels)
 	cfg.SanitizeOAuthModelAlias()
