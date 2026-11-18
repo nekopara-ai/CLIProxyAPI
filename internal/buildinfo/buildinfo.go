@@ -8,7 +8,7 @@ import "strings"
 const (
 	ForkName                 = "nekopara"
 	ExcludedModelsPrecedence = "override"
-	DefaultLocalVersion      = "8.0.76-nekopara.1-local"
+	DefaultLocalVersion      = "8.0.77-nekopara.1-local"
 )
 
 // The following variables are overridden via ldflags during release builds.

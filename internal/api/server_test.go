@@ -534,8 +534,8 @@ func TestHomeCodexAlphaSearchRequestLogPreservesBodyReturnedWithReadError(t *tes
 	}
 	rawAPIResponse, okResponse := c.Get("API_RESPONSE")
 	apiResponse, _ := rawAPIResponse.([]byte)
-	if !okResponse || !strings.Contains(string(apiResponse), upstreamError) || !strings.Contains(string(apiResponse), io.ErrUnexpectedEOF.Error()) {
-		t.Fatalf("API_RESPONSE = %q, want upstream body and read error", apiResponse)
+	if !okResponse || !strings.Contains(string(apiResponse), upstreamError) || strings.Contains(string(apiResponse), io.ErrUnexpectedEOF.Error()) {
+		t.Fatalf("API_RESPONSE = %q, want upstream body without local read error", apiResponse)
 	}
 }
 
@@ -2078,6 +2078,18 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 	clientID := "test-client-version-catalog"
 	modelRegistry.RegisterClient(clientID, "codex", []*registry.ModelInfo{
 		{
+			ID:                  "gpt-6.1-sol",
+			Object:              "model",
+			Created:             1776902400,
+			OwnedBy:             "openai",
+			Type:                "openai",
+			DisplayName:         "GPT 6.1 Sol",
+			Description:         "Latest workhorse model.",
+			ContextLength:       272000,
+			MaxCompletionTokens: 64000,
+			Thinking:            &registry.ThinkingSupport{Levels: []string{"low", "medium", "high", "xhigh"}},
+		},
+		{
 			ID:                  "gpt-5.5",
 			Object:              "model",
 			Created:             1776902400,
@@ -2149,14 +2161,24 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 	}
 
 	var gpt55 map[string]any
+	var gpt61Sol map[string]any
 	var custom map[string]any
 	for _, model := range resp.Models {
 		switch slug, _ := model["slug"].(string); slug {
+		case "gpt-6.1-sol":
+			gpt61Sol = model
 		case "gpt-5.5":
 			gpt55 = model
 		case "custom-codex-model-test":
 			custom = model
 		}
+	}
+	if gpt61Sol == nil {
+		t.Fatal("expected gpt-6.1-sol codex catalog entry")
+	}
+	solServiceTiers, ok := gpt61Sol["service_tiers"].([]any)
+	if !ok || len(solServiceTiers) != 1 {
+		t.Fatalf("expected gpt-6.1-sol priority service tier, got %#v", gpt61Sol["service_tiers"])
 	}
 	if gpt55 == nil {
 		t.Fatal("expected gpt-5.5 codex catalog entry")
@@ -2171,8 +2193,8 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 		t.Fatalf("gpt-5.5 max_tokens = %v, want 64000", gpt55["max_tokens"])
 	}
 	serviceTiers, ok := gpt55["service_tiers"].([]any)
-	if !ok || len(serviceTiers) != 1 {
-		t.Fatalf("expected gpt-5.5 priority service tier, got %#v", gpt55["service_tiers"])
+	if !ok || len(serviceTiers) != 0 {
+		t.Fatalf("expected gpt-5.5 service_tiers = [], got %#v", gpt55["service_tiers"])
 	}
 	if custom == nil {
 		t.Fatal("expected custom model codex catalog entry")
