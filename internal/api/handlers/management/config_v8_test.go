@@ -1097,7 +1097,7 @@ auth-dir: ./repro-auth
 remote-management:
   secret-key: local-repro-only
   disable-control-panel: true
-codex:
+legacy-unknown:
   identity-confuse: false
 `
 	if errWrite := os.WriteFile(path, []byte(raw), 0o600); errWrite != nil {
@@ -1170,8 +1170,8 @@ codex:
 	// A persisted migration logs the warning once.
 	doReq(http.MethodPatch, "/v8/management/config", `{"server":{"port":18318}}`, firstYAML.Header().Get("ETag"), http.StatusOK)
 	warnings := migrationWarnings()
-	if len(warnings) != 1 || !strings.Contains(warnings[0], `"codex"`) {
-		t.Fatalf("expected exactly one migration warning for \"codex\" on persisted write, got %d: %v", len(warnings), warnings)
+	if len(warnings) != 1 || !strings.Contains(warnings[0], `"legacy-unknown"`) {
+		t.Fatalf("expected exactly one migration warning for \"legacy-unknown\" on persisted write, got %d: %v", len(warnings), warnings)
 	}
 
 	hook.Reset()
@@ -1254,9 +1254,9 @@ codex:
 		t.Fatalf("expected no migration warnings when WriteConfig fails on I/O, got %v", warningsAfterWriteErr)
 	}
 
-	// Quoted YAML section key ("codex":) must still emit a warning on persisted PATCH.
+	// Quoted YAML section key ("legacy-unknown":) must still emit a warning on persisted PATCH.
 	quotedPath := filepath.Join(t.TempDir(), "quoted-config.yaml")
-	quotedRaw := "port: 18317\n\"codex\":\n  identity-confuse: false\n"
+	quotedRaw := "port: 18317\n\"legacy-unknown\":\n  identity-confuse: false\n"
 	if errWriteQuoted := os.WriteFile(quotedPath, []byte(quotedRaw), 0o600); errWriteQuoted != nil {
 		t.Fatal(errWriteQuoted)
 	}
@@ -1273,11 +1273,11 @@ codex:
 	if quotedRec.Code != http.StatusOK {
 		t.Fatalf("PATCH quoted key config: status=%d body=%s", quotedRec.Code, quotedRec.Body.String())
 	}
-	if warningsQuoted := migrationWarnings(); len(warningsQuoted) != 1 || !strings.Contains(warningsQuoted[0], `"codex"`) {
-		t.Fatalf("expected one migration warning for quoted \"codex\" key on PATCH, got %d: %v", len(warningsQuoted), warningsQuoted)
+	if warningsQuoted := migrationWarnings(); len(warningsQuoted) != 1 || !strings.Contains(warningsQuoted[0], `"legacy-unknown"`) {
+		t.Fatalf("expected one migration warning for quoted \"legacy-unknown\" key on PATCH, got %d: %v", len(warningsQuoted), warningsQuoted)
 	}
 
-	// Whole-document PUT discarding codex while adding an unrelated "# codex: ..."
+	// Whole-document PUT discarding legacy-unknown while adding an unrelated "# legacy-unknown: ..."
 	// comment must not falsely trigger a migration warning.
 	notePath := filepath.Join(t.TempDir(), "note-config.yaml")
 	if errWriteNote := os.WriteFile(notePath, []byte(raw), 0o600); errWriteNote != nil {
@@ -1292,19 +1292,19 @@ codex:
 	noteRouter.PUT("/v8/management/config.yaml", noteHandler.ConfigV8)
 	hook.Reset()
 	noteRec := httptest.NewRecorder()
-	noteRouter.ServeHTTP(noteRec, httptest.NewRequest(http.MethodPut, "/v8/management/config.yaml", strings.NewReader("server:\n  port: 18322\n# codex: see provider documentation\n")))
+	noteRouter.ServeHTTP(noteRec, httptest.NewRequest(http.MethodPut, "/v8/management/config.yaml", strings.NewReader("server:\n  port: 18322\n# legacy-unknown: see provider documentation\n")))
 	if noteRec.Code != http.StatusOK {
 		t.Fatalf("PUT note config.yaml: status=%d body=%s", noteRec.Code, noteRec.Body.String())
 	}
 	if warningsNote := migrationWarnings(); len(warningsNote) != 0 {
-		t.Fatalf("expected no migration warnings when whole-document PUT only has unrelated # codex: comment, got %v", warningsNote)
+		t.Fatalf("expected no migration warnings when whole-document PUT only has unrelated # legacy-unknown: comment, got %v", warningsNote)
 	}
 
 	// Trailing whitespace (including Unicode spaces such as U+00A0) on an inline
 	// comment inside an unknown section is trimmed when archiving FootComment;
 	// PATCH must still emit one migration warning.
 	trailingPath := filepath.Join(t.TempDir(), "trailing-ws-config.yaml")
-	trailingRaw := "port: 18317\ncodex:\n  identity-confuse: false # note  \u00a0\n"
+	trailingRaw := "port: 18317\nlegacy-unknown:\n  identity-confuse: false # note  \u00a0\n"
 	if errWriteTrailing := os.WriteFile(trailingPath, []byte(trailingRaw), 0o600); errWriteTrailing != nil {
 		t.Fatal(errWriteTrailing)
 	}
@@ -1321,8 +1321,8 @@ codex:
 	if trailingRec.Code != http.StatusOK {
 		t.Fatalf("PATCH trailing whitespace config: status=%d body=%s", trailingRec.Code, trailingRec.Body.String())
 	}
-	if warningsTrailing := migrationWarnings(); len(warningsTrailing) != 1 || !strings.Contains(warningsTrailing[0], `"codex"`) {
-		t.Fatalf("expected one migration warning for \"codex\" with trailing whitespace on PATCH, got %d: %v", len(warningsTrailing), warningsTrailing)
+	if warningsTrailing := migrationWarnings(); len(warningsTrailing) != 1 || !strings.Contains(warningsTrailing[0], `"legacy-unknown"`) {
+		t.Fatalf("expected one migration warning for \"legacy-unknown\" with trailing whitespace on PATCH, got %d: %v", len(warningsTrailing), warningsTrailing)
 	}
 
 	// Whole-document PUT discarding a null-valued unknown key ("retired-option:")
