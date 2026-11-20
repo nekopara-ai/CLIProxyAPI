@@ -156,6 +156,111 @@ func TestApplyTimezoneOverrideLocationNeedsValidTimezone(t *testing.T) {
 	}
 }
 
+func TestApplyTimezoneOverrideSkipsToolSchemasWithUserLocationProperty(t *testing.T) {
+	now := time.Date(2026, 11, 20, 10, 50, 0, 0, time.UTC)
+	cfg := &config.Config{
+		TimezoneOverride:        "America/Los_Angeles",
+		TimezoneOverrideCountry: "US",
+		TimezoneOverrideRegion:  "California",
+		TimezoneOverrideCity:    "Irvine",
+	}
+
+	t.Run("antigravity function_declarations schema", func(t *testing.T) {
+		payload := []byte(`{
+			"request": {
+				"tools": [
+					{
+						"function_declarations": [
+							{
+								"name": "mcp__codex_apps__workspace_agents___configure_web_search",
+								"parameters": {
+									"type": "object",
+									"properties": {
+										"agent_id": {"type": "string"},
+										"config": {
+											"type": "object",
+											"properties": {
+												"filters": {"type": "object"},
+												"search_context_size": {"type": "string"},
+												"user_location": {
+													"type": "object",
+													"properties": {
+														"city": {"type": "string", "nullable": true},
+														"country": {"type": "string", "nullable": true},
+														"region": {"type": "string", "nullable": true},
+														"timezone": {"type": "string", "nullable": true}
+													}
+												}
+											}
+										}
+									}
+								}
+							}
+						]
+					}
+				]
+			}
+		}`)
+		out := ApplyTimezoneOverrideAt(cfg, payload, now)
+		if string(out) != string(payload) {
+			t.Fatalf("antigravity function_declarations schema was modified:\nwant=%s\ngot=%s", payload, out)
+		}
+		if ojson.GetBytes(out, "request.tools.0.function_declarations.0.parameters.properties.config.properties.user_location.timezone").Exists() {
+			t.Fatalf("injected timezone into user_location schema: %s", out)
+		}
+	})
+
+	t.Run("openai responses and claude tool schemas alongside real web_search", func(t *testing.T) {
+		payload := []byte(`{
+			"tools": [
+				{"type": "web_search", "user_location": {"type": "approximate", "country": "CN", "city": "Shanghai", "timezone": "Asia/Shanghai"}},
+				{"type": "web_search_20250305", "name": "web_search", "user_location": {"type": "approximate", "timezone": "Asia/Shanghai"}},
+				{
+					"type": "function",
+					"name": "configure_web_search",
+					"parameters": {
+						"type": "object",
+						"properties": {
+							"user_location": {
+								"type": "object",
+								"properties": {"timezone": {"type": "string"}}
+							}
+						}
+					}
+				},
+				{
+					"name": "claude_configure_web_search",
+					"input_schema": {
+						"type": "object",
+						"properties": {
+							"user_location": {
+								"type": "object",
+								"properties": {"timezone": {"type": "string"}}
+							}
+						}
+					}
+				}
+			]
+		}`)
+		out := ApplyTimezoneOverrideAt(cfg, payload, now)
+		if got := ojson.GetBytes(out, "tools.0.user_location.timezone").String(); got != "America/Los_Angeles" {
+			t.Fatalf("tools.0.user_location.timezone = %q, want America/Los_Angeles", got)
+		}
+		if got := ojson.GetBytes(out, "tools.0.user_location.city").String(); got != "Irvine" {
+			t.Fatalf("tools.0.user_location.city = %q, want Irvine", got)
+		}
+		if got := ojson.GetBytes(out, "tools.1.user_location.timezone").String(); got != "America/Los_Angeles" {
+			t.Fatalf("tools.1.user_location.timezone = %q, want America/Los_Angeles", got)
+		}
+		if ojson.GetBytes(out, "tools.2.parameters.properties.user_location.timezone").Exists() {
+			t.Fatalf("injected timezone into function parameters user_location schema: %s", out)
+		}
+		if ojson.GetBytes(out, "tools.3.input_schema.properties.user_location.timezone").Exists() {
+			t.Fatalf("injected timezone into claude input_schema user_location schema: %s", out)
+		}
+	})
+}
+
 func extractXMLTag(text, name string) string {
 	open := "<" + name + ">"
 	close := "</" + name + ">"

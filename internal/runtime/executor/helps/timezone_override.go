@@ -63,7 +63,7 @@ func ApplyTimezoneOverrideAtDoc(cfg *config.Config, doc *ojson.Doc, now time.Tim
 		return false
 	}
 	target := timezoneOverrideTarget{timezone: strings.TrimSpace(cfg.TimezoneOverride), date: now.In(location).Format("2006-01-02"), country: strings.TrimSpace(cfg.TimezoneOverrideCountry), region: strings.TrimSpace(cfg.TimezoneOverrideRegion), city: strings.TrimSpace(cfg.TimezoneOverrideCity)}
-	return rewriteTimezoneValueDoc(doc, "", doc.Get("@this"), target)
+	return rewriteTimezoneValueDoc(doc, "", "", doc.Get("@this"), target)
 }
 
 // timezoneOverrideTarget carries the replacement timezone and local date plus
@@ -88,12 +88,12 @@ func payloadHasTimezoneSurface(payload []byte) bool {
 		bytes.Contains(payload, []byte(claudeCurrentDateMarker))
 }
 
-func rewriteTimezoneValueDoc(doc *ojson.Doc, path string, value ojson.Result, target timezoneOverrideTarget) bool {
+func rewriteTimezoneValueDoc(doc *ojson.Doc, path, parentKey string, value ojson.Result, target timezoneOverrideTarget) bool {
 	changed := false
 	switch {
 	case value.IsArray():
 		for i, item := range value.Array() {
-			changed = rewriteTimezoneValueDoc(doc, joinJSONPath(path, strconv.Itoa(i)), item, target) || changed
+			changed = rewriteTimezoneValueDoc(doc, joinJSONPath(path, strconv.Itoa(i)), parentKey, item, target) || changed
 		}
 	case value.IsObject():
 		kind := value.Get("type").String()
@@ -101,11 +101,15 @@ func rewriteTimezoneValueDoc(doc *ojson.Doc, path string, value ojson.Result, ta
 			return false
 		}
 		value.ForEach(func(key, child ojson.Result) bool {
-			childPath := joinJSONPath(path, key.String())
-			if key.String() == "user_location" && child.IsObject() {
+			keyName := key.String()
+			if isToolSchemaContainerKey(keyName) {
+				return true
+			}
+			childPath := joinJSONPath(path, keyName)
+			if keyName == "user_location" && child.IsObject() && isWebSearchUserLocationOwner(kind, parentKey) {
 				changed = rewriteUserLocationDoc(doc, childPath, child, target) || changed
 			}
-			changed = rewriteTimezoneValueDoc(doc, childPath, child, target) || changed
+			changed = rewriteTimezoneValueDoc(doc, childPath, keyName, child, target) || changed
 			return true
 		})
 	case value.Type == ojson.String:
@@ -114,6 +118,21 @@ func rewriteTimezoneValueDoc(doc *ojson.Doc, path string, value ojson.Result, ta
 		}
 	}
 	return changed
+}
+
+func isToolSchemaContainerKey(key string) bool {
+	switch key {
+	case "parameters", "parametersJsonSchema", "parameters_json_schema",
+		"input_schema", "functionDeclarations", "function_declarations",
+		"responseSchema", "response_json_schema":
+		return true
+	default:
+		return false
+	}
+}
+
+func isWebSearchUserLocationOwner(kind, parentKey string) bool {
+	return strings.HasPrefix(kind, "web_search") || parentKey == "web_search_options"
 }
 
 func rewriteUserLocationDoc(doc *ojson.Doc, childPath string, child ojson.Result, target timezoneOverrideTarget) bool {
