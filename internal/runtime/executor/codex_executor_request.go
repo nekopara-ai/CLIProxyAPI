@@ -246,7 +246,7 @@ func (e *CodexExecutor) cacheHelperIdentityDoc(ctx context.Context, from sdktran
 		return nil, nil, codexIdentityConfuseState{}, errValidate
 	}
 	if errMarker := helps.ValidateCodexSessionInstructionMarker(rawJSON, from); errMarker != nil {
-		return nil, nil, errMarker
+		return nil, nil, codexIdentityConfuseState{}, errMarker
 	}
 	wireBody := rawJSON
 	if e.cfg != nil && e.cfg.Codex.UpstreamRequestCompression && auth != nil &&
