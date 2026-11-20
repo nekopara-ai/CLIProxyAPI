@@ -1107,6 +1107,11 @@ requestLoop:
 			if !forceHTTPReplay {
 				cliCtx = cliproxyexecutor.WithDownstreamWebsocket(cliCtx)
 			}
+			if !nativeWebsocketPassthrough && !ojson.GetBytesNoCopy(payload, "instructions").Exists() {
+				if inherited := ojson.GetBytesNoCopy(requestJSON, "instructions"); inherited.Exists() {
+					cliCtx = cliproxyexecutor.WithInheritedWebsocketInstructions(cliCtx, strings.Clone(inherited.Raw))
+				}
+			}
 			cliCtx = cliproxyexecutor.WithLocalWebsocketTurnTracker(cliCtx)
 			cliCtx = cliproxyexecutor.WithWebsocketInputEpoch(cliCtx, &inputEpoch, msgEpoch)
 			if duplexInput != nil && !forceHTTPReplay {
