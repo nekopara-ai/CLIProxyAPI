@@ -1200,15 +1200,15 @@ legacy-unknown:
 	if replaceRec.Code != http.StatusOK {
 		t.Fatalf("PUT /v8/management/config.yaml: status=%d body=%s", replaceRec.Code, replaceRec.Body.String())
 	}
-	if replaceDisk, errReplaceDisk := os.ReadFile(replacePath); errReplaceDisk != nil || strings.Contains(string(replaceDisk), "# codex:") {
-		t.Fatalf("expected whole-document PUT to discard # codex: comment on disk, err=%v content=%s", errReplaceDisk, string(replaceDisk))
+	if replaceDisk, errReplaceDisk := os.ReadFile(replacePath); errReplaceDisk != nil || strings.Contains(string(replaceDisk), "# legacy-unknown:") {
+		t.Fatalf("expected whole-document PUT to discard # legacy-unknown: comment on disk, err=%v content=%s", errReplaceDisk, string(replaceDisk))
 	}
 	if warningsAfterPut := migrationWarnings(); len(warningsAfterPut) != 0 {
 		t.Fatalf("expected no migration warnings when whole-document PUT discards legacy sections, got %v", warningsAfterPut)
 	}
 
 	// Whole-document PUT that sends back the projected GET YAML (retaining the
-	// archived # codex: comment) persists the commented-out migration and must warn once.
+	// archived # legacy-unknown: comment) persists the commented-out migration and must warn once.
 	roundTripPath := filepath.Join(t.TempDir(), "roundtrip-config.yaml")
 	if errWriteRT := os.WriteFile(roundTripPath, []byte(raw), 0o600); errWriteRT != nil {
 		t.Fatal(errWriteRT)
@@ -1237,11 +1237,11 @@ legacy-unknown:
 		t.Fatalf("round-trip PUT /v8/management/config.yaml: status=%d body=%s", rtPut.Code, rtPut.Body.String())
 	}
 	rtDisk, errRTDisk := os.ReadFile(roundTripPath)
-	if errRTDisk != nil || !strings.Contains(string(rtDisk), "# codex:") {
-		t.Fatalf("expected archived # codex: comment on disk after round-trip PUT, err=%v content=%s", errRTDisk, string(rtDisk))
+	if errRTDisk != nil || !strings.Contains(string(rtDisk), "# legacy-unknown:") {
+		t.Fatalf("expected archived # legacy-unknown: comment on disk after round-trip PUT, err=%v content=%s", errRTDisk, string(rtDisk))
 	}
-	if warningsAfterRTPut := migrationWarnings(); len(warningsAfterRTPut) != 1 || !strings.Contains(warningsAfterRTPut[0], `"codex"`) {
-		t.Fatalf("expected one migration warning for \"codex\" on round-trip PUT, got %d: %v", len(warningsAfterRTPut), warningsAfterRTPut)
+	if warningsAfterRTPut := migrationWarnings(); len(warningsAfterRTPut) != 1 || !strings.Contains(warningsAfterRTPut[0], `"legacy-unknown"`) {
+		t.Fatalf("expected one migration warning for \"legacy-unknown\" on round-trip PUT, got %d: %v", len(warningsAfterRTPut), warningsAfterRTPut)
 	}
 
 	// WriteConfig failing on disk I/O must not log migration warnings.
