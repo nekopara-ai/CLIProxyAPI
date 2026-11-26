@@ -231,7 +231,7 @@ func (s *GitTokenStore) syncRepositoryLocked(ctx context.Context, seed *runtimec
 		s.syncBase = resolvedRemoteBranch{name: target}
 		return s.commitAndPushWithOptionsLocked(ctx, "Initialize git token store", true, "auths/.gitkeep", "config/.gitkeep")
 	}
-	if errFetch := syncRemoteReferences(ctx, repo, authMethod); errFetch != nil {
+	if errFetch := s.withGitRemoteFileLock(func() error { return syncRemoteReferences(ctx, repo, authMethod) }); errFetch != nil {
 		return errFetch
 	}
 	targetOID, errTarget := gitRefHash(repo, target)
@@ -788,6 +788,22 @@ func (s *GitTokenStore) relativeToRepo(path string) (string, error) {
 	return rel, nil
 }
 
+// File remotes advertise all loose references, including refresh journal tags.
+// Serialize reads with local receive-pack so readers cannot observe an empty ref mid-write.
+func readGitRemote[T any](s *GitTokenStore, read func() (T, error)) (T, error) {
+	var value T
+	err := s.withGitRemoteFileLock(func() error {
+		var errRead error
+		value, errRead = read()
+		return errRead
+	})
+	return value, err
+}
+
+func (s *GitTokenStore) readRemoteBranchTip(ctx context.Context, repo *git.Repository, branch plumbing.ReferenceName) (plumbing.Hash, error) {
+	return readGitRemote(s, func() (plumbing.Hash, error) { return s.refreshRemoteRef(ctx, repo, branch) })
+}
+
 func syncRemoteReferences(ctx context.Context, repo *git.Repository, authMethod []client.Option) error {
 	if err := repo.FetchContext(ctx, &git.FetchOptions{ClientOptions: authMethod, RemoteName: "origin"}); err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
 		return err
@@ -801,7 +817,9 @@ func (s *GitTokenStore) selectGitRemoteBranch(ctx context.Context, repo *git.Rep
 	if errRemote != nil {
 		return resolvedRemoteBranch{}, errRemote
 	}
-	refs, errList := remote.ListContext(ctx, &git.ListOptions{ClientOptions: authMethod})
+	refs, errList := readGitRemote(s, func() ([]*plumbing.Reference, error) {
+		return remote.ListContext(ctx, &git.ListOptions{ClientOptions: authMethod})
+	})
 	if errList != nil && !errors.Is(errList, transport.ErrEmptyRemoteRepository) {
 		return resolvedRemoteBranch{}, errList
 	}
@@ -984,7 +1002,9 @@ func (s *GitTokenStore) recoverRepositoryContextLocked(ctx context.Context, repo
 	if s.branch != "" {
 		cloneOpts.ReferenceName = plumbing.NewBranchReferenceName(s.branch)
 	}
-	clonedRepo, errClone := git.PlainCloneContext(ctx, cloneDir, cloneOpts)
+	clonedRepo, errClone := readGitRemote(s, func() (*git.Repository, error) {
+		return git.PlainCloneContext(ctx, cloneDir, cloneOpts)
+	})
 	if errClone != nil {
 		if baselineRepo != nil {
 			if errClose := closeRepository(baselineRepo); errClose != nil {
@@ -1498,7 +1518,7 @@ func (s *GitTokenStore) commitAndPushSnapshotLocked(ctx context.Context, message
 		if upload == nil {
 			return nil
 		}
-		actual, errRemote := s.refreshRemoteRef(ctx, repo, branch)
+		actual, errRemote := s.readRemoteBranchTip(ctx, repo, branch)
 		if errRemote != nil {
 			return errRemote
 		}
@@ -1640,7 +1660,7 @@ func (s *GitTokenStore) pushRepositoryLocked(ctx context.Context, repo *git.Repo
 	}
 	if errPush != nil {
 		if !errors.Is(errPush, git.NoErrAlreadyUpToDate) {
-			if actual, errList := s.refreshRemoteRef(ctx, repo, branchName); errList == nil && actual != expected {
+			if actual, errList := s.readRemoteBranchTip(ctx, repo, branchName); errList == nil && actual != expected {
 				return "", errors.Join(errGitRemoteAdvanced, fmt.Errorf("git token store: push: %w", errPush))
 			}
 			return "", fmt.Errorf("git token store: push: %w", errPush)
