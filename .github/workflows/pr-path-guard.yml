@@ -31,19 +31,38 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # A release sync may import upstream files verbatim, never arbitrary edits.
+          # A release sync may also carry existing fork edits through a clean merge.
           if [[ "$REPOSITORY" == 'nekopara-ai/CLIProxyAPI' &&
                 "$HEAD_REPOSITORY" == "$REPOSITORY" &&
                 "$BASE_REF" == 'codex/cpa-transport-effective-tier' ]]; then
             git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
             git merge-base --is-ancestor origin/main "$HEAD_SHA"
+            ancestor=$(git merge-base "$BASE_SHA" origin/main)
+            work=$(mktemp -d)
+            trap 'rm -rf -- "$work"' EXIT
+            export GIT_LITERAL_PATHSPECS=1
+            git diff --no-renames --name-only -z "$BASE_SHA" "$HEAD_SHA" -- internal/translator > "$work/paths"
             while IFS= read -r -d '' path; do
-              if ! git diff --quiet origin/main "$HEAD_SHA" -- "$path"; then
-                echo "::error file=$path::Translator changes must match synchronized main exactly"
+              if git diff --quiet origin/main "$HEAD_SHA" -- "$path"; then
+                continue
+              fi
+              mode=$(git ls-tree --format='%(objectmode)' "$ancestor" -- "$path")
+              [[ "$mode" == 100644 || "$mode" == 100755 ]]
+              for revision in "$BASE_SHA" origin/main "$HEAD_SHA"; do
+                [[ "$(git ls-tree --format='%(objectmode)' "$revision" -- "$path")" == "$mode" ]]
+              done
+              git cat-file blob "$ancestor:$path" > "$work/ancestor"
+              git cat-file blob "$BASE_SHA:$path" > "$work/fork"
+              git cat-file blob "origin/main:$path" > "$work/upstream"
+              git cat-file blob "$HEAD_SHA:$path" > "$work/head"
+              if cmp -s "$work/ancestor" "$work/fork" || cmp -s "$work/ancestor" "$work/upstream" ||
+                 ! git merge-file -p "$work/fork" "$work/ancestor" "$work/upstream" > "$work/merged" ||
+                 ! cmp -s "$work/merged" "$work/head"; then
+                echo "::error::Translator changes must reproduce the clean three-way merge"
                 exit 1
               fi
-            done < <(git diff --name-only -z "$BASE_SHA" "$HEAD_SHA" -- internal/translator)
-            echo "Translator changes are verbatim upstream synchronization."
+            done < "$work/paths"
+            echo "Verified translator changes against upstream and the existing fork."
             exit 0
           fi
           echo "Changes under internal/translator are not allowed in pull requests."

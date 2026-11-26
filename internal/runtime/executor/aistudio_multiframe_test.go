@@ -111,7 +111,7 @@ func streamThroughRelay(t *testing.T, source sdktranslator.Format, chunks []stri
 	}()
 
 	pluginName := "aistudio-multiframe-" + authID
-	plugin := &captureAIStudioUsagePlugin{records: make(chan usage.Record, 16)}
+	plugin := &captureAIStudioUsagePlugin{authID: authID, records: make(chan usage.Record, 16)}
 	usage.RegisterNamedPlugin(pluginName, plugin)
 	t.Cleanup(func() {
 		usage.RegisterNamedPlugin(pluginName, malformedFunctionCallUsageNoop{})

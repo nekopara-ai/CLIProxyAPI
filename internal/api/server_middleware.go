@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	managementHandlers "github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/middleware"
 	codexlive "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/live"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -31,6 +32,7 @@ var corsExposedResponseHeaders = []string{
 	"X-CPA-SUPPORT-PLUGIN",
 	"X-CPA-EXCLUDED-MODELS-PRECEDENCE",
 	"X-CPA-FORK",
+	managementHandlers.ServerIDHeader,
 	"X-CPA-HOME-VERSION",
 	"X-CPA-HOME-BUILD-DATE",
 	"X-SERVER-VERSION",
