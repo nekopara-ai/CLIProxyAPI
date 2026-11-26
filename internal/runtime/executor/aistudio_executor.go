@@ -353,6 +353,15 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 		streamUsage.SetRequestPayload(body.payload)
 		defer streamUsage.Publish(ctx, reporter)
 		var streamErr error
+		translatedChunk := func(line []byte) cliproxyexecutor.StreamChunk {
+			chunk := cliproxyexecutor.StreamChunk{Payload: ensureColonSpacedJSON(line)}
+			if streamErr != nil {
+				if _, found := helps.TranslatedClaudeStreamErrorPayload(responseFormat, [][]byte{line}); found {
+					chunk.PayloadError = streamErr
+				}
+			}
+			return chunk
+		}
 		defer func() {
 			_ = helps.StopTranslatedClaudeStream(ctx, &streamErr, reporter, &streamUsage, out)
 		}()
@@ -385,10 +394,10 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 				commitReplay()
 			}
 			for i := range lines {
-				spaced := ensureColonSpacedJSON(lines[i])
+				chunk := translatedChunk(lines[i])
 				select {
-				case out <- cliproxyexecutor.StreamChunk{Payload: spaced}:
-					if len(spaced) > 0 {
+				case out <- chunk:
+					if len(chunk.Payload) > 0 {
 						zeroOutputGuard.MarkEmitted()
 					}
 				case <-ctx.Done():
@@ -480,7 +489,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 			commitReplay()
 			for _, line := range lines {
 				select {
-				case out <- cliproxyexecutor.StreamChunk{Payload: ensureColonSpacedJSON(line)}:
+				case out <- translatedChunk(line):
 				case <-ctx.Done():
 					return
 				}
@@ -589,7 +598,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 				commitReplay()
 				for i := range lines {
 					select {
-					case out <- cliproxyexecutor.StreamChunk{Payload: ensureColonSpacedJSON(lines[i])}:
+					case out <- translatedChunk(lines[i]):
 					case <-ctx.Done():
 						return false
 					}

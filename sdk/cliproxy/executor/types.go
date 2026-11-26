@@ -281,6 +281,9 @@ type Response struct {
 
 // StreamChunk represents a single streaming payload unit emitted by provider executors.
 type StreamChunk struct {
+	// PayloadError is the upstream failure already encoded in this protocol payload.
+	// The executor may emit a terminal Err separately after collecting trailing usage.
+	PayloadError error `json:"-"`
 	// Payload is the raw provider chunk payload.
 	Payload []byte
 	// Incomplete reports that the upstream stream ended in an incomplete terminal state

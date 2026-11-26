@@ -237,6 +237,7 @@ func (m *Manager) wrapStreamResultWithCancel(ctx context.Context, auth *Auth, pr
 			defer cancelAttempt()
 		}
 		var failed bool
+		var terminalErr error
 		var sawCompleted bool
 		var sawIncomplete bool
 		forward := true
@@ -248,35 +249,43 @@ func (m *Manager) wrapStreamResultWithCancel(ctx context.Context, auth *Auth, pr
 			if context.Cause(ctx) == errCredentialStopped {
 				return false
 			}
-			if chunk.Err != nil && !failed {
+			upstreamErr := chunk.Err
+			if upstreamErr == nil {
+				upstreamErr = chunk.PayloadError
+			}
+			if upstreamErr != nil && !failed {
 				if ctxErr := ctx.Err(); ctxErr != nil {
-					if retryAfterFromError(chunk.Err) != nil {
-						m.recordCanceledUpstreamCooldown(ctx, auth, provider, resultModel, routeModel, opts, chunk.Err, ephemeralResult, executionSeq)
+					if retryAfterFromError(upstreamErr) != nil {
+						m.recordCanceledUpstreamCooldown(ctx, auth, provider, resultModel, routeModel, opts, upstreamErr, ephemeralResult, executionSeq)
 						failed = true
 						return false
 					}
-					if !isRequestScopedError(chunk.Err) {
+					if !isRequestScopedError(upstreamErr) {
 						failed = true
 						return false
 					}
 				}
 				failed = true
 				entry := logEntryWithRequestID(ctx)
-				warnLogUpstreamFailure(ctx, entry, provider, resultModel, auth, time.Since(streamStart), chunk.Err)
-				rerr := resultErrorFromError(chunk.Err)
-				action, okAction := matchRequestScopedErrorAction(auth, chunk.Err, m.requestScopedErrorConfig(ctx))
+				warnLogUpstreamFailure(ctx, entry, provider, resultModel, auth, time.Since(streamStart), upstreamErr)
+				rerr := resultErrorFromError(upstreamErr)
+				action, okAction := matchRequestScopedErrorAction(auth, upstreamErr, m.requestScopedErrorConfig(ctx))
 				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: opts, AccessToken: accessToken, CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch, ExecutionSeq: executionSeq}
-				result.RetryAfter = retryAfterFromError(chunk.Err)
-				result.CredentialScope = isCredentialScopedError(chunk.Err)
+				result.RetryAfter = retryAfterFromError(upstreamErr)
+				result.CredentialScope = isCredentialScopedError(upstreamErr)
 				applyRequestScopedActionToResult(action, okAction, &result)
 				m.recordExecutionResult(ctx, result, auth, ephemeralResult)
-				if okAction && !isRequestTerminatedError(chunk.Err) && !isRequestStopError(chunk.Err) && !isTOSViolationError(chunk.Err) {
+				if okAction && !isRequestTerminatedError(upstreamErr) && !isRequestStopError(upstreamErr) && !isTOSViolationError(upstreamErr) {
 					if isRequestScopedStop(action, okAction) {
-						chunk.Err = wrapRequestStopError(chunk.Err)
+						upstreamErr = wrapRequestStopError(upstreamErr)
 					} else {
-						chunk.Err = wrapRequestScopedContinueError(chunk.Err)
+						upstreamErr = wrapRequestScopedContinueError(upstreamErr)
 					}
 				}
+				terminalErr = upstreamErr
+			}
+			if chunk.Err != nil && terminalErr != nil {
+				chunk.Err = terminalErr
 			}
 			if !forward {
 				return false

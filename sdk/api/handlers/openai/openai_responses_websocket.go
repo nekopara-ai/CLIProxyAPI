@@ -175,7 +175,7 @@ func (w *responsesWebsocketWriter) closeForUpstreamError(err error) (bool, error
 	}
 	defer w.writeMu.Unlock()
 
-	errWrite := w.conn.WriteControl(websocket.CloseMessage, payload, time.Time{})
+	errWrite := w.conn.WriteControl(websocket.CloseMessage, payload, time.Now().Add(5*time.Second))
 	errClose := w.conn.Close()
 	if errWrite != nil {
 		return true, errWrite
@@ -310,6 +310,7 @@ func (w *responsesWebsocketWriter) closeWithPayload(payload []byte) (bool, error
 	}
 	defer w.writeMu.Unlock()
 
+	_ = w.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	errWrite := w.conn.WriteMessage(websocket.TextMessage, payload)
 	errClose := w.conn.Close()
 	if errWrite != nil {
@@ -619,9 +620,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		close(wsDone)
 		cancelSocket(nil)
 		_, _ = writer.closeWithoutError()
-		if errClose := conn.Close(); errClose != nil && !isWebsocketConnectionClosedError(errClose) {
-			log.Warnf("responses websocket: close connection error: %v", errClose)
-		}
+		// Let the disconnect writer finish its bounded terminal frame before teardown.
 		disconnectWg.Wait()
 		if errMsg := recordedDisconnectErr.Load(); errMsg != nil {
 			h.LoggingAPIResponseError(c, errMsg)
