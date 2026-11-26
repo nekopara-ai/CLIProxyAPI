@@ -1073,7 +1073,7 @@ func TestCodexExecutor_BootstrapBuffering_CleanEOFBeforeOutputIsLifecycle408(t *
 		t.Fatalf("error type = %T, want a connection lifecycle marker", err)
 	}
 	var requestScopedErr cliproxyexecutor.RequestScopedError
-	if errors.As(err, &requestScopedErr) {
+	if errors.As(err, &requestScopedErr) && requestScopedErr.IsRequestScoped() {
 		t.Fatalf("precommit EOF error type = %T, must not be request-scoped", err)
 	}
 }

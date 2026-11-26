@@ -116,6 +116,9 @@ type Capabilities struct {
 	// When AuthProvider/AuthProviders is declared, only ExecutorModelScopeStatic registers an
 	// unauthenticated static model client in ModelRegistry.
 	ExecutorModelScope ExecutorModelScope
+	// ExecutorAuthProviders lists credential providers whose Home-selected auth can
+	// be passed to Executor. An empty list leaves this capability disabled.
+	ExecutorAuthProviders []string
 	// ExecutorInputFormats lists request protocols accepted directly by Executor. Executors must declare at least one.
 	ExecutorInputFormats []string
 	// ExecutorOutputFormats lists response protocols emitted directly by Executor. Executors must declare at least one.
@@ -1492,6 +1495,13 @@ type RequestInterceptResponse struct {
 	ClearHeaders []string
 	// Terminate stops the interceptor chain and prevents the request from reaching an upstream executor.
 	Terminate bool
+	// TerminateScope narrows Terminate for after-auth interceptors. Empty or
+	// "request" keeps request-final behavior. "credential" means the selected
+	// credential is unusable for this request only: no cooldown, no failure
+	// counting, no usage record, and selection continues with the next
+	// candidate. If no candidate is left, the interceptor's response is returned.
+	// Unknown values behave as "request". Before-auth interceptors ignore it.
+	TerminateScope string
 	// StatusCode is the downstream HTTP status used when Terminate is true. Invalid values default to 403.
 	StatusCode int
 	// ResponseHeaders contains downstream response headers used when Terminate is true.

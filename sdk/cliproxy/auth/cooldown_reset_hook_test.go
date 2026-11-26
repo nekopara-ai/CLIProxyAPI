@@ -39,7 +39,7 @@ func TestCooldownResetHookOnlyManualActions(t *testing.T) {
 		a.NextRetryAfter = time.Now().Add(time.Hour)
 		a.ModelStates = map[string]*ModelState{"gpt-6-sol": {Unavailable: true, NextRetryAfter: time.Now().Add(time.Hour)}}
 		a, err = m.Update(context.Background(), a)
-		if err != nil || a.Unavailable || !a.NextRetryAfter.IsZero() || a.ModelStates["gpt-6-sol"].Unavailable {
+		if err != nil || a.Unavailable != disabled || !a.NextRetryAfter.IsZero() || a.ModelStates["gpt-6-sol"].Unavailable {
 			t.Fatalf("transition didn't clear business state: %+v %v", a, err)
 		}
 	}

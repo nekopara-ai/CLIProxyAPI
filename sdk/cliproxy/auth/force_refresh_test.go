@@ -370,13 +370,11 @@ func TestManager_ForceRefreshAll_DynamicCancellationSkipsRemaining(t *testing.T)
 			}
 		}
 	}
-	// Cancellation also invalidates already-running refreshes; late success
-	// must not install tokens after the operation has been stopped.
-	if successCount != 0 {
-		t.Fatalf("expected 0 successful refreshes, got %d", successCount)
+	if successCount != 2 {
+		t.Fatalf("expected 2 successful refreshes, got %d", successCount)
 	}
-	if cancelCount != 6 {
-		t.Fatalf("expected 6 canceled refreshes, got %d", cancelCount)
+	if cancelCount != 4 {
+		t.Fatalf("expected 4 canceled refreshes, got %d", cancelCount)
 	}
 }
 

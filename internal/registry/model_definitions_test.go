@@ -436,10 +436,12 @@ func TestWithCodexBuiltinsIncludesImage25And26Models(t *testing.T) {
 	}
 }
 
-func TestGetDevinModelsFallback(t *testing.T) {
-	// Exercise the static fallback, not whichever embedded or refreshed catalog
-	// happens to be active. Higher-priority catalogs have their own metadata.
-	setDevinModelSourcesForTest(t, nil, nil)
+func TestGetDevinEmbeddedModels(t *testing.T) {
+	embedded, err := ValidateDevinModelsJSON(embeddedDevinModelsJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setDevinModelSourcesForTest(t, embedded, nil)
 	devinModels := GetDevinModels()
 	if len(devinModels) == 0 {
 		t.Fatal("GetDevinModels() returned empty list")
@@ -452,57 +454,57 @@ func TestGetDevinModelsFallback(t *testing.T) {
 	foundDeepSeekV4Flash := false
 	foundDeepSeekV41Flash := false
 	for _, m := range devinModels {
-		if m != nil && m.ID == "devin/swe-2" {
+		if m != nil && m.ID == "swe-2" {
 			foundSWE2 = true
 			if m.Type != "devin" {
-				t.Errorf("devin/swe-2 Type = %q, want devin", m.Type)
+				t.Errorf("swe-2 Type = %q, want devin", m.Type)
 			}
 		}
-		if m != nil && m.ID == "devin/claude-fable-5-1" {
+		if m != nil && m.ID == "claude-fable-5-1" {
 			foundFable = true
 		}
-		if m != nil && m.ID == "devin/gemini-3-8-flash" {
+		if m != nil && m.ID == "gemini-3-8-flash" {
 			foundGemini38 = true
 			if m.OwnedBy != "google" {
-				t.Errorf("devin/gemini-3-8-flash OwnedBy = %q, want google", m.OwnedBy)
+				t.Errorf("gemini-3-8-flash OwnedBy = %q, want google", m.OwnedBy)
 			}
 		}
-		if m != nil && m.ID == "devin/grok-4-6" {
+		if m != nil && m.ID == "grok-4-6" {
 			foundGrok46 = true
 			if m.OwnedBy != "xai" {
-				t.Errorf("devin/grok-4-6 OwnedBy = %q, want xai", m.OwnedBy)
+				t.Errorf("grok-4-6 OwnedBy = %q, want xai", m.OwnedBy)
 			}
 		}
-		if m != nil && m.ID == "devin/deepseek-v4-flash" {
+		if m != nil && m.ID == "deepseek-v4-flash" {
 			foundDeepSeekV4Flash = true
 			if m.OwnedBy != "deepseek" {
-				t.Errorf("devin/deepseek-v4-flash OwnedBy = %q, want deepseek", m.OwnedBy)
+				t.Errorf("deepseek-v4-flash OwnedBy = %q, want deepseek", m.OwnedBy)
 			}
 		}
-		if m != nil && m.ID == "devin/deepseek-v4-1-flash" {
+		if m != nil && m.ID == "deepseek-v4-1-flash-1017" {
 			foundDeepSeekV41Flash = true
 			if m.OwnedBy != "deepseek" {
-				t.Errorf("devin/deepseek-v4-1-flash OwnedBy = %q, want deepseek", m.OwnedBy)
+				t.Errorf("deepseek-v4-1-flash-1017 OwnedBy = %q, want deepseek", m.OwnedBy)
 			}
 		}
 	}
 	if !foundSWE2 {
-		t.Error("expected devin/swe-2 in GetDevinModels()")
+		t.Error("expected swe-2 in GetDevinModels()")
 	}
 	if !foundFable {
-		t.Error("expected devin/claude-fable-5-1 in GetDevinModels()")
+		t.Error("expected claude-fable-5-1 in GetDevinModels()")
 	}
 	if !foundGemini38 {
-		t.Error("expected devin/gemini-3-8-flash in GetDevinModels()")
+		t.Error("expected gemini-3-8-flash in GetDevinModels()")
 	}
 	if !foundGrok46 {
-		t.Error("expected devin/grok-4-6 in GetDevinModels()")
+		t.Error("expected grok-4-6 in GetDevinModels()")
 	}
 	if !foundDeepSeekV4Flash {
-		t.Error("expected devin/deepseek-v4-flash in GetDevinModels()")
+		t.Error("expected deepseek-v4-flash in GetDevinModels()")
 	}
 	if !foundDeepSeekV41Flash {
-		t.Error("expected devin/deepseek-v4-1-flash in GetDevinModels()")
+		t.Error("expected deepseek-v4-1-flash-1017 in GetDevinModels()")
 	}
 
 	byChannel := GetStaticModelDefinitionsByChannel("devin")
@@ -550,12 +552,12 @@ func setDevinModelSourcesForTest(t *testing.T, primary, secondary []*ModelInfo) 
 
 func TestGetDevinModelsSourcePrecedence(t *testing.T) {
 	primary := []*ModelInfo{{
-		ID: "devin/grok-4-6", Type: "devin", OwnedBy: "devin",
+		ID: "grok-4-6", Type: "devin", OwnedBy: "devin",
 		DisplayName: "Primary catalog entry",
 		Thinking:    &ThinkingSupport{Levels: []string{"high"}},
 	}}
 	secondary := []*ModelInfo{{
-		ID: "devin/grok-4-6", Type: "devin", OwnedBy: "catalog-author",
+		ID: "grok-4-6", Type: "devin", OwnedBy: "catalog-author",
 		DisplayName: "Secondary catalog entry",
 		Thinking:    &ThinkingSupport{Levels: []string{"medium"}},
 	}}
@@ -566,11 +568,13 @@ func TestGetDevinModelsSourcePrecedence(t *testing.T) {
 	}{
 		{"primary overrides secondary and static", primary, secondary, primary},
 		{"secondary overrides static", nil, secondary, secondary},
-		{"static only when both catalogs are empty", nil, nil, cloneModelInfos(staticDevinModels)},
+		{"builtins only when both catalogs are empty", nil, nil, nil},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			setDevinModelSourcesForTest(t, tt.primary, tt.secondary)
-			tt.want = WithDevinBuiltins(tt.want)
+			if len(tt.primary) == 0 {
+				tt.want = WithDevinBuiltins(tt.want)
+			}
 			got := GetDevinModels()
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("GetDevinModels() = %#v, want selected source %#v", got, tt.want)
