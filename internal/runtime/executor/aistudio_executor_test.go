@@ -303,8 +303,9 @@ func TestAIStudioExecutorExecuteStartsTTFTBeforeRelayWait(t *testing.T) {
 		clientDone <- nil
 	}()
 
-	plugin := &captureAIStudioUsagePlugin{records: make(chan usage.Record, 16)}
-	usage.RegisterPlugin(plugin)
+	plugin := &captureAIStudioUsagePlugin{authID: authID, records: make(chan usage.Record, 16)}
+	usage.RegisterNamedPlugin(t.Name(), plugin)
+	t.Cleanup(func() { usage.RegisterNamedPlugin(t.Name(), malformedFunctionCallUsageNoop{}) })
 	exec := NewAIStudioExecutor(&config.Config{}, "aistudio", relay)
 	ctx := cliproxyexecutor.WithUpstreamAttemptTracker(context.Background())
 	_, errExecute := exec.Execute(ctx, &cliproxyauth.Auth{ID: authID, Provider: "aistudio"}, cliproxyexecutor.Request{
@@ -328,11 +329,12 @@ func TestAIStudioExecutorExecuteStartsTTFTBeforeRelayWait(t *testing.T) {
 }
 
 type captureAIStudioUsagePlugin struct {
+	authID  string
 	records chan usage.Record
 }
 
 func (p *captureAIStudioUsagePlugin) HandleUsage(_ context.Context, record usage.Record) {
-	if p == nil {
+	if p == nil || record.AuthID != p.authID {
 		return
 	}
 	select {

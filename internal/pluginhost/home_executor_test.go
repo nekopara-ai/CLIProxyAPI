@@ -57,7 +57,7 @@ func homeExecutorTestAuth(token, project string, expiry time.Time) coreauth.Auth
 func homeExecutorDispatchJSON(t *testing.T, auth coreauth.Auth, pluginID string) []byte {
 	t.Helper()
 	response := map[string]any{
-		"model": homePluginModel, "provider": auth.Provider, "auth_index": homePluginIndex, "auth": auth,
+		"model": homePluginModel, "provider": auth.Provider, "auth_index": auth.ID, "auth": auth,
 		"request_retry": 0, "concurrency": map[string]any{"accounted": true, "credential_id": auth.ID, "model": homePluginModel},
 	}
 	if pluginID != "" {
