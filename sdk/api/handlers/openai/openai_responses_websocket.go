@@ -122,9 +122,23 @@ func websocketClosePayloadForUpstreamError(err error) (bool, []byte) {
 	return true, websocket.FormatCloseMessage(code, reason)
 }
 
+// websocketWriteLock serializes data, Ping, and terminal frames on one connection.
+type websocketWriteLock chan struct{}
+
+func (l websocketWriteLock) Lock()   { l <- struct{}{} }
+func (l websocketWriteLock) Unlock() { <-l }
+func (l websocketWriteLock) TryLock() bool {
+	select {
+	case l <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
 type responsesWebsocketWriter struct {
 	conn    *websocket.Conn
-	writeMu sync.Mutex
+	writeMu websocketWriteLock
 	closing atomic.Bool
 }
 
@@ -153,7 +167,7 @@ func (l *responsesWebsocketAttemptTimeline) hasDownstreamResponse() bool {
 }
 
 func newResponsesWebsocketWriter(conn *websocket.Conn) *responsesWebsocketWriter {
-	return &responsesWebsocketWriter{conn: conn}
+	return &responsesWebsocketWriter{conn: conn, writeMu: make(websocketWriteLock, 1)}
 }
 
 // closeForUpstreamError sends a best-effort close frame without waiting behind
@@ -306,7 +320,15 @@ func (w *responsesWebsocketWriter) closeWithPayload(payload []byte) (bool, error
 		return false, nil
 	}
 	if !w.writeMu.TryLock() {
-		return false, w.conn.Close()
+		// The peer can receive the previous frame before its writer releases the lock.
+		// Give that writer a chance to finish, while still interrupting a stalled write.
+		timer := time.NewTimer(100 * time.Millisecond)
+		defer timer.Stop()
+		select {
+		case w.writeMu <- struct{}{}:
+		case <-timer.C:
+			return false, w.conn.Close()
+		}
 	}
 	defer w.writeMu.Unlock()
 
